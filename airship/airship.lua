@@ -19,6 +19,42 @@ local burner, vectorX, vectorY, power = 0, 0, 0, 0
 local calibrated = fs.exists("airship-calibrated")
 local running, calibrationClick = true, nil
 local axisTests = {}
+-- Conservative starting gains; GPS velocity feedback compensates for variable sample timing.
+local pid = {
+  horizontalX = {p=.035, i=.0005, d=.18, limit=.25, integral=0},
+  horizontalZ = {p=.035, i=.0005, d=.18, limit=.25, integral=0},
+  altitude = {p=1.0, i=.03, d=2.0, bias=4, limit=11, integral=0, integralLimit=60}
+}
+local gainLimits = {{.005,.15}, {0,.01}, {0,.8}, {0,12}, {.1,3}, {0,.2}, {0,5}}
+local function applyGainValues(values)
+  for i, bounds in ipairs(gainLimits) do
+    if type(values[i]) ~= "number" or values[i] < bounds[1] or values[i] > bounds[2] then return false end
+  end
+  pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d = values[1], values[2], values[3]
+  pid.horizontalZ.p, pid.horizontalZ.i, pid.horizontalZ.d = values[1], values[2], values[3]
+  pid.altitude.bias, pid.altitude.p, pid.altitude.i, pid.altitude.d = values[4], values[5], values[6], values[7]
+  pid.horizontalX.integral, pid.horizontalZ.integral, pid.altitude.integral = 0, 0, 0
+  return true
+end
+local function readGainFile()
+  if not fs.exists("airship-pid.cfg") then return end
+  local file = fs.open("airship-pid.cfg", "r")
+  local values = {}
+  for token in file.readAll():gmatch("%S+") do
+    local value = tonumber(token)
+    if not value then file.close(); return end
+    values[#values + 1] = value
+  end
+  file.close()
+  if #values == #gainLimits then applyGainValues(values) end
+end
+local function gainValues()
+  return {pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d, pid.altitude.bias, pid.altitude.p, pid.altitude.i, pid.altitude.d}
+end
+readGainFile()
+local velocity = {x=0, y=0, z=0}
+local previousPosition, previousSample
+local sampleDt = 1
 
 local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 local function outputs()
@@ -34,19 +70,40 @@ local function stop()
 end
 local function setFlightMode(nextMode)
   vectorX, vectorY, power, mode = 0, 0, 0, nextMode
+  pid.horizontalX.integral, pid.horizontalZ.integral, pid.altitude.integral = 0, 0, 0
 end
 local function locate()
   local x, y, z = gps.locate(1, false)
   if x then
+    local now = os.clock()
+    if previousPosition and previousSample then
+      sampleDt = clamp(now - previousSample, .25, 2)
+      velocity.x = velocity.x * .5 + ((x - previousPosition.x) / sampleDt) * .5
+      velocity.y = velocity.y * .5 + ((y - previousPosition.y) / sampleDt) * .5
+      velocity.z = velocity.z * .5 + ((z - previousPosition.z) / sampleDt) * .5
+    end
     position = {x=x, y=y, z=z}
+    previousPosition, previousSample = position, now
     if not altitude then altitude = math.floor(y + .5) end
     if mode == "WAITING FOR GPS" then mode = "HOLDING ALTITUDE" end
   elseif mode == "AUTOPILOT" then
     position = nil
+    previousPosition, previousSample = nil, nil
+    velocity = {x=0, y=0, z=0}
     vectorX, vectorY, power, burner, mode = 0, 0, 0, 0, "GPS LOST - RE-ENGAGE"
   else
     position = nil
+    previousPosition, previousSample = nil, nil
+    velocity = {x=0, y=0, z=0}
   end
+end
+local function pidStep(controller, error, measuredVelocity, dt)
+  local integralLimit = controller.integralLimit or 20
+  local candidate = clamp(controller.integral + error * dt, -integralLimit, integralLimit)
+  local raw = controller.p * error + controller.i * candidate - controller.d * measuredVelocity
+  local output = clamp(raw, -controller.limit, controller.limit)
+  if raw == output or raw * error < 0 then controller.integral = candidate end
+  return output
 end
 local function updateFlight()
   if not position then
@@ -56,22 +113,23 @@ local function updateFlight()
   end
   if mode == "STOPPED" or mode == "GPS LOST - RE-ENGAGE" then return end
   if not altitude then burner = 0; mode = "SET ALTITUDE"; return end
-  burner = altitude - position.y > 1 and 15 or 0
+  local altitudeError = altitude - position.y
+  burner = math.floor(clamp(pid.altitude.bias + pidStep(pid.altitude, altitudeError, velocity.y, sampleDt), 0, 15) + .5)
   if mode == "AUTOPILOT" and target then
     local dx, dz = target.x - position.x, target.z - position.z
-    local distance = math.sqrt(dx*dx + dz*dz)
-    if distance < 2 then
+    if math.abs(dx) < .5 and math.abs(dz) < .5 and math.abs(velocity.x) < .12 and math.abs(velocity.z) < .12 then
       vectorX, vectorY, power, mode = 0, 0, 0, "DESTINATION REACHED"
     else
-      vectorX = clamp((dz / distance) * .25, -.25, .25)
-      vectorY = clamp((dx / distance) * .25, -.25, .25)
-      power = 12
+      vectorX = pidStep(pid.horizontalZ, dz, velocity.z, sampleDt)
+      vectorY = pidStep(pid.horizontalX, dx, velocity.x, sampleDt)
+      power = (math.abs(vectorX) + math.abs(vectorY) > .015) and 12 or 0
     end
   end
 end
 
 frame:addLabel({x=2, y=1, width=47, height=1, text="AIRSHIP  /  FLIGHT DECK", foreground=colors.white, background=colors.blue})
 local status = frame:addLabel({x=2, y=2, width=47, height=1, text="Starting controller...", foreground=colors.yellow})
+local pidSummary = frame:addLabel({x=2, y=3, width=47, height=1, text="PID  loading gains...", foreground=colors.lightGray})
 
 local function card(x, width, title)
   local box = frame:addFrame({x=x, y=4, width=width, height=4, background=colors.gray})
@@ -100,6 +158,43 @@ end
 frame:addButton({x=26, y=10, width=12, height=1, text="SET DEST", background=colors.blue}):onClick(setDestination)
 xInput:onEnter(setDestination)
 
+frame:addLabel({x=2, y=11, width=16, height=1, text="ALTITUDE TARGET Y", foreground=colors.lightBlue})
+local heightInput = frame:addInput({x=2, y=12, width=12, height=1, placeholder="Height", background=colors.white, foreground=colors.black})
+local function setHeight()
+  local value = tonumber(heightInput.text)
+  if not value then status.text = "Enter a numeric height target."; status.foreground = colors.red; return end
+  altitude = value
+  setFlightMode("HOLDING ALTITUDE")
+  status.text = ("Height target set to Y %.0f"):format(value); status.foreground = colors.lime
+  frame:setFocused(nil)
+end
+frame:addButton({x=16, y=12, width=12, height=1, text="SET HEIGHT", background=colors.blue}):onClick(setHeight)
+heightInput:onEnter(setHeight)
+frame:addLabel({x=2, y=13, width=47, height=1, text="PID TUNE: X/Z P I D   ALT bias P I D", foreground=colors.lightBlue})
+local pidInput = frame:addInput({x=2, y=14, width=35, height=1, placeholder="0.035 0.0005 0.18 4 1 0.03 2", background=colors.white, foreground=colors.black})
+local function showGainValues()
+  pidInput.text = ("%.4f %.5f %.2f %.1f %.2f %.3f %.2f"):format(table.unpack(gainValues()))
+end
+showGainValues()
+local function setGains()
+  local values = {}
+  for token in pidInput.text:gmatch("%S+") do
+    local value = tonumber(token)
+    if not value then status.text = "Use seven numeric PID values."; status.foreground = colors.red; return end
+    values[#values + 1] = value
+  end
+  if #values ~= #gainLimits or not applyGainValues(values) then
+    status.text = "Invalid gains. Check ranges in the setup guide."; status.foreground = colors.red; return
+  end
+  local file = fs.open("airship-pid.cfg", "w")
+  file.write(table.concat(values, " ")); file.close()
+  showGainValues()
+  frame:setFocused(nil)
+  status.text = "PID gains applied and saved."; status.foreground = colors.lime
+end
+frame:addButton({x=39, y=14, width=10, height=1, text="SET PID", background=colors.blue}):onClick(setGains)
+pidInput:onEnter(setGains)
+
 local function adjustAltitude(delta)
   if not position then status.text = "Waiting for GPS before changing altitude."; return end
   altitude = (altitude or math.floor(position.y + .5)) + delta
@@ -109,19 +204,17 @@ end
 local function button(x, y, width, label, color, action)
   return frame:addButton({x=x, y=y, width=width, height=2, text=label, background=color}):onClick(action)
 end
-button(2, 12, 7, "ALT -", colors.orange, function() adjustAltitude(-1) end)
-button(10, 12, 7, "ALT +", colors.orange, function() adjustAltitude(1) end)
 local function holdHere()
   if position then altitude = math.floor(position.y + .5); target = nil; setFlightMode("HOLDING ALTITUDE") end
 end
-button(19, 12, 9, "HOLD HERE", colors.blue, holdHere)
+button(2, 15, 12, "HOLD HERE", colors.blue, holdHere)
 local function engageAutopilot()
   if not calibrated then status.text = "Run low-power direction checks, then confirm calibration."; status.foreground = colors.orange
   elseif not position or not target then status.text = "GPS fix and destination are required."; status.foreground = colors.red
   else setFlightMode("AUTOPILOT"); status.text = "Autopilot engaged"; status.foreground = colors.lime end
 end
-button(29, 12, 9, "AUTOPILOT", colors.lime, engageAutopilot)
-button(39, 12, 10, "STOP", colors.red, stop)
+button(15, 15, 14, "AUTOPILOT", colors.lime, engageAutopilot)
+button(32, 15, 10, "STOP", colors.red, stop)
 
 local function testVector(x, y, label)
   axisTests[label] = true
@@ -129,10 +222,10 @@ local function testVector(x, y, label)
   status.text = "Low-power test: " .. label .. "  |  Press HOLD to stop"
   status.foreground = colors.orange
 end
-button(2, 15, 11, "X- / LEFT", colors.gray, function() testVector(-.2, 0, "TEST X-") end)
-button(14, 15, 11, "X+ / RIGHT", colors.gray, function() testVector(.2, 0, "TEST X+") end)
-button(26, 15, 11, "Y+ / FWD", colors.gray, function() testVector(0, .2, "TEST Y+") end)
-button(38, 15, 11, "Y- / BACK", colors.gray, function() testVector(0, -.2, "TEST Y-") end)
+button(2, 17, 11, "X- / LEFT", colors.gray, function() testVector(-.2, 0, "TEST X-") end)
+button(14, 17, 11, "X+ / RIGHT", colors.gray, function() testVector(.2, 0, "TEST X+") end)
+button(26, 17, 11, "Y+ / FWD", colors.gray, function() testVector(0, .2, "TEST Y+") end)
+button(38, 17, 11, "Y- / BACK", colors.gray, function() testVector(0, -.2, "TEST Y-") end)
 
 local calibrateButton
 local function confirmCalibration()
@@ -152,13 +245,16 @@ local function confirmCalibration()
     status.text = "Confirm within 8s: X+ south, Y+ east."; status.foreground = colors.orange
   end
 end
-calibrateButton = button(2, 18, 14, calibrated and "CALIBRATED" or "CALIBRATE", calibrated and colors.green or colors.orange, confirmCalibration)
-frame:addLabel({x=18, y=18, width=31, height=1, text="G dest  A auto  H hold  S stop", foreground=colors.lightGray})
+calibrateButton = frame:addButton({x=2, y=19, width=14, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
+frame:addLabel({x=18, y=19, width=31, height=1, text="G dest  Y height  T tune  A auto", foreground=colors.lightGray})
 
 local function refresh()
   posText.text = position and ("X " .. ("%.1f"):format(position.x) .. "  Y " .. ("%.1f"):format(position.y) .. "\nZ " .. ("%.1f"):format(position.z)) or "GPS not found"
   altText.text = ("Now %s\nTarget %s"):format(position and ("%.1f"):format(position.y) or "--", altitude and ("%.0f"):format(altitude) or "--")
   sysText.text = ("Burner %d/15\nThrust %d/15"):format(burner, power)
+  if frame:getFocused() ~= heightInput then heightInput.text = altitude and tostring(math.floor(altitude + .5)) or "" end
+  if frame:getFocused() ~= pidInput then showGainValues() end
+  pidSummary.text = ("XY %.3f/%.4f/%.2f ALT %.1f/%.1f/%.2f/%.1f"):format(pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d, pid.altitude.bias, pid.altitude.p, pid.altitude.i, pid.altitude.d)
   if mode == "AUTOPILOT" then status.text, status.foreground = "AUTOPILOT ACTIVE  |  EAST-FACING SHIP", colors.lime
   elseif mode == "GPS LOST - RE-ENGAGE" then status.text, status.foreground = mode, colors.red
   elseif mode == "WAITING FOR GPS" then status.text, status.foreground = "Waiting for GPS signal...", colors.orange
@@ -185,7 +281,7 @@ local ok, err = pcall(function()
     while running do
       local _, key = os.pullEvent("key")
       local focused = frame:getFocused()
-      if focused == xInput then
+      if focused == xInput or focused == heightInput or focused == pidInput then
         if key == keys.up then adjustAltitude(1) elseif key == keys.down then adjustAltitude(-1) end
       else
         if key == keys.up then adjustAltitude(1)
@@ -195,6 +291,8 @@ local ok, err = pcall(function()
         elseif key == keys.f then testVector(0, .2, "TEST Y+")
         elseif key == keys.b then testVector(0, -.2, "TEST Y-")
         elseif key == keys.g then xInput:focus()
+        elseif key == keys.y then heightInput:focus()
+        elseif key == keys.t then pidInput:focus()
         elseif key == keys.h then holdHere()
         elseif key == keys.a then engageAutopilot()
         elseif key == keys.s then stop()
