@@ -13,6 +13,7 @@ for _, name in ipairs(ids) do
 end
 
 local monitor = peripheral.find("monitor")
+local altitudeSensor = peripheral.find("altitude_sensor")
 local frame = basalt.getMainFrame()
 local monitorFrame = monitor and basalt.createFrame(monitor)
 frame.background = colors.black
@@ -61,6 +62,10 @@ readGainFile()
 local velocity = {x=0, y=0, z=0}
 local previousPosition, previousSample
 local sampleDt = .5
+local altitudeSampleAt
+local altitudeDt = .05
+local altitudeSensorHeight
+local altitudeSensorReady = false
 local lastGpsAt
 
 local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
@@ -80,19 +85,31 @@ local function setFlightMode(nextMode)
   pid.horizontalX.integral, pid.horizontalZ.integral, pid.altitude.integral = 0, 0, 0
 end
 local function locate()
+  local now = os.clock()
+  altitudeDt = clamp(now - (altitudeSampleAt or now - .05), .01, .5)
+  altitudeSampleAt = now
+  if altitudeSensor then
+    local ok, height, verticalSpeed = pcall(function()
+      return altitudeSensor.getHeight(), altitudeSensor.getVerticalSpeed()
+    end)
+    if ok and type(height) == "number" and height == height and math.abs(height) < math.huge then
+      altitudeSensorHeight, altitudeSensorReady = height, true
+      if position then position.y = height end
+      if type(verticalSpeed) == "number" and verticalSpeed == verticalSpeed and math.abs(verticalSpeed) < math.huge then velocity.y = verticalSpeed end
+    end
+  end
   local x, y, z = gps.locate(.1, false)
   if x then
-    local now = os.clock()
     if previousPosition and previousSample then
       sampleDt = clamp(now - previousSample, .01, 1.5)
       velocity.x = velocity.x * .5 + ((x - previousPosition.x) / sampleDt) * .5
-      velocity.y = velocity.y * .5 + ((y - previousPosition.y) / sampleDt) * .5
+      if not altitudeSensorReady then velocity.y = velocity.y * .5 + ((y - previousPosition.y) / sampleDt) * .5 end
       velocity.z = velocity.z * .5 + ((z - previousPosition.z) / sampleDt) * .5
     end
-    position = {x=x, y=y, z=z}
+    position = {x=x, y=altitudeSensorReady and altitudeSensorHeight or y, z=z}
     previousPosition, previousSample = position, now
     lastGpsAt = now
-    if not altitude then altitude = math.floor(y + .5) end
+    if not altitude then altitude = math.floor(position.y + .5) end
     if mode == "WAITING FOR GPS" then mode = "HOLDING ALTITUDE" end
     return true
   elseif lastGpsAt and os.clock() - lastGpsAt > .5 then
@@ -115,7 +132,7 @@ local function pidStep(controller, error, measuredVelocity, dt)
   if raw == output or raw * error < 0 then controller.integral = candidate end
   return output
 end
-local function updateFlight()
+local function updateFlight(gpsFresh)
   if not position then
     vectorX, vectorY, power, burner = 0, 0, 0, 0
     if mode ~= "STOPPED" and mode ~= "GPS LOST - RE-ENGAGE" then mode = "WAITING FOR GPS" end
@@ -124,8 +141,8 @@ local function updateFlight()
   if mode == "STOPPED" or mode == "GPS LOST - RE-ENGAGE" then return end
   if not altitude then burner = 0; mode = "SET ALTITUDE"; return end
   local altitudeError = altitude - position.y
-  burner = math.floor(clamp(pid.altitude.bias + pidStep(pid.altitude, altitudeError, velocity.y, sampleDt), 0, 15) + .5)
-  if mode == "AUTOPILOT" and target then
+  burner = math.floor(clamp(pid.altitude.bias + pidStep(pid.altitude, altitudeError, velocity.y, altitudeSensorReady and altitudeDt or sampleDt), 0, 15) + .5)
+  if gpsFresh and mode == "AUTOPILOT" and target then
     local dx, dz = target.x - position.x, target.z - position.z
     if math.abs(dx) < .5 and math.abs(dz) < .5 and math.abs(velocity.x) < .12 and math.abs(velocity.z) < .12 then
       vectorX, vectorY, power, mode = 0, 0, 0, "DESTINATION REACHED"
@@ -369,7 +386,8 @@ local ok, err = pcall(function()
   basalt.schedule(function()
     while running do
       local success = pcall(function()
-        if locate() then updateFlight() end
+        local gpsFresh = locate()
+        updateFlight(gpsFresh)
         outputs()
       end)
       if not success then stop(); running = false; status.text = "Peripheral error: outputs stopped"; status.foreground = colors.red; basalt.stop(); return end
