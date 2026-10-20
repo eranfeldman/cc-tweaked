@@ -14,7 +14,7 @@ airship.lua
 
 Or copy `airship.lua` into a file on the computer and run `airship.lua`. The computer needs wireless GPS access and all eight peripherals named `liquid_vector_thruster_0` through `_7`.
 
-Attach a CC:Tweaked monitor (a 3-wide by 2-tall monitor works) to any computer side. On startup the app automatically uses the first attached monitor and switches to its compact control layout; with no monitor attached it uses the computer screen. Click/touch fields and buttons on the monitor, or use the computer keyboard for text entry.
+Attach a CC:Tweaked monitor (a 3-wide by 2-tall monitor works) to any computer side. The computer screen stays the control and text-entry console; the first attached monitor shows live flight data and touch controls. Enter all coordinates, altitude targets, and PID values on the computer itself. With no monitor attached, the computer screen shows the full interface.
 
 Put a Create Redstone Link transmitter against the computer's **front** (monitor side). Put `create:analog_lever` in both frequency slots on this transmitter and the burner receiver, in the same order. The app sends analog power 0–15 out the computer's front face to control the burners.
 
@@ -31,4 +31,4 @@ Starting values: horizontal `0.035 0.0005 0.18`; altitude `bias 4, P 1.0, I 0.03
 
 Test in a backup/creative world with short moves. If the ship overshoots horizontally, lower horizontal P a little or raise D; if it approaches too slowly, raise P slightly. For altitude, if it keeps rising at the target, lower bias; if it sinks, raise bias. Reduce altitude P or raise D if it bobs past the target. Make small changes and use **T** to save them.
 
-Basalt 2.5 requires HTTP access if you download it with `wget`; the app and `basalt.lua` must be in the same folder. The interface uses the computer's terminal; your peripheral list has no monitor. GPS is required for altitude control and autopilot. If GPS is lost during autopilot, outputs are cut and you must re-engage after the fix returns. The controller does not check obstacles or handle landing. The exact PID response depends on the ship, burner/link behavior, and GPS quality; the defaults have not been flight-tested.
+Basalt 2.5 requires HTTP access if you download it with `wget`; the app and `basalt.lua` must be in the same folder. GPS is required for altitude control and autopilot. If GPS is lost during autopilot, outputs are cut and you must re-engage after the fix returns. The controller does not check obstacles or handle landing. The exact PID response depends on the ship, burner/link behavior, and GPS quality; the defaults have not been flight-tested.

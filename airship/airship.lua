@@ -13,11 +13,13 @@ for _, name in ipairs(ids) do
 end
 
 local monitor = peripheral.find("monitor")
-local frame = monitor and basalt.createFrame(monitor) or basalt.getMainFrame()
+local frame = basalt.getMainFrame()
+local monitorFrame = monitor and basalt.createFrame(monitor)
 frame.background = colors.black
+if monitorFrame then monitorFrame.background = colors.black end
 local screenWidth, screenHeight
-if monitor then screenWidth, screenHeight = monitor.getSize() else screenWidth, screenHeight = term.getSize() end
-local compact = screenWidth < 49 or screenHeight < 20
+screenWidth, screenHeight = term.getSize()
+local compact = screenWidth < 49 or screenHeight < 19
 local position, target, altitude, mode = nil, nil, nil, "STARTING"
 local burner, vectorX, vectorY, power = 0, 0, 0, 0
 local calibrated = fs.exists("airship-calibrated")
@@ -132,6 +134,7 @@ local function updateFlight()
 end
 
 local status, pidSummary, posText, altText, sysText, xInput, heightInput, pidInput, calibrateButton
+local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton
 local showGainValues
 local function adjustAltitude(delta)
   if not position then status.text = "Waiting for GPS before changing altitude."; return end
@@ -160,7 +163,8 @@ local function confirmCalibration()
   if calibrationClick and os.clock() - calibrationClick < 8 then
     local file = fs.open("airship-calibrated", "w"); file.write("east front, X right, Y forward"); file.close()
     calibrated, calibrationClick = true, nil
-    calibrateButton.text, calibrateButton.background = "CALIBRATED", colors.green
+    if calibrateButton then calibrateButton.text, calibrateButton.background = "CALIBRATED", colors.green end
+    if monitorCalibrateButton then monitorCalibrateButton.text, monitorCalibrateButton.background = "CALIBRATED", colors.green end
     mode = "TEST CALIBRATED"
     status.text = "Calibration saved. Autopilot is ready."; status.foreground = colors.lime
   else
@@ -168,6 +172,26 @@ local function confirmCalibration()
     mode = "CALIBRATION CONFIRM"
     status.text = "Confirm within 8s: X+ south, Y+ east."; status.foreground = colors.orange
   end
+end
+
+if monitorFrame then
+  local width = monitor.getSize()
+  monitorFrame:addLabel({x=2, y=1, width=width-2, height=1, text="AIRSHIP / FLIGHT DECK", foreground=colors.white, background=colors.blue})
+  monitorStatus = monitorFrame:addLabel({x=2, y=2, width=width-2, height=1, text="Starting...", foreground=colors.yellow})
+  monitorPos = monitorFrame:addLabel({x=2, y=3, width=width-2, height=1, text="GPS --", foreground=colors.white})
+  monitorAlt = monitorFrame:addLabel({x=2, y=4, width=width-2, height=1, text="ALT -- / TARGET --", foreground=colors.lightBlue})
+  monitorSystem = monitorFrame:addLabel({x=2, y=5, width=width-2, height=1, text="BURNER 0/15  THRUST 0/15", foreground=colors.lightGray})
+  monitorFrame:addButton({x=2, y=6, width=8, height=1, text="ALT -", background=colors.orange}):onClick(function() adjustAltitude(-1) end)
+  monitorFrame:addButton({x=11, y=6, width=8, height=1, text="ALT +", background=colors.orange}):onClick(function() adjustAltitude(1) end)
+  monitorFrame:addButton({x=2, y=7, width=10, height=1, text="HOLD HERE", background=colors.blue}):onClick(holdHere)
+  monitorFrame:addButton({x=13, y=7, width=11, height=1, text="AUTOPILOT", background=colors.lime}):onClick(engageAutopilot)
+  monitorFrame:addButton({x=25, y=7, width=8, height=1, text="STOP", background=colors.red}):onClick(stop)
+  monitorFrame:addButton({x=2, y=8, width=8, height=1, text="TEST X-", background=colors.gray}):onClick(function() testVector(-.2, 0, "TEST X-") end)
+  monitorFrame:addButton({x=11, y=8, width=8, height=1, text="TEST X+", background=colors.gray}):onClick(function() testVector(.2, 0, "TEST X+") end)
+  monitorFrame:addButton({x=20, y=8, width=8, height=1, text="TEST FWD", background=colors.gray}):onClick(function() testVector(0, .2, "TEST Y+") end)
+  monitorFrame:addButton({x=29, y=8, width=8, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
+  monitorCalibrateButton = monitorFrame:addButton({x=2, y=9, width=14, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
+  monitorFrame:addLabel({x=17, y=9, width=width-17, height=1, text="type on PC", foreground=colors.lightGray})
 end
 
 if compact then
@@ -326,6 +350,12 @@ local function refresh()
   elseif mode == "CALIBRATION CONFIRM" then status.text, status.foreground = "Confirm calibration within 8 seconds", colors.orange
   elseif mode:match("^TEST ") then status.text, status.foreground = mode .. "  |  press HOLD to stop", colors.orange
   elseif mode == "STOPPED" then status.text, status.foreground = "OUTPUTS STOPPED", colors.red end
+  if monitorFrame then
+    monitorPos.text = position and ("X %.1f Y %.1f Z %.1f"):format(position.x, position.y, position.z) or "GPS not found"
+    monitorAlt.text = ("ALT %.1f / TARGET %.0f"):format(position and position.y or 0, altitude or 0)
+    monitorSystem.text = ("BURNER %d/15  THRUST %d/15"):format(burner, power)
+    monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
+  end
 end
 
 local ok, err = pcall(function()
