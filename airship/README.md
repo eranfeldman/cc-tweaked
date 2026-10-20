@@ -4,10 +4,11 @@ CC:Tweaked controller for eight Create Propulsion liquid vector thrusters. It re
 
 ## Install
 
-On the ship computer, run:
+In the computer terminal, install Basalt 2.5, download the updated controller beside it, and run it:
 
 ```text
-wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship.lua airship.lua
+wget run https://basalt.madefor.cc/2.5/install.lua minified
+wget -f https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship.lua airship.lua
 airship.lua
 ```
 
@@ -15,12 +16,11 @@ Or copy `airship.lua` into a file on the computer and run `airship.lua`. The com
 
 Put a Create Redstone Link transmitter against the computer's **front** (monitor side). Put `create:analog_lever` in both frequency slots on this transmitter and the burner receiver, in the same order. The app sends analog power 0–15 out the computer's front face to control the burners.
 
-## First flight
+## Using the UI
 
-1. Use a clear area and make sure the ship has fuel. The app takes over each connected thruster's throttle.
-2. Press **G** and enter destination `X Z` (example: `200 -700`).
-3. Check GPS and altitude. Up/Down changes the altitude target one block at a time. **H** holds the current altitude; **X** stops thrusters and burner signal.
-4. The ship front is configured as **east**. Autopilot assumes each thruster's local vector X moves ship-right (south) and Y moves ship-forward (east). Before enabling autopilot, make short low-thrust checks in an open area: **Right** tests X+, **Left** tests X−, **F** tests Y+, and **B** tests Y−. Press **H** to stop the test. Press **C** and type `YES` only after X+ moves south and Y+ moves east. The confirmation is saved on the computer.
-5. Press **A** to travel. It cuts thrust within two blocks of the destination and keeps the altitude target. Momentum may carry the ship beyond that point. Up/Down changes the altitude target; left/right/F/B are low-power vector checks. Press **H** to return to altitude hold or **X** to stop outputs.
+1. Use the colored dashboard buttons or keyboard: **G** focuses the destination field, type `X Z` and press Enter; **Up/Down** adjusts altitude; **H** holds here; **A** starts autopilot; **S** stops outputs.
+2. In a clear area, test the four low-power vector buttons or **Left/Right/F/B** keys. The ship front is configured as **east**; X+ should move south and Y+ should move east. Press **H** to stop each test.
+3. After confirming all four directions, click **CALIBRATE** twice within eight seconds or press **C** twice. The saved calibration lets **A** engage autopilot.
+4. Enter numeric X and Z coordinates and press Enter or click **SET DEST**, then engage autopilot. It cuts thrust within two blocks; momentum may carry the ship beyond the destination.
 
-The interface expects a normal ComputerCraft terminal: the provided peripheral list has no monitor peripheral. A GPS constellation is required for autopilot and altitude holding; if GPS is lost during autopilot, outputs are cut and the pilot must re-engage. The controller does not check obstacles or handle landing. Test in a backup world first: it has not been tested against your live ship physics, fuel use or Create link range.
+Basalt 2.5 requires HTTP access if you download it with `wget`; the app and `basalt.lua` must be in the same folder. The interface uses the computer's terminal; your peripheral list has no monitor. GPS is required for altitude holding and autopilot. If GPS is lost in flight, outputs are cut and you must re-engage after the fix returns. The controller does not check obstacles or handle landing. Test in a backup world first: it has not been tested against your live ship physics, fuel use or Create link range.
