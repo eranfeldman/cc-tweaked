@@ -14,6 +14,8 @@ airship.lua
 
 Or copy `airship.lua` into a file on the computer and run `airship.lua`. The computer needs wireless GPS access and all eight peripherals named `liquid_vector_thruster_0` through `_7`.
 
+Attach a CC:Tweaked monitor (a 3-wide by 2-tall monitor works) to any computer side. On startup the app automatically uses the first attached monitor and switches to its compact control layout; with no monitor attached it uses the computer screen. Click/touch fields and buttons on the monitor, or use the computer keyboard for text entry.
+
 Put a Create Redstone Link transmitter against the computer's **front** (monitor side). Put `create:analog_lever` in both frequency slots on this transmitter and the burner receiver, in the same order. The app sends analog power 0–15 out the computer's front face to control the burners.
 
 ## Using the UI
