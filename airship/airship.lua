@@ -66,7 +66,7 @@ local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 local function outputs()
   for _, thruster in pairs(thrusters) do
     thruster.setVector(vectorX, vectorY)
-    thruster.setThrust(power)
+    thruster.setThrustNormalized(power)
   end
   redstone.setAnalogOutput("front", burner)
 end
@@ -128,7 +128,7 @@ local function updateFlight()
     else
       vectorX = pidStep(pid.horizontalZ, dz, velocity.z, sampleDt)
       vectorY = pidStep(pid.horizontalX, dx, velocity.x, sampleDt)
-      power = (math.abs(vectorX) + math.abs(vectorY) > .015) and 12 or 0
+      power = clamp(math.sqrt(vectorX * vectorX + vectorY * vectorY) / .25 * .35, 0, .35)
     end
   end
 end
@@ -151,7 +151,7 @@ local function engageAutopilot()
 end
 local function testVector(x, y, label)
   axisTests[label] = true
-  vectorX, vectorY, power, mode = x, y, 5, label
+  vectorX, vectorY, power, mode = x, y, .33, label
   status.text = "Low-power test: " .. label .. "  |  Press HOLD to stop"
   status.foreground = colors.orange
 end
@@ -336,7 +336,7 @@ local function refresh()
   else
     posText.text = position and ("X " .. ("%.1f"):format(position.x) .. "  Y " .. ("%.1f"):format(position.y) .. "\nZ " .. ("%.1f"):format(position.z)) or "GPS not found"
     altText.text = ("Now %s\nTarget %s"):format(position and ("%.1f"):format(position.y) or "--", altitude and ("%.0f"):format(altitude) or "--")
-    sysText.text = ("Burner %d/15\nThrust %d/15"):format(burner, power)
+    sysText.text = ("Burner %d/15\nThrust %d/15"):format(burner, math.floor(power * 15 + .5))
   end
   if frame:getFocused() ~= heightInput then heightInput.text = altitude and tostring(math.floor(altitude + .5)) or "" end
   if frame:getFocused() ~= pidInput then showGainValues() end
@@ -353,7 +353,7 @@ local function refresh()
   if monitorFrame then
     monitorPos.text = position and ("X %.1f Y %.1f Z %.1f"):format(position.x, position.y, position.z) or "GPS not found"
     monitorAlt.text = ("ALT %.1f / TARGET %.0f"):format(position and position.y or 0, altitude or 0)
-    monitorSystem.text = ("BURNER %d/15  THRUST %d/15"):format(burner, power)
+    monitorSystem.text = ("BURNER %d/15  THRUST %d/15"):format(burner, math.floor(power * 15 + .5))
     monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
   end
 end
