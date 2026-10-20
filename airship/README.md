@@ -8,7 +8,7 @@ In the computer terminal, install Basalt 2.5, download the updated controller be
 
 ```text
 wget run https://basalt.madefor.cc/2.5/install.lua minified
-wget -f https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship.lua airship.lua
+wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship.lua airship.lua
 airship.lua
 ```
 
@@ -31,4 +31,4 @@ Starting values: horizontal `0.035 0.0005 0.18`; altitude `bias 4, P 1.0, I 0.03
 
 Test in a backup/creative world with short moves. The 35% throttle cap is a cautious starting point, not a guarantee against overshoot: inertia, GPS noise, and update delay still matter, and a very low throttle may not overcome drag. If the ship overshoots horizontally, lower horizontal P a little or raise D; if it approaches too slowly, raise P slightly. For altitude, if it keeps rising at the target, lower bias; if it sinks, raise bias. Reduce altitude P or raise D if it bobs past the target. Make small changes and use **T** to save them.
 
-Basalt 2.5 requires HTTP access if you download it with `wget`; the app and `basalt.lua` must be in the same folder. GPS is required for altitude control and autopilot. If GPS is lost during autopilot, outputs are cut and you must re-engage after the fix returns. The controller does not check obstacles or handle landing. The exact PID response depends on the ship, burner/link behavior, and GPS quality; the defaults have not been flight-tested.
+The controller samples GPS with a 0.5-second timeout and waits 0.1 seconds between control cycles, so altitude and steering respond faster than the previous one-second cycle. Actual timing depends on GPS response. Basalt 2.5 requires HTTP access if you download it with `wget`; the app and `basalt.lua` must be in the same folder. GPS is required for altitude control and autopilot. If GPS is lost during autopilot, outputs are cut and you must re-engage after the fix returns. The controller does not check obstacles or handle landing. The exact PID response depends on the ship, burner/link behavior, and GPS quality; the defaults have not been flight-tested.

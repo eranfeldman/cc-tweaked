@@ -60,7 +60,7 @@ end
 readGainFile()
 local velocity = {x=0, y=0, z=0}
 local previousPosition, previousSample
-local sampleDt = 1
+local sampleDt = .5
 
 local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 local function outputs()
@@ -79,11 +79,11 @@ local function setFlightMode(nextMode)
   pid.horizontalX.integral, pid.horizontalZ.integral, pid.altitude.integral = 0, 0, 0
 end
 local function locate()
-  local x, y, z = gps.locate(1, false)
+  local x, y, z = gps.locate(.5, false)
   if x then
     local now = os.clock()
     if previousPosition and previousSample then
-      sampleDt = clamp(now - previousSample, .25, 2)
+      sampleDt = clamp(now - previousSample, .1, 1.5)
       velocity.x = velocity.x * .5 + ((x - previousPosition.x) / sampleDt) * .5
       velocity.y = velocity.y * .5 + ((y - previousPosition.y) / sampleDt) * .5
       velocity.z = velocity.z * .5 + ((z - previousPosition.z) / sampleDt) * .5
@@ -359,14 +359,14 @@ local function refresh()
 end
 
 local ok, err = pcall(function()
-  local _, startY = gps.locate(2, false)
+  local _, startY = gps.locate(.5, false)
   altitude = startY and math.floor(startY + .5) or nil
   if altitude then mode = "HOLDING ALTITUDE" else mode = "WAITING FOR GPS" end
   basalt.schedule(function()
     while running do
       local success = pcall(function() locate(); updateFlight(); outputs(); refresh() end)
       if not success then stop(); running = false; status.text = "Peripheral error: outputs stopped"; status.foreground = colors.red; basalt.stop(); return end
-      sleep(1)
+      sleep(.1)
     end
   end)
   basalt.schedule(function()
