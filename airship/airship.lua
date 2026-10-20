@@ -22,7 +22,8 @@ local screenWidth, screenHeight
 screenWidth, screenHeight = term.getSize()
 local compact = screenWidth < 49 or screenHeight < 19
 local position, target, altitude, mode = nil, nil, nil, "STARTING"
-local burner, vectorX, vectorY, power = 0, 0, 0, 0
+local burner, burnerCommand, vectorX, vectorY, power = 0, 0, 0, 0, 0
+local burnerSlewPerSecond = 6
 local calibrated = fs.exists("airship-calibrated")
 local running, calibrationClick = true, nil
 local axisTests = {}
@@ -30,7 +31,7 @@ local axisTests = {}
 local pid = {
   horizontalX = {p=.035, i=.0005, d=.18, limit=.25, integral=0},
   horizontalZ = {p=.035, i=.0005, d=.18, limit=.25, integral=0},
-  altitude = {p=1.0, i=.03, d=2.0, bias=4, limit=11, integral=0, integralLimit=60}
+  altitude = {p=.45, i=.005, d=2.5, bias=4, limit=11, integral=0, integralLimit=30}
 }
 local gainLimits = {{.005,.15}, {0,.01}, {0,.8}, {0,12}, {.1,3}, {0,.2}, {0,5}}
 local function applyGainValues(values)
@@ -77,7 +78,7 @@ local function outputs()
   redstone.setAnalogOutput("front", burner)
 end
 local function stop()
-  vectorX, vectorY, power, burner, mode = 0, 0, 0, 0, "STOPPED"
+  vectorX, vectorY, power, burner, burnerCommand, mode = 0, 0, 0, 0, 0, "STOPPED"
   pcall(outputs)
 end
 local function setFlightMode(nextMode)
@@ -118,7 +119,7 @@ local function locate()
     velocity = {x=0, y=0, z=0}
     lastGpsAt = nil
     if mode ~= "STOPPED" then
-      vectorX, vectorY, power, burner = 0, 0, 0, 0
+      vectorX, vectorY, power, burner, burnerCommand = 0, 0, 0, 0, 0
       mode = mode == "AUTOPILOT" and "GPS LOST - RE-ENGAGE" or "WAITING FOR GPS"
     end
   end
@@ -134,14 +135,17 @@ local function pidStep(controller, error, measuredVelocity, dt)
 end
 local function updateFlight(gpsFresh)
   if not position then
-    vectorX, vectorY, power, burner = 0, 0, 0, 0
+    vectorX, vectorY, power, burner, burnerCommand = 0, 0, 0, 0, 0
     if mode ~= "STOPPED" and mode ~= "GPS LOST - RE-ENGAGE" then mode = "WAITING FOR GPS" end
     return
   end
   if mode == "STOPPED" or mode == "GPS LOST - RE-ENGAGE" then return end
-  if not altitude then burner = 0; mode = "SET ALTITUDE"; return end
+  if not altitude then burner, burnerCommand = 0, 0; mode = "SET ALTITUDE"; return end
   local altitudeError = altitude - position.y
-  burner = math.floor(clamp(pid.altitude.bias + pidStep(pid.altitude, altitudeError, velocity.y, altitudeSensorReady and altitudeDt or sampleDt), 0, 15) + .5)
+  local dt = altitudeSensorReady and altitudeDt or sampleDt
+  local desiredBurner = clamp(pid.altitude.bias + pidStep(pid.altitude, altitudeError, velocity.y, dt), 0, 15)
+  burnerCommand = burnerCommand + clamp(desiredBurner - burnerCommand, -burnerSlewPerSecond * dt, burnerSlewPerSecond * dt)
+  burner = math.floor(burnerCommand + .5)
   if gpsFresh and mode == "AUTOPILOT" and target then
     local dx, dz = target.x - position.x, target.z - position.z
     if math.abs(dx) < .5 and math.abs(dz) < .5 and math.abs(velocity.x) < .12 and math.abs(velocity.z) < .12 then
