@@ -8,11 +8,13 @@ for _, name in ipairs(fs.list("/")) do
 end
 if not latest then error("No airship-pid-diagnostic*.csv found. Run diagnostic.lua first.") end
 local file=assert(fs.open("/"..latest,"r")); local text=file.readAll(); file.close()
-local overshoot={X=0,Z=0}; local samples={X=0,Z=0}
+local overshoot={X=0,Z=0}; local samples={X=0,Z=0}; local runs={AUTO_X_PLUS=false,AUTO_X_MINUS=false,AUTO_Z_PLUS=false,AUTO_Z_MINUS=false}; local complete=false
 for line in text:gmatch("[^\r\n]+") do
+  if line=="# Finished: complete" then complete=true end
   local c={}; for value in (line..","):gmatch("(.-),") do c[#c+1]=value end
   local phase=c[2]
   if phase and phase:match("^AUTO_[XZ]_") then
+    runs[phase]=true
     local axis=phase:sub(6,6)
     local actual=tonumber(axis=="X" and c[15] or c[16])
     local target=tonumber(axis=="X" and c[19] or c[20])
@@ -23,7 +25,9 @@ for line in text:gmatch("[^\r\n]+") do
     end
   end
 end
-if samples.X==0 or samples.Z==0 then error("Latest diagnostic is missing X or Z autopilot runs; no gains changed.") end
+if not complete or not runs.AUTO_X_PLUS or not runs.AUTO_X_MINUS or not runs.AUTO_Z_PLUS or not runs.AUTO_Z_MINUS then
+  error("Latest diagnostic must finish all four X/Z autopilot legs; no gains changed.")
+end
 
 local gains={.035,.0005,.18}
 if fs.exists("/airship-pid.cfg") then
@@ -33,13 +37,14 @@ if fs.exists("/airship-pid.cfg") then
 end
 local peak=math.max(overshoot.X,overshoot.Z)
 if peak>.25 then
-  gains[1]=math.max(.005,gains[1]*math.max(.65,1-math.min(.35,peak*.04)))
-  gains[3]=math.min(.8,gains[3]*(1+math.min(.5,peak*.03)))
+  local correction=math.min(.35,.1+(peak-.25)*.08)
+  gains[1]=math.max(.005,gains[1]*(1-correction))
+  gains[3]=math.min(.8,gains[3]*(1+math.min(.5,correction)))
 elseif peak<.05 then gains[1]=math.min(.15,gains[1]*1.08) end
 print("Analyzed: "..latest)
 print(("Peak overshoot: X %.2f blocks, Z %.2f blocks"):format(overshoot.X,overshoot.Z))
 print(("Suggested horizontal P I D: %.4f %.5f %.3f"):format(gains[1],gains[2],gains[3]))
-print("Heuristic starting point only; repeat the diagnostic and compare results.")
+print("Conservative heuristic only; run another full diagnostic to check whether it improved.")
 write("Save suggested horizontal gains to airship-pid.cfg? [y/N] ")
 if read():lower()~="y" then print("No changes made."); return end
 local tmp="/airship-pid.cfg.tmp"

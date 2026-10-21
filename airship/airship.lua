@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.18"
+local AIRSHIP_BUILD = "1.2.19"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -162,6 +162,7 @@ local gpuRenderRevision = 0
 local learnedHover = {}
 local altitudeSensorPressure
 local shipHeading
+local headingSampledAt
 local yawRate
 local measuredThrust = 0
 local status, pidSummary, posText, altText, sysText, xInput, heightInput, pidInput, calibrateButton
@@ -326,7 +327,9 @@ local function locate()
   end
   if navigationTable then
     local ok, heading = pcall(navigationTable.getHeadingRad)
-    if ok and type(heading) == "number" and heading == heading and math.abs(heading) < math.huge then shipHeading = heading end
+    if ok and type(heading) == "number" and heading == heading and math.abs(heading) < math.huge then
+      shipHeading, headingSampledAt = heading, now
+    end
   end
   if gimbalSensor then
     local ok, rates = pcall(gimbalSensor.getAngularRatesRad)
@@ -372,12 +375,17 @@ local function pidStep(controller, error, measuredVelocity, dt)
   return output
 end
 local function updateFlight(gpsFresh)
+  if mode == "AUTOPILOT" and (not lastGpsAt or os.clock() - lastGpsAt > .5) then
+    vectorX, vectorY, power = 0, 0, 0
+    mode = "GPS LOST - RE-ENGAGE"
+    return
+  end
   if not position then
     vectorX, vectorY, power, burner, burnerCommand = 0, 0, 0, 0, 0
     if mode ~= "STOPPED" and mode ~= "GPS LOST - RE-ENGAGE" then mode = "WAITING FOR GPS" end
     return
   end
-  if mode == "STOPPED" or mode == "GPS LOST - RE-ENGAGE" then return end
+  if mode == "STOPPED" or mode == "GPS LOST - RE-ENGAGE" or mode == "HEADING LOST - RE-ENGAGE" then return end
   if not altitude then mode = "SET ALTITUDE"; return end
   if burnerSweep then
     burnerCommand = burnerCommand + clamp(burnerSweep.level - burnerCommand, -burnerSlewPerSecond * sampleDt, burnerSlewPerSecond * sampleDt)
@@ -393,9 +401,9 @@ local function updateFlight(gpsFresh)
   end
   if gpsFresh and mode == "AUTOPILOT" and target then
     local dx, dz = target.x - position.x, target.z - position.z
-    if not shipHeading then
+    if not shipHeading or not headingSampledAt or os.clock() - headingSampledAt > 1 then
       vectorX, vectorY, power = 0, 0, 0
-      mode = "HEADING SENSOR MISSING"
+      mode = "HEADING LOST - RE-ENGAGE"
       return
     end
     if math.abs(dx) < .5 and math.abs(dz) < .5 and math.abs(velocity.x) < .12 and math.abs(velocity.z) < .12 then
@@ -705,7 +713,7 @@ local function holdHere()
 end
 local function engageAutopilot()
   if calibrationRunning then status.text = "Wait for direction calibration to finish."; status.foreground = colors.orange; return end
-  if not navigationTable or not shipHeading then status.text = "Navigation table heading unavailable; autopilot cannot steer while ship rotates."; status.foreground = colors.red; return end
+  if not navigationTable or not shipHeading or not headingSampledAt or os.clock() - headingSampledAt > 1 then status.text = "Fresh navigation heading required; autopilot cannot steer safely while ship rotates."; status.foreground = colors.red; return end
   if not calibrated then status.text = "Run low-power direction calibration first."; status.foreground = colors.orange
   elseif not position or not target then status.text = "GPS fix and destination are required."; status.foreground = colors.red
   else setFlightMode("AUTOPILOT"); status.text = "Autopilot engaged"; status.foreground = colors.lime end
@@ -1026,6 +1034,7 @@ local function refresh()
   if monitorGpuNotice then monitorGpuNotice.text = directGpuError and ("GPU: " .. directGpuError) or "GPU ready" end
   if mode == "AUTOPILOT" then status.text, status.foreground = "AUTOPILOT ACTIVE  |  EAST-FACING SHIP", colors.lime
   elseif mode == "GPS LOST - RE-ENGAGE" then status.text, status.foreground = mode, colors.red
+  elseif mode == "HEADING LOST - RE-ENGAGE" then status.text, status.foreground = mode, colors.red
   elseif mode == "WAITING FOR GPS" then status.text, status.foreground = "Waiting for GPS signal...", colors.orange
   elseif mode == "HOLDING ALTITUDE" then status.text, status.foreground = "ALTITUDE HOLD ACTIVE", colors.lightBlue
   elseif mode == "DESTINATION REACHED" then status.text, status.foreground = "DESTINATION REACHED  |  HOLDING ALTITUDE", colors.lime
