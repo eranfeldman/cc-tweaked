@@ -479,6 +479,7 @@ local function renderDirectMonitor()
 end
 local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton, monitorGpuNotice, compactGpuNotice
 local showGainValues
+local lastGpuRender = 0
 local function adjustAltitude(delta)
   if not position then status.text = "Waiting for GPS before changing altitude."; return end
   altitude = (altitude or math.floor(position.y + .5)) + delta
@@ -733,9 +734,10 @@ local function refresh()
     monitorSystem.text = ("BURNER %d/15 THRUST %.1f/15"):format(burner, measuredThrust)
     monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
   end
-  if directGpu then
+  if directGpu and os.clock() - lastGpuRender >= .25 then
     local ok = pcall(renderDirectMonitor)
-    if not ok then directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting" end
+    if ok then lastGpuRender = os.clock()
+    else directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting" end
   end
 end
 
