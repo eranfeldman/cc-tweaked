@@ -462,14 +462,15 @@ local function confirmCalibration()
 end
 
 if directGpu then
-  local y, h, gap = directHeight - 48, 36, 8
-  local x, bw = 12, math.floor((directWidth - 24 - 5 * gap) / 6)
+  local y, h, gap = directHeight - 48, 36, 6
+  local x, bw = 12, math.floor((directWidth - 24 - 6 * gap) / 7)
   addGpuButton(x, y, bw, h, "ALT -", {35,62,91}, function() adjustAltitude(-1) end)
   addGpuButton(x+(bw+gap), y, bw, h, "ALT +", {35,62,91}, function() adjustAltitude(1) end)
   addGpuButton(x+2*(bw+gap), y, bw, h, "HOLD", {35,62,91}, holdHere)
-  addGpuButton(x+3*(bw+gap), y, bw, h, "SWEEP", {130,78,31}, startBurnerSweep)
-  addGpuButton(x+4*(bw+gap), y, bw, h, "MANUAL", {100,75,35}, toggleManualBurner)
-  addGpuButton(x+5*(bw+gap), y, bw, h, "STOP", {125,48,56}, stop)
+  addGpuButton(x+3*(bw+gap), y, bw, h, "AUTO", {42,112,83}, engageAutopilot)
+  addGpuButton(x+4*(bw+gap), y, bw, h, "SWEEP", {130,78,31}, startBurnerSweep)
+  addGpuButton(x+5*(bw+gap), y, bw, h, "MANUAL", {100,75,35}, toggleManualBurner)
+  addGpuButton(x+6*(bw+gap), y, bw, h, "STOP", {125,48,56}, stop)
 end
 
 if monitorFrame then
