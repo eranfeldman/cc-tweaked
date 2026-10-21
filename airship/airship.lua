@@ -101,7 +101,7 @@ local sweepConfirmAt
 local sweepSummary
 local sweepSummaryUntil
 local gpuButtons = {}
-local savedGpuButtons = {}
+local gpuTab, gpuHeightPage = "FLIGHT", 1
 local learnedHover = {}
 local altitudeSensorPressure
 local measuredThrust = 0
@@ -325,12 +325,15 @@ local function updateFlight(gpsFresh)
   end
 end
 
+local function savedHoverPoints()
+  local points = {}
+  for _, sample in pairs(learnedHover) do if type(sample.height) == "number" then points[#points + 1] = sample end end
+  table.sort(points, function(a,b) return a.height < b.height end)
+  return points
+end
 local function savedAltitudes()
   local heights = {}
-  for _, sample in pairs(learnedHover) do
-    if type(sample.height) == "number" then heights[#heights + 1] = sample.height end
-  end
-  table.sort(heights)
+  for _, sample in ipairs(savedHoverPoints()) do heights[#heights + 1] = sample.height end
   return heights
 end
 local function selectAltitudePreset()
@@ -464,85 +467,102 @@ local function readThrusterPower()
   measuredThrust = count > 0 and total / count * 15 or 0
 end
 
-local function addGpuButton(x, y, w, h, label, color, action)
-  gpuButtons[#gpuButtons + 1] = {x=x, y=y, w=w, h=h, label=label, color=color, action=action}
+local function gpuLayout()
+  local w, h = directWidth, directHeight
+  local margin = math.max(12, math.floor(w * .02))
+  local gap = math.max(8, math.floor(w * .012))
+  local titleH = math.max(40, math.floor(h * .08))
+  local tabY, tabH = titleH, math.max(38, math.floor(h * .07))
+  local contentY = tabY + tabH + math.max(12, math.floor(h * .025))
+  local buttonH = math.max(34, math.floor(h * .07))
+  local buttonY = h - margin - buttonH
+  return {w=w,h=h,margin=margin,gap=gap,titleH=titleH,tabY=tabY,tabH=tabH,contentY=contentY,buttonH=buttonH,buttonY=buttonY}
+end
+local function addGpuButton(x, y, w, h, label, color, action, align)
+  gpuButtons[#gpuButtons + 1] = {x=x,y=y,w=w,h=h,label=label,color=color,action=action,align=align}
 end
 local function renderDirectMonitor()
   if not directGpu then return end
   local gpu, display = directGpu, directDisplay
-  local w, h = directWidth, directHeight
-  local function rect(x, y, rw, rh, color) gpu.fillRect(display, x, y, rw, rh, color[1], color[2], color[3]) end
-  local function txt(value, x, y, size, color, style)
-    gpu.drawText(display, tostring(value), x, y, color[1], color[2], color[3], "Arial", size, style or "plain")
-  end
-  local bg, panel, ink, muted = {10,17,29}, {20,32,48}, {229,240,250}, {143,164,184}
-  savedGpuButtons = {}
-  if h >= 320 then
-    local heights = savedAltitudes()
-    local buttonGap, buttonY = 6, 168
-    local buttonW = math.floor((w - 32 - 3 * buttonGap) / 4)
-    for i = 1, math.min(4, #heights) do
-      local index = i
-      local height = heights[i]
-      savedGpuButtons[#savedGpuButtons + 1] = {
-        x=16 + (i - 1) * (buttonW + buttonGap), y=buttonY, w=buttonW, h=26,
-        label=("Y %.0f"):format(height), color={35,62,91}, action=function() selectSavedAltitude(index) end,
-      }
+  local l = gpuLayout()
+  local w, h = l.w, l.h
+  local function rect(x,y,rw,rh,color) gpu.fillRect(display,x,y,rw,rh,color[1],color[2],color[3]) end
+  local function txt(value,x,y,size,color,style) gpu.drawText(display,tostring(value),x,y,color[1],color[2],color[3],"Arial",size,style or "plain") end
+  local bg,panel,ink,muted = {10,17,29},{20,32,48},{229,240,250},{143,164,184}
+  gpu.clear(display,bg[1],bg[2],bg[3])
+  rect(0,0,w,l.titleH,{15,29,47})
+  local titleSize = math.max(18,math.floor(h*.032))
+  txt("AIRSHIP",l.margin,math.floor((l.titleH-titleSize)/2),titleSize,ink,"bold")
+  txt(mode == "BURNER SWEEP" and "CALIBRATING" or mode,math.floor(w*.28),math.floor((l.titleH-titleSize)/2),math.max(14,math.floor(titleSize*.7)),mode == "BURNER SWEEP" and {255,190,90} or {88,220,190},"bold")
+  local contentY = l.contentY
+  if gpuTab == "FLIGHT" then
+    local gap = l.gap
+    local cardW = math.floor((w-2*l.margin-2*gap)/3)
+    local cardY, cardH = contentY, math.floor(h*.29)
+    local xs = {l.margin,l.margin+cardW+gap,l.margin+2*(cardW+gap)}
+    for _,x in ipairs(xs) do rect(x,cardY,cardW,cardH,panel) end
+    local small,big = math.max(14,math.floor(h*.022)),math.max(28,math.floor(h*.055))
+    txt("ALTITUDE",xs[1]+14,cardY+12,small,muted,"bold")
+    txt(position and ("%.1f m"):format(position.y) or "--",xs[1]+14,cardY+math.floor(cardH*.34),big,ink,"bold")
+    local mappedLevel
+    for _,sample in pairs(learnedHover) do if sample.height and altitude and math.abs(sample.height-altitude)<.01 then mappedLevel=sample.level; break end end
+    txt(("TARGET %s  |  BURNER %s"):format(altitude and ("%.0f"):format(altitude) or "--",mappedLevel and tostring(mappedLevel) or "--"),xs[1]+14,cardY+math.floor(cardH*.70),small,muted)
+    txt("VERTICAL SPEED",xs[2]+14,cardY+12,small,muted,"bold")
+    txt(("%.2f"):format(velocity.y),xs[2]+14,cardY+math.floor(cardH*.34),big,ink,"bold")
+    txt("blocks / sec",xs[2]+14,cardY+math.floor(cardH*.70),small,muted)
+    local speedX,speedY,speedW=xs[2]+14,cardY+math.floor(cardH*.84),cardW-28
+    rect(speedX,speedY,speedW,math.max(6,math.floor(h*.01)),{57,73,91})
+    local ratio=math.max(-1,math.min(1,velocity.y/1.5)); local center=speedX+math.floor(speedW/2)
+    rect(center,speedY,2,math.max(6,math.floor(h*.01)),{143,164,184})
+    if ratio~=0 then local bar=math.max(2,math.floor(math.abs(ratio)*speedW/2)); rect(ratio>0 and center or center-bar,speedY,bar,math.max(6,math.floor(h*.01)),ratio>0 and {55,205,160} or {255,190,90}) end
+    txt("BURNER",xs[3]+14,cardY+12,small,muted,"bold")
+    txt(("%d / 15"):format(burner),xs[3]+14,cardY+math.floor(cardH*.34),big,{255,190,90},"bold")
+    txt(("THRUST %.1f / 15"):format(measuredThrust),xs[3]+14,cardY+math.floor(cardH*.70),small,muted)
+    local detailY=cardY+cardH+math.max(14,math.floor(h*.09)); local detailH=l.buttonY-detailY-l.margin
+    rect(l.margin,detailY,w-2*l.margin,detailH,panel)
+    local detailFont=math.max(11,math.min(small,math.floor(detailH*.19)))
+    txt("FLIGHT STATUS",l.margin+14,detailY+8,detailFont,muted,"bold")
+    txt(position and ("GPS  X %.1f     Y %.1f     Z %.1f"):format(position.x,position.y,position.z) or "GPS SIGNAL LOST",l.margin+14,detailY+math.floor(detailH*.34),detailFont,position and ink or {255,110,110})
+    txt(("MODE  %s     AVIONICS  %s     CALIBRATION POINTS  %d"):format(mode,altitudeSensorReady and "READY" or "MISSING",#savedHoverPoints()),l.margin+14,detailY+math.floor(detailH*.62),detailFont,ink)
+    txt(target and ("DESTINATION  X %.0f   Z %.0f"):format(target.x,target.z) or "NO DESTINATION SET",l.margin+14,detailY+math.floor(detailH*.82),detailFont,muted)
+  elseif gpuTab == "CALIBRATION" then
+    local titleSize=math.max(18,math.floor(h*.032))
+    txt("HOVER CALIBRATION BY BURNER LEVEL",l.margin,contentY,titleSize,ink,"bold")
+    txt("15  →  5",l.margin,contentY+titleSize+10,math.max(14,math.floor(h*.023)),muted)
+    local barY=contentY+titleSize+math.max(34,math.floor(h*.07))
+    local barGap=math.max(6,math.floor(w*.008)); local barW=math.floor((w-2*l.margin-10*barGap)/11)
+    for i=0,10 do
+      local level=15-i; local x=l.margin+i*(barW+barGap); local marked=false
+      for _,sample in pairs(learnedHover) do if sample.level==level then marked=true; break end end
+      local active=burnerSweep and burnerSweep.level==level
+      rect(x,barY,barW,math.max(18,math.floor(h*.045)),active and {255,180,72} or marked and {55,205,160} or {57,73,91})
+      txt(level,x+4,barY+math.max(22,math.floor(h*.05)),math.max(12,math.floor(h*.02)),marked and {115,235,195} or muted)
     end
+    local saved=0; for _ in pairs(learnedHover) do saved=saved+1 end
+    txt(("Saved points: %d     Burner: %d / 15     Vertical speed: %.2f"):format(saved,burner,velocity.y),l.margin,barY+math.floor(h*.11),math.max(15,math.floor(h*.025)),ink)
+    if burnerSweep then txt(("SWEEP LEVEL %d   SAVED %d/11   SKIPPED %d"):format(burnerSweep.level,burnerSweep.saved,burnerSweep.skipped),l.margin,barY+math.floor(h*.17),math.max(15,math.floor(h*.025)),{255,190,90},"bold")
+    elseif sweepSummary then txt(sweepSummary,l.margin,barY+math.floor(h*.17),math.max(14,math.floor(h*.022)),{255,190,90})
+    else txt("SWEEP requires two taps to confirm. Each settled level saves automatically.",l.margin,barY+math.floor(h*.17),math.max(14,math.floor(h*.022)),muted) end
+    local detailY=barY+math.floor(h*.25); local detailH=l.buttonY-detailY-l.margin
+    rect(l.margin,detailY,w-2*l.margin,detailH,panel)
+    local detailFont=math.max(11,math.min(math.floor(h*.023),math.floor(detailH*.2)))
+    txt("SENSOR / SWEEP DETAIL",l.margin+14,detailY+8,detailFont,muted,"bold")
+    txt(("AVIONICS ALTITUDE  %s     PRESSURE  %s"):format(altitudeSensorHeight and ("%.1f"):format(altitudeSensorHeight) or "--",altitudeSensorPressure and ("%.3f"):format(altitudeSensorPressure) or "--"),l.margin+14,detailY+math.floor(detailH*.38),detailFont,ink)
+    local stable=burnerSweep and burnerSweep.stableSince and ("%.1f sec"):format(os.clock()-burnerSweep.stableSince) or "--"
+    txt(("CURRENT OUTPUT  %d / 15     SETTLED  %s     GPS  %s"):format(burner,stable,position and "OK" or "LOST"),l.margin+14,detailY+math.floor(detailH*.68),detailFont,ink)
+  else
+    local heights=savedHoverPoints()
+    local rowH=math.max(32,math.floor(h*.052)); local rowGap=math.max(4,math.floor(h*.008))
+    local rows=math.max(1,math.floor((l.buttonY-contentY-math.max(32,math.floor(h*.05))-l.margin)/(rowH+rowGap)))
+    local pages=math.max(1,math.ceil(#heights/rows)); gpuHeightPage=math.max(1,math.min(gpuHeightPage,pages))
+    txt(("SAVED ALTITUDES   %d POINTS   PAGE %d / %d"):format(#heights,gpuHeightPage,pages),l.margin,contentY,math.max(18,math.floor(h*.032)),ink,"bold")
+    if #heights==0 then txt("No saved calibration heights yet.",l.margin,contentY+math.floor(h*.09),math.max(16,math.floor(h*.026)),muted) end
   end
-  gpu.clear(display, bg[1], bg[2], bg[3])
-  rect(0, 0, w, 42, {15,29,47})
-  txt("A I R S H I P", 16, 10, 22, ink, "bold")
-  txt(mode == "BURNER SWEEP" and "CALIBRATING" or mode, math.floor(w * .47), 14, 15, mode == "BURNER SWEEP" and {255,190,90} or {88,220,190}, "bold")
-  local gap, cardW = 12, math.floor((w - 36) / 3)
-  local cardY, cardH = 54, 76
-  for i=0,2 do rect(12 + i * (cardW + gap), cardY, cardW, cardH, panel) end
-  txt("ALTITUDE", 23, cardY + 10, 12, muted, "bold")
-  txt(position and ("%.1f m"):format(position.y) or "--", 23, cardY + 33, 27, ink, "bold")
-  local mappedLevel
-  for _, sample in pairs(learnedHover) do if sample.height and altitude and math.abs(sample.height-altitude) < .01 then mappedLevel = sample.level; break end end
-  txt(("TARGET %s  |  BURNER %s"):format(altitude and ("%.0f"):format(altitude) or "--", mappedLevel and tostring(mappedLevel) or "--"), 23, cardY + 60, 12, muted)
-  txt("VERTICAL SPEED", 23 + cardW + gap, cardY + 10, 12, muted, "bold")
-  txt(("%.2f"):format(velocity.y), 23 + cardW + gap, cardY + 33, 27, ink, "bold")
-  txt("blocks / sec", 23 + cardW + gap, cardY + 60, 12, muted)
-  local speedX, speedY, speedW = 23 + cardW + gap, cardY + 75, cardW - 22
-  rect(speedX, speedY, speedW, 6, {57,73,91})
-  local speedRatio = math.max(-1, math.min(1, velocity.y / 1.5))
-  local centerX = speedX + math.floor(speedW / 2)
-  rect(centerX, speedY, 2, 6, {143,164,184})
-  if speedRatio ~= 0 then
-    local barW = math.max(2, math.floor(math.abs(speedRatio) * speedW / 2))
-    rect(speedRatio > 0 and centerX or centerX - barW, speedY, barW, 6, speedRatio > 0 and {55,205,160} or {255,190,90})
-  end
-  txt("BURNER", 23 + 2 * (cardW + gap), cardY + 10, 12, muted, "bold")
-  txt(("%d / 15"):format(burner), 23 + 2 * (cardW + gap), cardY + 33, 27, {255,190,90}, "bold")
-  txt(("THRUST  %.1f / 15"):format(measuredThrust), 23 + 2 * (cardW + gap), cardY + 60, 12, muted)
-  txt(position and ("GPS  X %.1f     Z %.1f"):format(position.x, position.z) or "GPS SIGNAL LOST", 16, 145, 15, position and ink or {255,110,110})
-  local baseY = math.floor(h * .62)
-  txt("HOVER CALIBRATION   15  →  5", 16, baseY, 14, muted, "bold")
-  for i=0,10 do
-    local level = 15 - i
-    local x = 16 + i * (math.floor((w - 32) / 11))
-    local marked = false
-    for _, sample in pairs(learnedHover) do if sample.level == level then marked = true; break end end
-    local active = burnerSweep and burnerSweep.level == level
-    rect(x, baseY + 24, math.max(12, math.floor((w - 48) / 13)), 12, active and {255,180,72} or marked and {55,205,160} or {57,73,91})
-    txt(level, x + 2, baseY + 42, 10, marked and {115,235,195} or muted)
-  end
-  if burnerSweep then
-    txt(("LEVEL %d   SAVED %d/11   SKIPPED %d"):format(burnerSweep.level, burnerSweep.saved, burnerSweep.skipped), 16, baseY + 62, 13, {255,190,90}, "bold")
-  elseif sweepSummary then txt(sweepSummary, 16, baseY + 62, 12, {255,190,90})
-  else txt("Tap SWEEP twice to confirm. Levels save as soon as stable.", 16, baseY + 62, 12, muted) end
-  local learnedCount = 0
-  for _ in pairs(learnedHover) do learnedCount = learnedCount + 1 end
-  txt(("GPS %s   AVIONICS %s   SAVED %d"):format(position and "OK" or "LOST", altitudeSensorReady and "OK" or "MISSING", learnedCount), 16, baseY + 80, 12, muted)
-  for _, b in ipairs(savedGpuButtons) do
-    rect(b.x, b.y, b.w, b.h, b.color)
-    txt(b.label, b.x + 8, b.y + math.floor((b.h - 16) / 2), 12, ink, "bold")
-  end
-  for _, b in ipairs(gpuButtons) do
-    rect(b.x, b.y, b.w, b.h, b.color)
-    txt(b.label, b.x + math.max(4, math.floor((b.w - #b.label * 8) / 2)), b.y + math.floor((b.h - 18) / 2), 14, ink, "bold")
+  for _,b in ipairs(gpuButtons) do
+    rect(b.x,b.y,b.w,b.h,b.color)
+    local textSize=math.max(13,math.floor(h*.022))
+    local tx=b.align=="left" and b.x+12 or b.x+math.max(6,math.floor((b.w-#b.label*textSize*.55)/2))
+    txt(b.label,tx,b.y+math.floor((b.h-textSize)/2),textSize,ink,"bold")
   end
   gpu.updateDisplay(display)
 end
@@ -587,22 +607,57 @@ local function confirmCalibration()
   end
 end
 
-local gpuButtonsReady = false
 local function createGpuButtons()
-  if not directGpu or gpuButtonsReady then return end
-  gpuButtonsReady = true
-  local y, h, gap = directHeight - 48, 36, 6
-  local x, bw = 12, math.floor((directWidth - 24 - 9 * gap) / 10)
-  addGpuButton(x, y, bw, h, "ALT -", {35,62,91}, function() adjustAltitude(-1) end)
-  addGpuButton(x+(bw+gap), y, bw, h, "ALT +", {35,62,91}, function() adjustAltitude(1) end)
-  addGpuButton(x+2*(bw+gap), y, bw, h, "SAVED", {43,90,132}, selectAltitudePreset)
-  addGpuButton(x+3*(bw+gap), y, bw, h, "HOLD", {35,62,91}, holdHere)
-  addGpuButton(x+4*(bw+gap), y, bw, h, "AUTO", {42,112,83}, engageAutopilot)
-  addGpuButton(x+5*(bw+gap), y, bw, h, "SWEEP", {130,78,31}, startBurnerSweep)
-  addGpuButton(x+6*(bw+gap), y, bw, h, "MAN", {100,75,35}, toggleManualBurner)
-  addGpuButton(x+7*(bw+gap), y, bw, h, "LOCK", {100,75,35}, lockHoverLevel)
-  addGpuButton(x+8*(bw+gap), y, bw, h, "UPD", {46,107,130}, requestProgramUpdate)
-  addGpuButton(x+9*(bw+gap), y, bw, h, "STOP", {125,48,56}, stop)
+  if not directGpu then return end
+  gpuButtons = {}
+  local l=gpuLayout()
+  local tabs={"FLIGHT","CALIBRATION","HEIGHTS"}
+  local tabW=math.floor((l.w-2*l.margin-2*l.gap)/3)
+  for i,tab in ipairs(tabs) do
+    local selected=tab
+    addGpuButton(l.margin+(i-1)*(tabW+l.gap),l.tabY,tabW,l.tabH,tab,tab==gpuTab and {43,90,132} or {28,43,60},function() gpuTab=selected end)
+  end
+  local function buttonRow(items,y)
+    local gap=math.max(5,math.floor(l.w*.006)); local bw=math.floor((l.w-2*l.margin-(#items-1)*gap)/#items)
+    for i,item in ipairs(items) do addGpuButton(l.margin+(i-1)*(bw+gap),y,bw,l.buttonH,item[1],item[3],item[4]) end
+  end
+  if gpuTab=="FLIGHT" then
+    buttonRow({
+      {"ALT -",nil,{35,62,91},function() adjustAltitude(-1) end},
+      {"ALT +",nil,{35,62,91},function() adjustAltitude(1) end},
+      {"SAVED",nil,{43,90,132},selectAltitudePreset},
+      {"HOLD",nil,{35,62,91},holdHere},
+      {"AUTO",nil,{42,112,83},engageAutopilot},
+      {"STOP",nil,{125,48,56},stop},
+    },l.buttonY)
+  elseif gpuTab=="CALIBRATION" then
+    buttonRow({
+      {"X-",nil,{70,82,96},function() testVector(-.2,0,"TEST X-") end},
+      {"X+",nil,{70,82,96},function() testVector(.2,0,"TEST X+") end},
+      {"FWD",nil,{70,82,96},function() testVector(0,.2,"TEST Y+") end},
+      {"BACK",nil,{70,82,96},function() testVector(0,-.2,"TEST Y-") end},
+      {calibrated and "READY" or "CAL",nil,calibrated and {55,130,90} or {130,78,31},confirmCalibration},
+      {"MANUAL",nil,{100,75,35},toggleManualBurner},
+      {"LOCK",nil,{100,75,35},lockHoverLevel},
+      {"SWEEP 15-5",nil,{130,78,31},startBurnerSweep},
+      {"UPD",nil,{46,107,130},requestProgramUpdate},
+      {"STOP",nil,{125,48,56},stop},
+    },l.buttonY)
+  else
+    local heights=savedHoverPoints()
+    local rowH=math.max(32,math.floor(l.h*.052)); local rowGap=math.max(4,math.floor(l.h*.008))
+    local topGap=math.max(32,math.floor(l.h*.05))
+    local rows=math.max(1,math.floor((l.buttonY-l.contentY-topGap-l.margin)/(rowH+rowGap)))
+    local pages=math.max(1,math.ceil(#heights/rows)); gpuHeightPage=math.max(1,math.min(gpuHeightPage,pages))
+    local first=(gpuHeightPage-1)*rows+1
+    for i=first,math.min(#heights,first+rows-1) do
+      local sample=heights[i]; local y=l.contentY+topGap+(i-first)*(rowH+rowGap); local index=i
+      addGpuButton(l.margin,y,l.w-2*l.margin,rowH,("Y %.1f     BURNER %d / 15     PRESSURE %.3f"):format(sample.height,sample.level,sample.pressure or 0),{20,32,48},function() selectSavedAltitude(index); gpuTab="FLIGHT" end,"left")
+    end
+    local navW=math.floor((l.w-2*l.margin-l.gap)/2)
+    addGpuButton(l.margin,l.buttonY,navW,l.buttonH,"PREVIOUS",gpuHeightPage>1 and {35,62,91} or {40,48,57},function() gpuHeightPage=math.max(1,gpuHeightPage-1) end)
+    addGpuButton(l.margin+navW+l.gap,l.buttonY,navW,l.buttonH,"NEXT",gpuHeightPage<pages and {35,62,91} or {40,48,57},function() gpuHeightPage=math.min(pages,gpuHeightPage+1) end)
+  end
 end
 createGpuButtons()
 
@@ -844,6 +899,7 @@ local function refresh()
     monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
   end
   if directGpu and os.clock() - lastGpuRender >= .25 then
+    createGpuButtons()
     local ok = pcall(renderDirectMonitor)
     if ok then lastGpuRender = os.clock()
     else directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting" end
@@ -904,13 +960,7 @@ local ok, err = pcall(function()
             for _, button in ipairs(gpuButtons) do
               if event.x >= button.x and event.x <= button.x + button.w and event.y >= button.y and event.y <= button.y + button.h then
                 button.action()
-                if button.label == "SWEEP" then sweepSummary = nil end
-                break
-              end
-            end
-            for _, button in ipairs(savedGpuButtons) do
-              if event.x >= button.x and event.x <= button.x + button.w and event.y >= button.y and event.y <= button.y + button.h then
-                button.action()
+                if button.label:match("^SWEEP") then sweepSummary = nil end
                 break
               end
             end
