@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.1.2"
+local AIRSHIP_BUILD = "1.1.3"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -123,6 +123,11 @@ local function findThrusters()
         if device then found[name] = device end
       end
     end
+  end
+  local count = 0
+  for _ in pairs(found) do count = count + 1 end
+  if count >= 8 then return found end
+  for _, name in ipairs(peripheral.getNames()) do
     local hub = peripheral.wrap(name)
     if hub and type(hub.getNamesRemote) == "function" then
       local function scan(remoteHub, path, depth)

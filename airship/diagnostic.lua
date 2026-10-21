@@ -49,6 +49,9 @@ for _,name in ipairs(peripheral.getNames()) do
   for _,kind in ipairs(kinds) do
     if kind=="liquid_vector_thruster" then addThruster(name,peripheral.wrap(name)) end
   end
+end
+if #thrusters<8 then
+for _,name in ipairs(peripheral.getNames()) do
   local root=peripheral.wrap(name)
   if root and type(root.getNamesRemote)=="function" then
     local function scan(hub,path,depth)
@@ -72,6 +75,7 @@ for _,name in ipairs(peripheral.getNames()) do
     end
     scan(root,name,1)
   end
+end
 end
 table.sort(thrusters,function(a,b)
   local ai=tonumber(a.name:match("(%d+)$")) or math.huge

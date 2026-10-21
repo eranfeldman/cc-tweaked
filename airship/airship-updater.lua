@@ -1,5 +1,5 @@
 local url = "https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship.lua"
-local minimumBuild = "1.1.0"
+local minimumBuild = "1.1.3"
 local target, temporary, backup = "/airship.lua", "/airship.lua.update", "/airship.lua.bak"
 
 local function atLeast(version, minimum)
