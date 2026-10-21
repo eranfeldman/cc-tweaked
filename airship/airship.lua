@@ -340,8 +340,9 @@ local function updateFlight(gpsFresh)
     if math.abs(dx) < .5 and math.abs(dz) < .5 and math.abs(velocity.x) < .12 and math.abs(velocity.z) < .12 then
       vectorX, vectorY, power, mode = 0, 0, 0, "DESTINATION REACHED"
     else
-      vectorX = pidStep(pid.horizontalZ, dz, velocity.z, sampleDt)
-      vectorY = pidStep(pid.horizontalX, dx, velocity.x, sampleDt)
+      -- Nozzle-vector direction is opposite the craft's thrust direction.
+      vectorX = -pidStep(pid.horizontalZ, dz, velocity.z, sampleDt)
+      vectorY = -pidStep(pid.horizontalX, dx, velocity.x, sampleDt)
       power = clamp(math.sqrt(vectorX * vectorX + vectorY * vectorY) / .25 * .35, 0, .35)
     end
   end
@@ -621,7 +622,7 @@ local function engageAutopilot()
 end
 local function testVector(x, y, label)
   axisTests[label] = true
-  vectorX, vectorY, power, mode = x, y, .33, label
+  vectorX, vectorY, power, mode = -x, -y, .33, label
   status.text = "Low-power test: " .. label .. "  |  Press HOLD to stop"
   status.foreground = colors.orange
 end

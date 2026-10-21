@@ -48,7 +48,7 @@ local burnerCount=askNumber("Burner count",4,1)
 local fillPerBurner=askNumber("Max fill per burner",210,1)
 local mass=ask("Ship mass/weight if known","unknown")
 local cargo=ask("Cargo/load during test","none")
-local heading=ask("Ship front direction","east")
+local heading="east (side with thrusters 0 and 6)"
 
 local gains={.035,.0005,.18,4,.45,.005,2.5}
 if fs.exists("airship-pid.cfg") then
@@ -97,7 +97,7 @@ local filename="airship-pid-diagnostic.csv"
 local suffix=1
 while fs.exists(filename) do suffix=suffix+1; filename="airship-pid-diagnostic-"..suffix..".csv" end
 local log=assert(fs.open(filename,"w"),"Could not create diagnostic log")
-log.writeLine("# Airship PID diagnostic v3; relative GPS only; no absolute X/Z")
+log.writeLine("# Airship PID diagnostic v4; east-facing ship; relative GPS only; no absolute X/Z")
 log.writeLine("# Detected thrusters: "..table.concat((function() local n={} for _,t in ipairs(thrusters) do n[#n+1]=t.name end return n end)(),","))
 log.writeLine("# Footprint: "..footprint)
 log.writeLine("# Balloon capacity: "..balloon.." blocks")
@@ -186,8 +186,8 @@ local function control(now,dt,autopilot)
     local dx=targetRelX-(state.x-x0); local dz=targetRelZ-(state.z-z0)
     if math.abs(dx)<.5 and math.abs(dz)<.5 and math.abs(state.vx)<.12 and math.abs(state.vz)<.12 then vectorX,vectorY,power=0,0,0
     else
-      vectorX=pidStep(zpid,dz,state.vz,dt)
-      vectorY=pidStep(xy,dx,state.vx,dt)
+      vectorX=-pidStep(zpid,dz,state.vz,dt)
+      vectorY=-pidStep(xy,dx,state.vx,dt)
       power=clamp(math.sqrt(vectorX*vectorX+vectorY*vectorY)/.25*.35,0,.35)
     end
   else vectorX,vectorY,power=0,0,0 end
