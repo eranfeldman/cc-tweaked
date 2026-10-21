@@ -322,7 +322,7 @@ local function locate()
     local ok, rates = pcall(gimbalSensor.getAngularRatesRad)
     if ok and type(rates) == "table" and type(rates[2]) == "number" then yawRate = rates[2] end
   end
-  local x, y, z = gps.locate(.1, false)
+  local x, y, z = gps.locate(.5, false)
   if x then
     if previousPosition and previousSample then
       sampleDt = clamp(now - previousSample, .01, 1.5)
@@ -336,7 +336,7 @@ local function locate()
     if not altitude then altitude = math.floor(position.y + .5) end
     if mode == "WAITING FOR GPS" then mode = "HOLDING ALTITUDE" end
     return true
-  elseif lastGpsAt and os.clock() - lastGpsAt > .5 then
+  elseif lastGpsAt and os.clock() - lastGpsAt > 2 then
     position = nil
     previousPosition, previousSample = nil, nil
     velocity = {x=0, y=0, z=0}
@@ -998,7 +998,7 @@ local function refresh()
 end
 
 local ok, err = pcall(function()
-  local _, startY = gps.locate(.1, false)
+  local _, startY = gps.locate(.5, false)
   altitude = startY and math.floor(startY + .5) or nil
   if altitude then mode = "HOLDING ALTITUDE" else mode = "WAITING FOR GPS" end
   basalt.schedule(function()

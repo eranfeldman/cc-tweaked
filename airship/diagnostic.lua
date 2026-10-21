@@ -53,7 +53,7 @@ table.sort(thrusters,function(a,b)
   return ai==bi and a.name<b.name or ai<bi
 end)
 if #thrusters==0 then error("No liquid_vector_thruster peripherals found") end
-local x0,y0,z0=gps.locate(.2,false)
+local x0,y0,z0=gps.locate(1,false)
 if not x0 then error("GPS fix required before starting") end
 local ok,startY,startVy,startPressure=pcall(function()
   return sensor.getHeight(),sensor.getVerticalSpeed(),sensor.getAirPressure()
@@ -199,13 +199,13 @@ local function readSensors()
     local ratesOk, rates = pcall(gimbal.getAngularRatesRad)
     if ratesOk and type(rates) == "table" and type(rates[2]) == "number" then yawRate = rates[2] end
   end
-  local x,_,z=gps.locate(.05,false)
+  local x,_,z=gps.locate(.5,false)
   if x then
     state.vx=state.vx*.5+((x-prevX)/dt)*.5
     state.vz=state.vz*.5+((z-prevZ)/dt)*.5
     prevX,prevZ,lastGpsAt=x,z,now
     state.x,state.z=x,z
-  elseif now-lastGpsAt>.5 then error("GPS lost for over 0.5 seconds") end
+  elseif now-lastGpsAt>2 then error("GPS lost for over 2 seconds") end
   return now,dt
 end
 local function record(now,dt)
