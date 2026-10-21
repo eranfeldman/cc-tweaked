@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.3"
+local AIRSHIP_BUILD = "1.2.4"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -9,11 +9,6 @@ local findAvionics
 local function setupDirectGpu()
   local gpuFound = peripheral.wrap("directgpu_5") or peripheral.find("directgpu")
   if not gpuFound then directGpuError = "DirectGPU peripheral not found"; return false end
-  local gpuName = peripheral.getName(gpuFound)
-  if gpuName ~= "top" and gpuName ~= "bottom" and gpuName ~= "left" and gpuName ~= "right" and gpuName ~= "front" and gpuName ~= "back" then
-    directGpuError = "Remote DirectGPU disabled; using CC monitor to avoid blocking flight control"
-    return false
-  end
   local listOk, displays = pcall(gpuFound.listDisplays)
   local display = listOk and type(displays) == "table" and displays[1]
   local function getInfo(id)
