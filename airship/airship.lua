@@ -1,4 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
+local AIRSHIP_BUILD = "1.1.0"
 local basalt = require("basalt")
 local ids = {
   "liquid_vector_thruster_0", "liquid_vector_thruster_1",
@@ -570,7 +571,7 @@ local function renderDirectMonitor()
   gpu.clear(display,bg[1],bg[2],bg[3])
   rect(0,0,w,l.titleH,{15,29,47})
   local titleSize = math.max(18,math.floor(h*.032))
-  txt("AIRSHIP",l.margin,math.floor((l.titleH-titleSize)/2),titleSize,ink,"bold")
+  txt("AIRSHIP v" .. AIRSHIP_BUILD,l.margin,math.floor((l.titleH-titleSize)/2),titleSize,ink,"bold")
   txt(mode == "BURNER SWEEP" and "CALIBRATING" or mode,math.floor(w*.28),math.floor((l.titleH-titleSize)/2),math.max(14,math.floor(titleSize*.7)),mode == "BURNER SWEEP" and {255,190,90} or {88,220,190},"bold")
   local contentY = l.contentY
   if gpuTab == "FLIGHT" then
@@ -776,7 +777,7 @@ createGpuButtons()
 
 if monitorFrame then
   local width = monitor.getSize()
-  monitorFrame:addLabel({x=2, y=1, width=width-2, height=1, text="AIRSHIP / FLIGHT DECK", foreground=colors.white, background=colors.blue})
+  monitorFrame:addLabel({x=2, y=1, width=width-2, height=1, text="AIRSHIP v" .. AIRSHIP_BUILD, foreground=colors.white, background=colors.blue})
   monitorStatus = monitorFrame:addLabel({x=2, y=2, width=width-2, height=1, text="Starting...", foreground=colors.yellow})
   monitorPos = monitorFrame:addLabel({x=2, y=3, width=width-2, height=1, text="GPS --", foreground=colors.white})
   monitorAlt = monitorFrame:addLabel({x=2, y=4, width=width-2, height=1, text="ALT -- / TARGET --", foreground=colors.lightBlue})
@@ -802,7 +803,7 @@ end
 local flightPage, calibrationPage
 local savedAltitudeButtons = {}
 if compact then
-  frame:addLabel({x=2, y=1, width=screenWidth-2, height=1, text="AIRSHIP / FLIGHT DECK", foreground=colors.white, background=colors.blue})
+  frame:addLabel({x=2, y=1, width=screenWidth-2, height=1, text="AIRSHIP v" .. AIRSHIP_BUILD, foreground=colors.white, background=colors.blue})
   status = frame:addLabel({x=2, y=2, width=screenWidth-2, height=1, text="Starting...", foreground=colors.yellow})
   posText = frame:addLabel({x=2, y=3, width=screenWidth-2, height=1, text="GPS --", foreground=colors.white})
   altText = frame:addLabel({x=2, y=4, width=screenWidth-2, height=1, text="ALT -- / TARGET --", foreground=colors.lightBlue})
@@ -856,7 +857,7 @@ if compact then
   if directGpuError then compactGpuNotice = frame:addLabel({x=2, y=13, width=screenWidth-3, height=2, text="DirectGPU: " .. directGpuError, foreground=colors.orange}) end
   frame:addButton({x=screenWidth-12, y=15, width=10, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
 else
-frame:addLabel({x=2, y=1, width=30, height=1, text="AIRSHIP  /  FLIGHT DECK", foreground=colors.white, background=colors.blue})
+frame:addLabel({x=2, y=1, width=30, height=1, text="AIRSHIP v" .. AIRSHIP_BUILD, foreground=colors.white, background=colors.blue})
 status = frame:addLabel({x=2, y=2, width=screenWidth-3, height=1, text="Starting controller...", foreground=colors.yellow})
 frame:addButton({x=screenWidth-12, y=1, width=10, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
 local tabs = frame:addTabControl({x=1, y=3, width=screenWidth, height=screenHeight-2})
