@@ -13,19 +13,27 @@ for _, name in ipairs(ids) do
 end
 
 local monitor = peripheral.find("monitor")
-local directGpu, directDisplay, directWidth, directHeight
+local directGpu, directDisplay, directWidth, directHeight, directGpuError
 local gpuFound = peripheral.find("directgpu")
 if gpuFound then
   local listOk, displays = pcall(gpuFound.listDisplays)
   local display = listOk and displays and displays[1]
-  local ok = display ~= nil
-  if not ok then ok, display = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 0) end
-  if ok and display then
-    local infoOk, info = pcall(gpuFound.getDisplayInfo, display)
-    if infoOk and info and type(info.pixelWidth) == "number" and type(info.pixelHeight) == "number" then
-      directGpu, directDisplay = gpuFound, display
-      directWidth, directHeight = info.pixelWidth, info.pixelHeight
-    end
+  local function getInfo(id)
+    if not id then return nil end
+    local ok, info = pcall(gpuFound.getDisplayInfo, id)
+    return ok and info and type(info.pixelWidth) == "number" and type(info.pixelHeight) == "number" and info or nil
+  end
+  local info = getInfo(display)
+  if not info then
+    local ok, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 0)
+    if ok then display, info = newDisplay, getInfo(newDisplay) end
+  end
+  if info then
+    directGpu, directDisplay = gpuFound, display
+    directWidth, directHeight = info.pixelWidth, info.pixelHeight
+  else
+    local scanOk, monitorName = pcall(gpuFound.autoDetectMonitor)
+    directGpuError = scanOk and (monitorName and "Display setup failed; restart controller" or "No monitor near DirectGPU block; move it beside monitor") or "DirectGPU display setup failed; check the GPU block"
   end
 end
 local altitudeSensor = peripheral.find("altitude_sensor")
@@ -421,7 +429,7 @@ local function renderDirectMonitor()
   end
   gpu.updateDisplay(display)
 end
-local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton
+local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton, monitorGpuNotice, compactGpuNotice
 local showGainValues
 local function adjustAltitude(delta)
   if not position then status.text = "Waiting for GPS before changing altitude."; return end
@@ -495,6 +503,7 @@ if monitorFrame then
   monitorFrame:addButton({x=18, y=10, width=12, height=1, text="ALT PRESET", background=colors.blue}):onClick(selectAltitudePreset)
   monitorFrame:addButton({x=32, y=10, width=12, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
   monitorFrame:addButton({x=2, y=11, width=16, height=1, text="SWEEP 15-6", background=colors.orange}):onClick(startBurnerSweep)
+  if directGpuError then monitorGpuNotice = monitorFrame:addLabel({x=2, y=12, width=width-2, height=1, text="GPU: " .. directGpuError, foreground=colors.orange}) end
 end
 
 if compact then
@@ -549,6 +558,7 @@ if compact then
   end
   pidInput:onEnter(setGains)
   frame:addButton({x=screenWidth-10, y=12, width=8, height=1, text="SET PID", background=colors.blue}):onClick(setGains)
+  if directGpuError then compactGpuNotice = frame:addLabel({x=2, y=13, width=screenWidth-3, height=2, text="DirectGPU: " .. directGpuError, foreground=colors.orange}) end
 else
 frame:addLabel({x=2, y=1, width=47, height=1, text="AIRSHIP  /  FLIGHT DECK", foreground=colors.white, background=colors.blue})
 status = frame:addLabel({x=2, y=2, width=47, height=1, text="Starting controller...", foreground=colors.yellow})
@@ -648,7 +658,8 @@ local function refresh()
   end
   if frame:getFocused() ~= heightInput then heightInput.text = altitude and tostring(math.floor(altitude + .5)) or "" end
   if frame:getFocused() ~= pidInput then showGainValues() end
-  if pidSummary then pidSummary.text = ("XY %.3f/%.4f/%.2f ALT %.1f/%.1f/%.2f/%.1f"):format(pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d, pid.altitude.bias, pid.altitude.p, pid.altitude.i, pid.altitude.d) end
+  if pidSummary then pidSummary.text = directGpuError and ("GPU: " .. directGpuError) or ("XY %.3f/%.4f/%.2f ALT %.1f/%.1f/%.2f/%.1f"):format(pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d, pid.altitude.bias, pid.altitude.p, pid.altitude.i, pid.altitude.d) end
+  if compactGpuNotice then compactGpuNotice.text = "DirectGPU: " .. directGpuError end
   if mode == "AUTOPILOT" then status.text, status.foreground = "AUTOPILOT ACTIVE  |  EAST-FACING SHIP", colors.lime
   elseif mode == "GPS LOST - RE-ENGAGE" then status.text, status.foreground = mode, colors.red
   elseif mode == "WAITING FOR GPS" then status.text, status.foreground = "Waiting for GPS signal...", colors.orange
