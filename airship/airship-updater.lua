@@ -1,13 +1,13 @@
-local updaterBuild = "1.3.0"
+local updaterBuild = "1.3.1"
 local apiUrl = "https://api.github.com/repos/eranfeldman/cc-tweaked/commits/main"
 local baseUrl = "https://raw.githubusercontent.com/eranfeldman/cc-tweaked/"
 local commitFile = "/airship-latest.json"
 local files = {
-  {name="airship.lua", marker='local AIRSHIP_BUILD = "([^\"]+)"', minimum="1.2.19"},
+  {name="airship.lua", marker='local AIRSHIP_BUILD = "([^\"]+)"', minimum="1.2.18"},
   {name="diagnostic.lua"},
   {name="hub-diagnostic.lua"},
   {name="pid-tuner.lua"},
-  {name="airship-updater.lua", marker='local updaterBuild = "([^\"]+)"', minimum="1.3.0"},
+  {name="airship-updater.lua", marker='local updaterBuild = "([^\"]+)"', minimum="1.3.1"},
 }
 
 local function atLeast(version, minimum)
@@ -107,8 +107,8 @@ for _, file in ipairs(files) do
   installed[#installed + 1] = file
 end
 
-print("Installed airship files from commit " .. commit.sha:sub(1, 10) .. ".")
-print("Updated controller v" .. files[1].version .. ", diagnostic, hub diagnostic, PID tuner, and updater.")
+print("Restored airship files from commit " .. commit.sha:sub(1, 10) .. ".")
+print("Installed controller v" .. files[1].version .. ", diagnostics, tuner, and rollback-capable updater.")
 print("Previous copies are saved beside each file as .bak.")
 sleep(1)
 shell.run("/airship.lua")

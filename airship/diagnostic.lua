@@ -83,7 +83,7 @@ table.sort(thrusters,function(a,b)
   local bi=tonumber(b.name:match("(%d+)$")) or math.huge
   return ai==bi and a.name<b.name or ai<bi
 end)
-if #thrusters~=8 then error("Expected 8 liquid_vector_thruster peripherals, found "..#thrusters.."; check the wired peripheral hub") end
+if #thrusters==0 then error("No liquid_vector_thruster peripherals found") end
 local x0,y0,z0=gps.locate(1,false)
 if not x0 then error("GPS fix required before starting") end
 local ok,startY,startVy,startPressure=pcall(function()

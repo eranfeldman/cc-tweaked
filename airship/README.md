@@ -8,13 +8,15 @@ In the computer terminal, install Basalt 2.5, download the updated controller be
 
 ```text
 wget run https://basalt.madefor.cc/2.5/install.lua minified
-wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship-updater.lua?bootstrap=1.3.0 airship-updater.lua
-airship-updater.lua
+wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship.lua airship.lua
+wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship-updater.lua?bootstrap=1.3.1 airship-updater.lua
+wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/pid-tuner.lua pid-tuner.lua
+airship.lua
 ```
 
 Or copy `airship.lua` into a file on the computer and run `airship.lua`. The computer needs wireless GPS access and all eight `liquid_vector_thruster` peripherals. They can be connected directly or exposed by the wired peripheral hub; their peripheral names and number suffixes can vary. The controller finds them by peripheral type and stops with a clear count error unless it sees all eight. For accurate altitude readout and burner calibration, connect a Create: Avionics **Altitude Sensor** to the computer through the peripheral network. Height control still comes from burner amounts. Its peripheral type is `altitude_sensor`; the app detects it automatically and falls back to GPS altitude if it is absent.
 
-Install `airship-updater.lua` once beside the controller. Press **UPDATE** (or **U**) to run it. It validates and installs the controller, `diagnostic.lua`, `hub-diagnostic.lua`, `pid-tuner.lua`, and the updater itself, keeping each prior file as a `.bak`; calibration and PID files are left in place. It launches the refreshed controller when done. If you need to refresh the updater manually, run `wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship-updater.lua?bootstrap=1.3.0 airship-updater-new.lua` then `airship-updater-new.lua`. The temporary `airship-updater-new.lua` can be deleted afterward. To clean accumulated temporary airship files, run `wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/1b87c54b2a44dc96e6803c6bbb1b36deea6634ed/airship/airship-cleanup.lua airship-cleanup.lua` then `airship-cleanup.lua`; it preserves calibration, PID settings, hover map, CSV logs, and rollback backups. To tune horizontal autopilot gains, run `pid-tuner.lua` after a complete `diagnostic.lua` run and confirm or reject its P/D suggestion. Height is controlled only by burner amounts from the saved calibration map.
+Install `airship-updater.lua` beside the controller. It validates and installs the controller, both diagnostics, the PID tuner, and itself from one GitHub commit. It keeps each previous copy as a `.bak`, leaves calibration and PID files in place, then launches the controller. To bootstrap the rollback updater from an older install, run `wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship-updater.lua?bootstrap=1.3.1 airship-updater-new.lua` then `airship-updater-new.lua`. The temporary bootstrap file can be deleted afterward. To clean accumulated temporary airship files, run `wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/1b87c54b2a44dc96e6803c6bbb1b36deea6634ed/airship/airship-cleanup.lua airship-cleanup.lua` then `airship-cleanup.lua`; it preserves calibration, PID settings, hover map, CSV logs, and rollback backups. Height is controlled only by burner amounts from the saved calibration map.
 
 To check that CC:Tweaked sees it, run `lua` and enter:
 
@@ -22,7 +24,7 @@ To check that CC:Tweaked sees it, run `lua` and enter:
 for _, name in ipairs(peripheral.getNames()) do print(name, peripheral.getType(name)) end
 ```
 
-The controller and flight diagnostic find peripherals directly and through a wired peripheral hub with a nested Malahit hub. Both require exactly eight liquid vector thrusters; `hub-diagnostic.lua` reports remote peripherals through nested hubs as well. The controller reads `altitude_sensor` (`getHeight`, `getVerticalSpeed`, `getAirPressure`), `navigation_table` (`getHeadingRad`) and `gimbal_sensor` (`getAngularRatesRad`) through either route. GPS still supplies world position. On each fresh GPS update, the controller rotates both GPS position error and world velocity into the ship's latest heading frame, so turning while navigating does not leave it steering in the old direction. Heading older than one second cuts horizontal thrust and requires re-engaging autopilot. These sensors provide heading/yaw information, not full pitch and roll attitude.
+The app searches both directly attached peripherals and peripherals one Malahit hub deep behind the wired peripheral hub. It reads `altitude_sensor` (`getHeight`, `getVerticalSpeed`, `getAirPressure`), `navigation_table` (`getHeadingRad`) and `gimbal_sensor` (`getAngularRatesRad`) through either route. GPS still supplies world position. The navigation table heading rotates GPS error and velocity into the ship's current axes, so turning while navigating does not leave the controller steering in the old direction. If heading is unavailable, destination autopilot refuses to engage.
 
 Attach a CC:Tweaked monitor to the ship's peripheral network. The computer screen stays the control and text-entry console. When DirectGPU is available, including over a wired modem as `directgpu_5`, the monitor shows the high-resolution RGB flight panel with touch controls; its layout scales to the detected display size, including a 4-wide by 3-tall monitor wall. Click the **FLIGHT**, **CALIBRATION**, and **HEIGHTS** tabs above the panel to switch views. The HEIGHTS view lists every saved calibration point with its altitude, burner level, and pressure; use **PREVIOUS/NEXT** to browse longer lists and tap a row to select that height. The DirectGPU block must be physically near the monitor wall so it can detect that display; a wired modem connection exposes the peripheral but does not move its monitor scan. Enter coordinates, altitude targets, and PID values on the computer itself. With no monitor attached, the computer screen shows the full interface. Check for DirectGPU with `peripheral.find("directgpu")`.
 
@@ -41,7 +43,7 @@ Put a Create Redstone Link transmitter against the computer's **front** (monitor
 
 Starting horizontal values: `0.035 0.0005 0.18`. These are starting values, not empirically tuned for your ship. The calibration field and `airship-pid.cfg` use only horizontal P `0.005–0.15`, I `0–0.01`, D `0–0.8`. Older seven-number config files remain readable using their first three values.
 
-Test in a clear area with short moves. Burner output ramps at no more than 6 redstone levels per second. For horizontal overshoot, run `pid-tuner.lua` after a completed diagnostic; it requires all four X/Z legs, suggests a bounded horizontal P/D adjustment from measured overshoot, and asks before saving. Repeat the diagnostic after each saved change to compare results. Height tuning is done by recording stable burner amounts, not PID gains.
+Test in a clear area with short moves. Burner output ramps at no more than 6 redstone levels per second. For horizontal overshoot, run `pid-tuner.lua` after the diagnostic and confirm or reject its suggested P/D change. Height tuning is done by recording stable burner amounts, not PID gains.
 
 ## Manual burner calibration
 

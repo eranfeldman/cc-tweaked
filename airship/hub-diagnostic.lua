@@ -84,48 +84,27 @@ for _, name in ipairs(names) do
   end
 end
 
-local function remoteProxy(hub, name)
-  return setmetatable({}, {__index=function(_, method)
-    return function(...) return hub.callRemote(name, method, ...) end
-  end})
-end
-local function scanHub(hub, path, depth)
-  if depth > 2 then return end
-  local remote = reportCall("remote names via " .. path, hub.getNamesRemote)
+for _, hub in ipairs(hubs) do
+  local remote = reportCall("remote names via " .. hub.name, hub.peripheral.getNamesRemote)
   local list = remote and remote[1]
-  if type(list) ~= "table" then return end
-  for _, name in ipairs(list) do
-    remoteNames[name] = true
-    line("\nREMOTE PERIPHERAL " .. path .. "/" .. name)
-    local gotTypes = reportCall("type", hub.getTypeRemote, name)
-    local types = gotTypes and gotTypes[1]
-    if type(types) ~= "table" then
-      types = gotTypes or { n = 0 }
-      local values = {}
-      for i = 1, types.n do values[#values + 1] = types[i] end
-      types = values
-    end
-    local device = remoteProxy(hub, name)
-    local gotMethods = reportCall("methods", hub.getMethodsRemote, name)
-    local available = gotMethods and gotMethods[1]
-    if type(available) == "table" then
-      for _, method in ipairs(probes) do
-        for _, candidate in ipairs(available) do
-          if method == candidate then reportCall(method, device[method]) end
-        end
-      end
-    end
-    if depth < 2 then
-      for _, kind in ipairs(types) do
-        if kind == "peripheral_hub" or kind == "malahit_hub" then
-          scanHub(device, path .. "/" .. name, depth + 1)
-          break
+  if type(list) == "table" then
+    for _, name in ipairs(list) do
+      line("\nREMOTE PERIPHERAL " .. name .. " via " .. hub.name)
+      reportCall("type", hub.peripheral.getTypeRemote, name)
+      local gotMethods = reportCall("methods", hub.peripheral.getMethodsRemote, name)
+      local available = gotMethods and gotMethods[1]
+      if type(available) == "table" then
+        for _, method in ipairs(probes) do
+          for _, candidate in ipairs(available) do
+            if method == candidate then
+              reportCall(method, hub.peripheral.callRemote, name, method)
+            end
+          end
         end
       end
     end
   end
 end
-for _, hub in ipairs(hubs) do scanHub(hub.peripheral, hub.name, 1) end
 
 if #hubs == 0 then line("\nNo attached peripheral exposed a hub type or getNamesRemote method.") end
 if next(remoteNames) == nil then line("\nNo remote peripheral names were returned by any hub.") end
