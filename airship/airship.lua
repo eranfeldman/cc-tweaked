@@ -101,6 +101,7 @@ local sweepConfirmAt
 local sweepSummary
 local sweepSummaryUntil
 local gpuButtons = {}
+local savedGpuButtons = {}
 local learnedHover = {}
 local altitudeSensorPressure
 local measuredThrust = 0
@@ -324,13 +325,17 @@ local function updateFlight(gpsFresh)
   end
 end
 
-local function selectAltitudePreset()
-  if not position then status.text = "Waiting for GPS before selecting a height."; return end
+local function savedAltitudes()
   local heights = {}
   for _, sample in pairs(learnedHover) do
     if type(sample.height) == "number" then heights[#heights + 1] = sample.height end
   end
   table.sort(heights)
+  return heights
+end
+local function selectAltitudePreset()
+  if not position then status.text = "Waiting for GPS before selecting a height."; return end
+  local heights = savedAltitudes()
   if #heights == 0 then
     status.text = "No saved calibration altitudes. Run a sweep or lock a burner level."
     status.foreground = colors.orange
@@ -344,6 +349,15 @@ local function selectAltitudePreset()
   setFlightMode("HOLDING ALTITUDE")
   status.text = ("Saved altitude %d/%d: target Y %.1f"):format(selected, #heights, altitude)
   status.foreground = colors.lightBlue
+end
+local function selectSavedAltitude(index)
+  local height = savedAltitudes()[index]
+  if height then
+    altitude = height
+    setFlightMode("HOLDING ALTITUDE")
+    status.text = ("Saved target selected: Y %.1f"):format(height)
+    status.foreground = colors.lightBlue
+  end
 end
 local function lockHoverLevel()
   if manualBurner == nil then
@@ -462,6 +476,20 @@ local function renderDirectMonitor()
     gpu.drawText(display, tostring(value), x, y, color[1], color[2], color[3], "Arial", size, style or "plain")
   end
   local bg, panel, ink, muted = {10,17,29}, {20,32,48}, {229,240,250}, {143,164,184}
+  savedGpuButtons = {}
+  if h >= 320 then
+    local heights = savedAltitudes()
+    local buttonGap, buttonY = 6, 168
+    local buttonW = math.floor((w - 32 - 3 * buttonGap) / 4)
+    for i = 1, math.min(4, #heights) do
+      local index = i
+      local height = heights[i]
+      savedGpuButtons[#savedGpuButtons + 1] = {
+        x=16 + (i - 1) * (buttonW + buttonGap), y=buttonY, w=buttonW, h=26,
+        label=("Y %.0f"):format(height), color={35,62,91}, action=function() selectSavedAltitude(index) end,
+      }
+    end
+  end
   gpu.clear(display, bg[1], bg[2], bg[3])
   rect(0, 0, w, 42, {15,29,47})
   txt("A I R S H I P", 16, 10, 22, ink, "bold")
@@ -471,10 +499,21 @@ local function renderDirectMonitor()
   for i=0,2 do rect(12 + i * (cardW + gap), cardY, cardW, cardH, panel) end
   txt("ALTITUDE", 23, cardY + 10, 12, muted, "bold")
   txt(position and ("%.1f m"):format(position.y) or "--", 23, cardY + 33, 27, ink, "bold")
-  txt(("TARGET  %s"):format(altitude and ("%.0f"):format(altitude) or "--"), 23, cardY + 60, 12, muted)
+  local mappedLevel
+  for _, sample in pairs(learnedHover) do if sample.height and altitude and math.abs(sample.height-altitude) < .01 then mappedLevel = sample.level; break end end
+  txt(("TARGET %s  |  BURNER %s"):format(altitude and ("%.0f"):format(altitude) or "--", mappedLevel and tostring(mappedLevel) or "--"), 23, cardY + 60, 12, muted)
   txt("VERTICAL SPEED", 23 + cardW + gap, cardY + 10, 12, muted, "bold")
   txt(("%.2f"):format(velocity.y), 23 + cardW + gap, cardY + 33, 27, ink, "bold")
   txt("blocks / sec", 23 + cardW + gap, cardY + 60, 12, muted)
+  local speedX, speedY, speedW = 23 + cardW + gap, cardY + 75, cardW - 22
+  rect(speedX, speedY, speedW, 6, {57,73,91})
+  local speedRatio = math.max(-1, math.min(1, velocity.y / 1.5))
+  local centerX = speedX + math.floor(speedW / 2)
+  rect(centerX, speedY, 2, 6, {143,164,184})
+  if speedRatio ~= 0 then
+    local barW = math.max(2, math.floor(math.abs(speedRatio) * speedW / 2))
+    rect(speedRatio > 0 and centerX or centerX - barW, speedY, barW, 6, speedRatio > 0 and {55,205,160} or {255,190,90})
+  end
   txt("BURNER", 23 + 2 * (cardW + gap), cardY + 10, 12, muted, "bold")
   txt(("%d / 15"):format(burner), 23 + 2 * (cardW + gap), cardY + 33, 27, {255,190,90}, "bold")
   txt(("THRUST  %.1f / 15"):format(measuredThrust), 23 + 2 * (cardW + gap), cardY + 60, 12, muted)
@@ -494,9 +533,16 @@ local function renderDirectMonitor()
     txt(("LEVEL %d   SAVED %d/11   SKIPPED %d"):format(burnerSweep.level, burnerSweep.saved, burnerSweep.skipped), 16, baseY + 62, 13, {255,190,90}, "bold")
   elseif sweepSummary then txt(sweepSummary, 16, baseY + 62, 12, {255,190,90})
   else txt("Tap SWEEP twice to confirm. Levels save as soon as stable.", 16, baseY + 62, 12, muted) end
+  local learnedCount = 0
+  for _ in pairs(learnedHover) do learnedCount = learnedCount + 1 end
+  txt(("GPS %s   AVIONICS %s   SAVED %d"):format(position and "OK" or "LOST", altitudeSensorReady and "OK" or "MISSING", learnedCount), 16, baseY + 80, 12, muted)
+  for _, b in ipairs(savedGpuButtons) do
+    rect(b.x, b.y, b.w, b.h, b.color)
+    txt(b.label, b.x + 8, b.y + math.floor((b.h - 16) / 2), 12, ink, "bold")
+  end
   for _, b in ipairs(gpuButtons) do
     rect(b.x, b.y, b.w, b.h, b.color)
-    txt(b.label, b.x + 10, b.y + math.floor((b.h - 18) / 2), 14, ink, "bold")
+    txt(b.label, b.x + math.max(4, math.floor((b.w - #b.label * 8) / 2)), b.y + math.floor((b.h - 18) / 2), 14, ink, "bold")
   end
   gpu.updateDisplay(display)
 end
@@ -546,15 +592,17 @@ local function createGpuButtons()
   if not directGpu or gpuButtonsReady then return end
   gpuButtonsReady = true
   local y, h, gap = directHeight - 48, 36, 6
-  local x, bw = 12, math.floor((directWidth - 24 - 7 * gap) / 8)
+  local x, bw = 12, math.floor((directWidth - 24 - 9 * gap) / 10)
   addGpuButton(x, y, bw, h, "ALT -", {35,62,91}, function() adjustAltitude(-1) end)
   addGpuButton(x+(bw+gap), y, bw, h, "ALT +", {35,62,91}, function() adjustAltitude(1) end)
-  addGpuButton(x+2*(bw+gap), y, bw, h, "HOLD", {35,62,91}, holdHere)
-  addGpuButton(x+3*(bw+gap), y, bw, h, "AUTO", {42,112,83}, engageAutopilot)
-  addGpuButton(x+4*(bw+gap), y, bw, h, "SWEEP", {130,78,31}, startBurnerSweep)
-  addGpuButton(x+5*(bw+gap), y, bw, h, "MANUAL", {100,75,35}, toggleManualBurner)
-  addGpuButton(x+6*(bw+gap), y, bw, h, "UPDATE", {46,107,130}, requestProgramUpdate)
-  addGpuButton(x+7*(bw+gap), y, bw, h, "STOP", {125,48,56}, stop)
+  addGpuButton(x+2*(bw+gap), y, bw, h, "SAVED", {43,90,132}, selectAltitudePreset)
+  addGpuButton(x+3*(bw+gap), y, bw, h, "HOLD", {35,62,91}, holdHere)
+  addGpuButton(x+4*(bw+gap), y, bw, h, "AUTO", {42,112,83}, engageAutopilot)
+  addGpuButton(x+5*(bw+gap), y, bw, h, "SWEEP", {130,78,31}, startBurnerSweep)
+  addGpuButton(x+6*(bw+gap), y, bw, h, "MAN", {100,75,35}, toggleManualBurner)
+  addGpuButton(x+7*(bw+gap), y, bw, h, "LOCK", {100,75,35}, lockHoverLevel)
+  addGpuButton(x+8*(bw+gap), y, bw, h, "UPD", {46,107,130}, requestProgramUpdate)
+  addGpuButton(x+9*(bw+gap), y, bw, h, "STOP", {125,48,56}, stop)
 end
 createGpuButtons()
 
@@ -584,6 +632,8 @@ if monitorFrame then
   if directGpuError then monitorGpuNotice = monitorFrame:addLabel({x=2, y=12, width=width-2, height=1, text="GPU: " .. directGpuError, foreground=colors.orange}) end
 end
 
+local flightPage, calibrationPage
+local savedAltitudeButtons = {}
 if compact then
   frame:addLabel({x=2, y=1, width=screenWidth-2, height=1, text="AIRSHIP / FLIGHT DECK", foreground=colors.white, background=colors.blue})
   status = frame:addLabel({x=2, y=2, width=screenWidth-2, height=1, text="Starting...", foreground=colors.yellow})
@@ -639,24 +689,27 @@ if compact then
   if directGpuError then compactGpuNotice = frame:addLabel({x=2, y=13, width=screenWidth-3, height=2, text="DirectGPU: " .. directGpuError, foreground=colors.orange}) end
   frame:addButton({x=screenWidth-12, y=15, width=10, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
 else
-frame:addLabel({x=2, y=1, width=47, height=1, text="AIRSHIP  /  FLIGHT DECK", foreground=colors.white, background=colors.blue})
-status = frame:addLabel({x=2, y=2, width=47, height=1, text="Starting controller...", foreground=colors.yellow})
-pidSummary = frame:addLabel({x=2, y=3, width=47, height=1, text="PID  loading gains...", foreground=colors.lightGray})
+frame:addLabel({x=2, y=1, width=30, height=1, text="AIRSHIP  /  FLIGHT DECK", foreground=colors.white, background=colors.blue})
+status = frame:addLabel({x=2, y=2, width=screenWidth-3, height=1, text="Starting controller...", foreground=colors.yellow})
+frame:addButton({x=screenWidth-12, y=1, width=10, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
+local tabs = frame:addTabControl({x=1, y=3, width=screenWidth, height=screenHeight-2})
+flightPage = tabs:addTab("FLIGHT")
+calibrationPage = tabs:addTab("CALIBRATION")
 
-local function card(x, width, title)
-  local box = frame:addFrame({x=x, y=4, width=width, height=4, background=colors.gray})
+local function card(parent, x, width, title)
+  local box = parent:addFrame({x=x, y=1, width=width, height=4, background=colors.gray})
   box:addLabel({x=2, y=1, width=width-2, height=1, text=title, foreground=colors.lightBlue, background=colors.gray})
   return box
 end
-local gpsCard = card(2, 16, "GPS POSITION")
-local altitudeCard = card(19, 15, "ALTITUDE")
-local systemCard = card(35, 15, "FLIGHT SYSTEM")
+local gpsCard = card(flightPage, 2, 16, "GPS POSITION")
+local altitudeCard = card(flightPage, 19, 15, "ALTITUDE")
+local systemCard = card(flightPage, 35, 15, "FLIGHT SYSTEM")
 posText = gpsCard:addLabel({x=2, y=2, width=13, height=3, text="X --\nY --\nZ --", foreground=colors.white, background=colors.gray})
 altText = altitudeCard:addLabel({x=2, y=2, width=12, height=2, text="Now --\nTarget --", foreground=colors.white, background=colors.gray})
 sysText = systemCard:addLabel({x=2, y=2, width=12, height=2, text="Burner 0/15\nThrust 0/15", foreground=colors.white, background=colors.gray})
 
-frame:addLabel({x=2, y=9, width=22, height=1, text="DESTINATION  (X Z)", foreground=colors.lightBlue})
-xInput = frame:addInput({x=2, y=10, width=22, height=1, placeholder="Example: 200 -700", background=colors.white, foreground=colors.black})
+flightPage:addLabel({x=2, y=6, width=22, height=1, text="DESTINATION  (X Z)", foreground=colors.lightBlue})
+xInput = flightPage:addInput({x=2, y=7, width=22, height=1, placeholder="Example: 200 -700", background=colors.white, foreground=colors.black})
 local function setDestination()
   local xText, zText = xInput.text:match("^%s*(%S+)%s+(%S+)%s*$")
   local x, z = tonumber(xText), tonumber(zText)
@@ -665,26 +718,41 @@ local function setDestination()
   setFlightMode("HOLDING ALTITUDE")
   status.text = ("Destination set: X %.0f, Z %.0f"):format(x, z)
   status.foreground = colors.lime
-  frame:setFocused(nil)
+  flightPage:setFocused(nil)
 end
-frame:addButton({x=26, y=10, width=12, height=1, text="SET DEST", background=colors.blue}):onClick(setDestination)
+flightPage:addButton({x=26, y=7, width=12, height=1, text="SET DEST", background=colors.blue}):onClick(setDestination)
 xInput:onEnter(setDestination)
 
-frame:addLabel({x=2, y=11, width=16, height=1, text="ALTITUDE TARGET Y", foreground=colors.lightBlue})
-heightInput = frame:addInput({x=2, y=12, width=12, height=1, placeholder="Height", background=colors.white, foreground=colors.black})
+flightPage:addLabel({x=2, y=9, width=16, height=1, text="TARGET ALTITUDE Y", foreground=colors.lightBlue})
+heightInput = flightPage:addInput({x=2, y=10, width=12, height=1, placeholder="Height", background=colors.white, foreground=colors.black})
 local function setHeight()
   local value = tonumber(heightInput.text)
   if not value then status.text = "Enter a numeric height target."; status.foreground = colors.red; return end
   altitude = value
   setFlightMode("HOLDING ALTITUDE")
   status.text = ("Height target set to Y %.0f"):format(value); status.foreground = colors.lime
-  frame:setFocused(nil)
+  flightPage:setFocused(nil)
 end
-frame:addButton({x=16, y=12, width=12, height=1, text="SET HEIGHT", background=colors.blue}):onClick(setHeight)
+flightPage:addButton({x=16, y=10, width=12, height=1, text="SET HEIGHT", background=colors.blue}):onClick(setHeight)
 heightInput:onEnter(setHeight)
-frame:addButton({x=30, y=12, width=13, height=1, text="SAVED ALT", background=colors.blue}):onClick(selectAltitudePreset)
-frame:addLabel({x=2, y=13, width=47, height=1, text="PID TUNE: X/Z P I D   ALT bias P I D", foreground=colors.lightBlue})
-pidInput = frame:addInput({x=2, y=14, width=35, height=1, placeholder="0.035 0.0005 0.18 4 1 0.03 2", background=colors.white, foreground=colors.black})
+flightPage:addButton({x=30, y=10, width=13, height=1, text="SAVED ALT", background=colors.blue}):onClick(selectAltitudePreset)
+for i=1,4 do
+  local index = i
+  local x, y = index % 2 == 1 and 2 or 25, index <= 2 and 12 or 13
+  savedAltitudeButtons[index] = flightPage:addButton({x=x, y=y, width=22, height=1, text="NO SAVED ALTITUDE", background=colors.gray}):onClick(function() selectSavedAltitude(index) end)
+end
+local function flightButton(x, width, label, color, action)
+  return flightPage:addButton({x=x, y=14, width=width, height=2, text=label, background=color}):onClick(action)
+end
+flightButton(2, 7, "ALT -", colors.orange, function() adjustAltitude(-1) end)
+flightButton(10, 7, "ALT +", colors.orange, function() adjustAltitude(1) end)
+flightButton(18, 9, "HOLD", colors.blue, holdHere)
+flightButton(28, 12, "AUTOPILOT", colors.lime, engageAutopilot)
+flightButton(41, 9, "STOP", colors.red, stop)
+
+pidSummary = calibrationPage:addLabel({x=2, y=1, width=47, height=1, text="PID  loading gains...", foreground=colors.lightGray})
+calibrationPage:addLabel({x=2, y=3, width=47, height=1, text="PID TUNE: X/Z P I D   ALT bias P I D", foreground=colors.lightBlue})
+pidInput = calibrationPage:addInput({x=2, y=4, width=35, height=1, placeholder="0.035 0.0005 0.18 4 1 0.03 2", background=colors.white, foreground=colors.black})
 showGainValues = function()
   pidInput.text = ("%.4f %.5f %.2f %.1f %.2f %.3f %.2f"):format(table.unpack(gainValues()))
 end
@@ -702,30 +770,35 @@ local function setGains()
   local file = fs.open("airship-pid.cfg", "w")
   file.write(table.concat(values, " ")); file.close()
   showGainValues()
-  frame:setFocused(nil)
+  calibrationPage:setFocused(nil)
   status.text = "PID gains applied and saved."; status.foreground = colors.lime
 end
-frame:addButton({x=39, y=14, width=10, height=1, text="SET PID", background=colors.blue}):onClick(setGains)
+calibrationPage:addButton({x=39, y=4, width=10, height=1, text="SET PID", background=colors.blue}):onClick(setGains)
 pidInput:onEnter(setGains)
 
-local function button(x, y, width, label, color, action)
-  return frame:addButton({x=x, y=y, width=width, height=2, text=label, background=color}):onClick(action)
+local function calibrationButton(x, y, width, label, color, action)
+  return calibrationPage:addButton({x=x, y=y, width=width, height=2, text=label, background=color}):onClick(action)
 end
-button(2, 15, 12, "HOLD HERE", colors.blue, holdHere)
-button(15, 15, 14, "AUTOPILOT", colors.lime, engageAutopilot)
-button(32, 15, 10, "STOP", colors.red, stop)
-
-button(2, 17, 11, "X- / LEFT", colors.gray, function() testVector(-.2, 0, "TEST X-") end)
-button(14, 17, 11, "X+ / RIGHT", colors.gray, function() testVector(.2, 0, "TEST X+") end)
-button(26, 17, 11, "Y+ / FWD", colors.gray, function() testVector(0, .2, "TEST Y+") end)
-button(38, 17, 11, "Y- / BACK", colors.gray, function() testVector(0, -.2, "TEST Y-") end)
-
-calibrateButton = frame:addButton({x=2, y=19, width=12, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
-frame:addButton({x=15, y=19, width=10, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
-frame:addButton({x=26, y=19, width=12, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
-frame:addButton({x=39, y=19, width=10, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
+calibrationButton(2, 6, 11, "X- / LEFT", colors.gray, function() testVector(-.2, 0, "TEST X-") end)
+calibrationButton(14, 6, 11, "X+ / RIGHT", colors.gray, function() testVector(.2, 0, "TEST X+") end)
+calibrationButton(26, 6, 11, "Y+ / FWD", colors.gray, function() testVector(0, .2, "TEST Y+") end)
+calibrationButton(38, 6, 11, "Y- / BACK", colors.gray, function() testVector(0, -.2, "TEST Y-") end)
+calibrateButton = calibrationPage:addButton({x=2, y=9, width=14, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
+calibrationPage:addButton({x=18, y=9, width=12, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
+calibrationPage:addButton({x=32, y=9, width=15, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
+calibrationButton(2, 12, 16, "SWEEP 15-5", colors.orange, startBurnerSweep)
+calibrationPage:addLabel({x=20, y=12, width=29, height=1, text="Sweep saves each stable altitude", foreground=colors.lightGray})
 end
 
+local function isFocused(input)
+  for _, parent in ipairs({frame, flightPage, calibrationPage}) do
+    if parent then
+      local ok, focused = pcall(function() return parent:getFocused() end)
+      if ok and focused == input then return true end
+    end
+  end
+  return false
+end
 local function refresh()
   readThrusterPower()
   if compact then
@@ -736,8 +809,15 @@ local function refresh()
     altText.text = ("Now %s\nTarget %s"):format(position and ("%.1f"):format(position.y) or "--", altitude and ("%.0f"):format(altitude) or "--")
     sysText.text = ("Burner %d/15\nThrust %.1f/15"):format(burner, measuredThrust)
   end
-  if frame:getFocused() ~= heightInput then heightInput.text = altitude and tostring(math.floor(altitude + .5)) or "" end
-  if frame:getFocused() ~= pidInput then showGainValues() end
+  if not isFocused(heightInput) then heightInput.text = altitude and tostring(math.floor(altitude + .5)) or "" end
+  if not isFocused(pidInput) then showGainValues() end
+  if #savedAltitudeButtons > 0 then
+    local heights = savedAltitudes()
+    for i, button in ipairs(savedAltitudeButtons) do
+      button.text = heights[i] and ("TARGET Y " .. ("%.1f"):format(heights[i])) or "NO SAVED ALTITUDE"
+      button.background = heights[i] and colors.blue or colors.gray
+    end
+  end
   if pidSummary then pidSummary.text = directGpuError and ("GPU: " .. directGpuError) or ("XY %.3f/%.4f/%.2f ALT %.1f/%.1f/%.2f/%.1f"):format(pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d, pid.altitude.bias, pid.altitude.p, pid.altitude.i, pid.altitude.d) end
   if compactGpuNotice then compactGpuNotice.text = directGpuError and ("DirectGPU: " .. directGpuError) or "DirectGPU ready" end
   if monitorGpuNotice then monitorGpuNotice.text = directGpuError and ("GPU: " .. directGpuError) or "GPU ready" end
@@ -758,7 +838,9 @@ local function refresh()
   if monitorFrame then
     monitorPos.text = position and ("X %.1f Y %.1f Z %.1f"):format(position.x, position.y, position.z) or "GPS not found"
     monitorAlt.text = ("ALT %.1f / TARGET %.0f"):format(position and position.y or 0, altitude or 0)
-    monitorSystem.text = ("BURNER %d/15 THRUST %.1f/15"):format(burner, measuredThrust)
+    local savedCount = 0
+    for _ in pairs(learnedHover) do savedCount = savedCount + 1 end
+    monitorSystem.text = ("B%d/15 T%.1f GPS %s AV %s H:%d"):format(burner, measuredThrust, position and "OK" or "LOST", altitudeSensorReady and "OK" or "--", savedCount)
     monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
   end
   if directGpu and os.clock() - lastGpuRender >= .25 then
@@ -826,6 +908,12 @@ local ok, err = pcall(function()
                 break
               end
             end
+            for _, button in ipairs(savedGpuButtons) do
+              if event.x >= button.x and event.x <= button.x + button.w and event.y >= button.y and event.y <= button.y + button.h then
+                button.action()
+                break
+              end
+            end
           end
         end
       end
@@ -835,10 +923,13 @@ local ok, err = pcall(function()
   basalt.schedule(function()
     while running do
       local _, key = os.pullEvent("key")
-      local focused = frame:getFocused()
-      if focused == xInput or focused == heightInput or focused == pidInput then
-        if key == keys.up then if not adjustManualBurner(1) then adjustAltitude(1) end
-        elseif key == keys.down then if not adjustManualBurner(-1) then adjustAltitude(-1) end end
+      local typing = isFocused(xInput) or isFocused(heightInput) or isFocused(pidInput)
+      if typing then
+        if key == keys.escape then
+          frame:setFocused(nil)
+          if flightPage then flightPage:setFocused(nil) end
+          if calibrationPage then calibrationPage:setFocused(nil) end
+        end
       else
         if key == keys.up then if not adjustManualBurner(1) then adjustAltitude(1) end
         elseif key == keys.down then if not adjustManualBurner(-1) then adjustAltitude(-1) end
