@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.19"
+local AIRSHIP_BUILD = "1.2.20"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -43,6 +43,13 @@ local function setupDirectGpu()
     else setupError = "create display: " .. tostring(newDisplay) end
   end
   if info then
+    local mouseOk, mouseError = pcall(gpuFound.enableMouseEvents, display, true, false)
+    yieldComputer()
+    if not mouseOk then
+      directGpuError = "Mouse setup failed: " .. tostring(mouseError)
+      directGpu = nil
+      return false
+    end
     directGpu, directDisplay = gpuFound, display
     directWidth, directHeight = info.pixelWidth, info.pixelHeight
     directGpuError = nil
@@ -1096,6 +1103,34 @@ local function refresh()
   end
 end
 
+local function pollGpuInput()
+  local gpu, display = directGpu, directDisplay
+  for _ = 1, 32 do
+    if directGpu ~= gpu or directDisplay ~= display then return end
+    local pollOk, event = pcall(gpu.pollEvent, display)
+    yieldComputer()
+    if directGpu ~= gpu or directDisplay ~= display then return end
+    if not pollOk then
+      directGpu = nil; directGpuEnabled = false
+      directGpuError = "Input poll failed: " .. tostring(event)
+      createMonitorUi()
+      return
+    end
+    if event == nil then return end
+    if type(event) == "table" and event.type == "mouse_click" and type(event.x) == "number" and type(event.y) == "number" then
+      for _, button in ipairs(gpuButtons) do
+        if event.x >= button.x and event.x <= button.x + button.w and event.y >= button.y and event.y <= button.y + button.h then
+          button.action()
+          if button.label:match("^SWEEP") then sweepSummary = nil end
+          gpuRenderRevision = gpuRenderRevision + 1
+          gpuRedrawPending = true
+          break
+        end
+      end
+    end
+  end
+end
+
 local ok, err = pcall(function()
   local _, startY = gps.locate(.5, false)
   altitude = startY and math.floor(startY + .5) or nil
@@ -1150,22 +1185,7 @@ local ok, err = pcall(function()
         end
       end
       if directGpuEnabled and directGpu then
-        local pollOk, event = pcall(directGpu.pollEvent, directDisplay)
-        if not pollOk then
-          directGpu = nil; directGpuEnabled = false
-          directGpuError = "Input poll failed: " .. tostring(event)
-          createMonitorUi()
-        elseif event and event.type == "mouse_click" then
-          for _, button in ipairs(gpuButtons) do
-            if event.x >= button.x and event.x <= button.x + button.w and event.y >= button.y and event.y <= button.y + button.h then
-              button.action()
-              if button.label:match("^SWEEP") then sweepSummary = nil end
-              gpuRenderRevision = gpuRenderRevision + 1
-              gpuRedrawPending = true
-              break
-            end
-          end
-        end
+        pollGpuInput()
       end
       sleep(directGpu and .05 or 2)
     end

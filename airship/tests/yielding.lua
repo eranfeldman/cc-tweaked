@@ -57,6 +57,48 @@ do
 end
 
 local helper = assert(source:match("(local yieldSequence = 0.-)\nyieldComputer%(%)"))
+for _, reused in ipairs({false, true}) do
+  local env, run, call = fixture()
+  local enabled = false
+  local gpu = {
+    listDisplays=function() call(); return reused and {1} or {} end,
+    getDisplayInfo=function() call(); return {pixelWidth=1024, pixelHeight=768} end,
+    autoDetectAndCreateDisplayWithResolution=function(resolution) call(); assert(resolution == 1); return 1 end,
+    enableMouseEvents=function(id, value, hover)
+      call(); assert(id == 1 and value == true and hover == false); enabled = value
+    end,
+  }
+  env.require = function() return {} end
+  env.peripheral = {find=function() end, wrap=function() return gpu end}
+  local setup = assert(source:match("^(.-)%-%- Resolve devices"))
+  local ok, ready = run(assert(load(setup .. "return setupDirectGpu()", "@display-setup", "t", env)))
+  assert(ok and ready and enabled, "New and reused displays must enable mouse input")
+end
+
+do
+  local env, run, call = fixture()
+  local clicked, fallback, events = 0, false, {}
+  for i=1,24 do events[i] = {type="mouse_hover",x=5,y=5} end
+  events[#events+1] = {type="mouse_click",x=5,y=5}
+  events[#events+1] = {type="mouse_up",x=5,y=5}
+  events[#events+1] = {type="mouse_click",x="bad",y=5}
+  env.gpuButtons = {{x=0,y=0,w=10,h=10,label="CALIBRATION",action=function() clicked=clicked+1 end}}
+  env.directDisplay, env.gpuRenderRevision = 1, 0
+  env.directGpuEnabled = true
+  env.createMonitorUi = function() fallback=true end
+  env.directGpu.pollEvent = function() call(); return table.remove(events, 1) end
+  local input = assert(source:match("(local function pollGpuInput%(%)%s*.-)\nlocal ok, err = pcall"))
+  local poll = assert(load(helper .. "\n" .. input .. "\nreturn pollGpuInput", "@input", "t", env))()
+  local ok, err = run(poll)
+  assert(ok, err)
+  assert(clicked == 1 and #events == 0 and env.gpuRedrawPending and env.gpuRenderRevision == 1,
+    "Movement events must not block a click or run its action twice")
+  env.directGpu.pollEvent = function() call(); error("GPU disconnected") end
+  ok, err = run(poll)
+  assert(ok, err)
+  assert(fallback and env.directGpu == nil and not env.directGpuEnabled, "Polling errors must restore the monitor fallback")
+end
+
 do
   local env, run, call, counts = fixture()
   env.thrusters, env.redstone = {}, {setAnalogOutput=function() end}
@@ -97,4 +139,4 @@ do
   local _, presented = counts()
   assert(presented == 0, "An interrupted frame must not be presented")
 end
-print("PASS: discovery, thruster commands, all GPU tabs, and interrupted frames yield without timer delays")
+print("PASS: discovery, display input setup, click backlog, fallback, thruster commands, all GPU tabs, and interrupted frames")
