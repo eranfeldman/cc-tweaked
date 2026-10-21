@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.7"
+local AIRSHIP_BUILD = "1.2.8"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -572,10 +572,17 @@ local function renderDirectMonitor()
   local gpu, display = directGpu, directDisplay
   local l = gpuLayout()
   local w, h = l.w, l.h
-  local function rect(x,y,rw,rh,color) gpu.fillRect(display,x,y,rw,rh,color[1],color[2],color[3]) end
-  local function txt(value,x,y,size,color,style) gpu.drawText(display,tostring(value),x,y,color[1],color[2],color[3],"Arial",size,style or "plain") end
+  local function rect(x,y,rw,rh,color)
+    gpu.fillRect(display,x,y,rw,rh,color[1],color[2],color[3])
+    sleep(0)
+  end
+  local function txt(value,x,y,size,color,style)
+    gpu.drawText(display,tostring(value),x,y,color[1],color[2],color[3],"Arial",size,style or "plain")
+    sleep(0)
+  end
   local bg,panel,ink,muted = {10,17,29},{20,32,48},{229,240,250},{143,164,184}
   gpu.clear(display,bg[1],bg[2],bg[3])
+  sleep(0)
   rect(0,0,w,l.titleH,{15,29,47})
   local titleSize = math.max(18,math.floor(h*.032))
   txt("AIRSHIP v" .. AIRSHIP_BUILD,l.margin,math.floor((l.titleH-titleSize)/2),titleSize,ink,"bold")
@@ -651,6 +658,7 @@ local function renderDirectMonitor()
     txt(b.label,tx,b.y+math.floor((b.h-textSize)/2),textSize,ink,"bold")
   end
   gpu.updateDisplay(display)
+  sleep(0)
 end
 local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton, monitorGpuNotice, compactGpuNotice
 local showGainValues
