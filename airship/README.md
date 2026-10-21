@@ -6,7 +6,7 @@ CC:Tweaked controller for eight Create Propulsion liquid vector thrusters. It us
 
 Controller v1.2.19 adds cooperative checkpoints during hub discovery, sensor reads, thruster commands, and each DirectGPU draw. These use queued events instead of adding a timer delay to every operation. Scheduled workers defer their first pass until Basalt's event loop starts. Startup prints its current phase so a remaining stall can be located. The external display retains its 20 Hz refresh target and has no click highlight.
 
-Controller v1.2.20 explicitly enables mouse input for both new and reused DirectGPU displays. Each input pass processes up to 32 queued events, yielding between calls, so mouse movement does not leave clicks waiting behind a growing queue.
+Controller v1.2.21 enables mouse input for new and reused DirectGPU displays and accepts normal CC monitor touches, native GPU mouse events, and the GPU polling queue. Monitor cell coordinates are mapped to the GPU panel, and duplicate reports from different input routes run the button action once. Each polling pass processes up to 32 queued events, yielding between calls.
 
 In the computer terminal, install Basalt 2.5, download the updated controller beside it, and run it:
 

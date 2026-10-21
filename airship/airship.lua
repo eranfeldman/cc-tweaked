@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.20"
+local AIRSHIP_BUILD = "1.2.21"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -115,6 +115,11 @@ findAvionics = function(kind)
   end
 end
 monitor = monitor or findAvionics("monitor")
+local monitorName
+if monitor then
+  local ok, name = pcall(peripheral.getName, monitor)
+  if ok then monitorName = name end
+end
 local function findThrusters()
   local found = {}
   local function add(name, device)
@@ -1103,6 +1108,32 @@ local function refresh()
   end
 end
 
+local lastGpuClick
+local function clickGpuButton(x, y, source)
+  if not directGpu or type(x) ~= "number" or type(y) ~= "number" then return end
+  for _, button in ipairs(gpuButtons) do
+    if x >= button.x and x < button.x + button.w and y >= button.y and y < button.y + button.h then
+      local key = button.label .. ":" .. button.x .. ":" .. button.y
+      local now = os.clock()
+      if lastGpuClick and lastGpuClick.key == key and lastGpuClick.source ~= source and now - lastGpuClick.at < .15 then return end
+      lastGpuClick = {key=key, source=source, at=now}
+      button.action()
+      if button.label:match("^SWEEP") then sweepSummary = nil end
+      gpuRenderRevision = gpuRenderRevision + 1
+      gpuRedrawPending = true
+      return
+    end
+  end
+end
+local function handleMonitorTouch(name, x, y)
+  if not directGpu or not monitor or name ~= monitorName or type(x) ~= "number" or type(y) ~= "number" then return end
+  local ok, cols, rows = pcall(monitor.getSize)
+  if not ok or type(cols) ~= "number" or type(rows) ~= "number" or cols <= 0 or rows <= 0 then return end
+  clickGpuButton((x - .5) * directWidth / cols, (y - .5) * directHeight / rows, "monitor")
+end
+local function handleGpuMouse(display, kind, x, y)
+  if display == directDisplay and kind == "mouse_click" then clickGpuButton(x, y, "gpu_event") end
+end
 local function pollGpuInput()
   local gpu, display = directGpu, directDisplay
   for _ = 1, 32 do
@@ -1117,16 +1148,8 @@ local function pollGpuInput()
       return
     end
     if event == nil then return end
-    if type(event) == "table" and event.type == "mouse_click" and type(event.x) == "number" and type(event.y) == "number" then
-      for _, button in ipairs(gpuButtons) do
-        if event.x >= button.x and event.x <= button.x + button.w and event.y >= button.y and event.y <= button.y + button.h then
-          button.action()
-          if button.label:match("^SWEEP") then sweepSummary = nil end
-          gpuRenderRevision = gpuRenderRevision + 1
-          gpuRedrawPending = true
-          break
-        end
-      end
+    if type(event) == "table" and event.type == "mouse_click" then
+      clickGpuButton(event.x, event.y, "gpu")
     end
   end
 end
@@ -1188,6 +1211,18 @@ local ok, err = pcall(function()
         pollGpuInput()
       end
       sleep(directGpu and .05 or 2)
+    end
+  end)
+  basalt.schedule(function()
+    while running do
+      local _, name, x, y = os.pullEvent("monitor_touch")
+      handleMonitorTouch(name, x, y)
+    end
+  end)
+  basalt.schedule(function()
+    while running do
+      local _, display, kind, x, y = os.pullEvent("directgpu_mouse")
+      handleGpuMouse(display, kind, x, y)
     end
   end)
   basalt.schedule(function()

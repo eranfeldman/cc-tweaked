@@ -87,12 +87,28 @@ do
   env.directGpuEnabled = true
   env.createMonitorUi = function() fallback=true end
   env.directGpu.pollEvent = function() call(); return table.remove(events, 1) end
-  local input = assert(source:match("(local function pollGpuInput%(%)%s*.-)\nlocal ok, err = pcall"))
-  local poll = assert(load(helper .. "\n" .. input .. "\nreturn pollGpuInput", "@input", "t", env))()
+  env.monitorName, env.directWidth, env.directHeight = "monitor_0", 1000, 800
+  env.monitor = {getSize=function() return 100, 80 end}
+  local input = assert(source:match("(local lastGpuClick%s*.-)\nlocal ok, err = pcall"))
+  local poll, touch, gpuMouse = assert(load(helper .. "\n" .. input .. "\nreturn pollGpuInput, handleMonitorTouch, handleGpuMouse", "@input", "t", env))()
   local ok, err = run(poll)
   assert(ok, err)
   assert(clicked == 1 and #events == 0 and env.gpuRedrawPending and env.gpuRenderRevision == 1,
     "Movement events must not block a click or run its action twice")
+  touch("monitor_0", 1, 1)
+  gpuMouse(1, "mouse_click", 5, 5)
+  assert(clicked == 1, "One click reported through all three routes must run once")
+  env.os.clock = function() return 1 end
+  touch("monitor_9", 1, 1)
+  gpuMouse(2, "mouse_click", 5, 5)
+  gpuMouse(1, "mouse_drag", 5, 5)
+  assert(clicked == 1, "Other displays and drag events must not activate buttons")
+  touch("monitor_0", 1, 1)
+  touch("monitor_0", 1, 1)
+  assert(clicked == 3, "Normal CC monitor touches must map to GPU buttons and allow double taps")
+  env.os.clock = function() return 2 end
+  gpuMouse(1, "mouse_click", 5, 5)
+  assert(clicked == 4, "Native GPU mouse events must activate buttons without polling")
   env.directGpu.pollEvent = function() call(); error("GPU disconnected") end
   ok, err = run(poll)
   assert(ok, err)
@@ -139,4 +155,4 @@ do
   local _, presented = counts()
   assert(presented == 0, "An interrupted frame must not be presented")
 end
-print("PASS: discovery, display input setup, click backlog, fallback, thruster commands, all GPU tabs, and interrupted frames")
+print("PASS: discovery, input setup, native monitor and GPU clicks, duplicate clicks, backlog, fallback, thrusters, all tabs, and interrupted frames")
