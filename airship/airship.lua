@@ -19,27 +19,38 @@ if gpuFound then
   local listOk, displays = pcall(gpuFound.listDisplays)
   local display = listOk and displays and displays[1]
   local function getInfo(id)
-    if not id then return nil end
+    if id == nil then return nil, "no display ID returned" end
     local ok, info = pcall(gpuFound.getDisplayInfo, id)
-    return ok and info and type(info.pixelWidth) == "number" and type(info.pixelHeight) == "number" and info or nil
+    if not ok then return nil, tostring(info) end
+    if not info or type(info.pixelWidth) ~= "number" or type(info.pixelHeight) ~= "number" then
+      return nil, "display info has no pixel dimensions"
+    end
+    return info
   end
-  local info = getInfo(display)
+  local info, infoError = getInfo(display)
   local setupError
   if not info then
     local ok, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 0)
     if ok then
-      display, info = newDisplay, getInfo(newDisplay)
+      display = newDisplay
+      info, infoError = getInfo(display)
     else
-      setupError = tostring(newDisplay)
+      setupError = "create display: " .. tostring(newDisplay)
     end
   end
   if info then
     directGpu, directDisplay = gpuFound, display
     directWidth, directHeight = info.pixelWidth, info.pixelHeight
   else
-    local scanOk, monitorName = pcall(gpuFound.autoDetectMonitor)
-    if not scanOk then setupError = tostring(monitorName) end
-    directGpuError = setupError and ("Setup failed: " .. setupError) or (scanOk and (monitorName and "Display setup failed; restart controller" or "No monitor near DirectGPU block; move it beside monitor") or "DirectGPU display setup failed")
+    local scanOk, x, y, z = pcall(gpuFound.autoDetectMonitor)
+    if not scanOk then
+      setupError = setupError or ("monitor scan: " .. tostring(x))
+      directGpuError = "Setup failed: " .. setupError
+    elseif x ~= nil then
+      directGpuError = ("Monitor at %s,%s,%s; display %s: %s"):format(tostring(x), tostring(y), tostring(z), tostring(display), tostring(setupError or infoError))
+    else
+      directGpuError = "No monitor near DirectGPU block; move it beside monitor"
+    end
   end
 end
 local altitudeSensor = peripheral.find("altitude_sensor")
