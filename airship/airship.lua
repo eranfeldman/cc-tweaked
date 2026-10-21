@@ -101,8 +101,6 @@ local sweepConfirmAt
 local sweepSummary
 local sweepSummaryUntil
 local gpuButtons = {}
-local altitudePresets = {-10, 10, 25, 50}
-local presetIndex, presetBase = 0, nil
 local learnedHover = {}
 local altitudeSensorPressure
 local measuredThrust = 0
@@ -312,11 +310,23 @@ end
 
 local function selectAltitudePreset()
   if not position then status.text = "Waiting for GPS before selecting a height."; return end
-  presetBase = presetBase or math.floor(position.y + .5)
-  presetIndex = presetIndex % #altitudePresets + 1
-  altitude = presetBase + altitudePresets[presetIndex]
+  local heights = {}
+  for _, sample in pairs(learnedHover) do
+    if type(sample.height) == "number" then heights[#heights + 1] = sample.height end
+  end
+  table.sort(heights)
+  if #heights == 0 then
+    status.text = "No saved calibration altitudes. Run a sweep or lock a burner level."
+    status.foreground = colors.orange
+    return
+  end
+  local selected = 1
+  for i, height in ipairs(heights) do
+    if altitude and height > altitude + .001 then selected = i; break end
+  end
+  altitude = heights[selected]
   setFlightMode("HOLDING ALTITUDE")
-  status.text = ("Preset %d: target Y %.0f"):format(presetIndex, altitude)
+  status.text = ("Saved altitude %d/%d: target Y %.1f"):format(selected, #heights, altitude)
   status.foreground = colors.lightBlue
 end
 local function lockHoverLevel()
@@ -483,7 +493,7 @@ local function adjustAltitude(delta)
   setFlightMode("HOLDING ALTITUDE")
 end
 local function holdHere()
-  if position then altitude = math.floor(position.y + .5); presetBase = altitude; presetIndex = 0; target = nil; setFlightMode("HOLDING ALTITUDE") end
+  if position then altitude = math.floor(position.y + .5); target = nil; setFlightMode("HOLDING ALTITUDE") end
 end
 local function engageAutopilot()
   if not calibrated then status.text = "Run low-power direction checks, then confirm calibration."; status.foreground = colors.orange
@@ -550,7 +560,7 @@ if monitorFrame then
   monitorCalibrateButton = monitorFrame:addButton({x=2, y=9, width=14, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
   monitorFrame:addLabel({x=17, y=9, width=width-17, height=1, text="type on PC", foreground=colors.lightGray})
   monitorFrame:addButton({x=2, y=10, width=14, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
-  monitorFrame:addButton({x=18, y=10, width=12, height=1, text="ALT PRESET", background=colors.blue}):onClick(selectAltitudePreset)
+  monitorFrame:addButton({x=18, y=10, width=12, height=1, text="SAVED ALT", background=colors.blue}):onClick(selectAltitudePreset)
   monitorFrame:addButton({x=32, y=10, width=12, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
   monitorFrame:addButton({x=2, y=11, width=16, height=1, text="SWEEP 15-5", background=colors.orange}):onClick(startBurnerSweep)
   if directGpuError then monitorGpuNotice = monitorFrame:addLabel({x=2, y=12, width=width-2, height=1, text="GPU: " .. directGpuError, foreground=colors.orange}) end
@@ -653,7 +663,7 @@ local function setHeight()
 end
 frame:addButton({x=16, y=12, width=12, height=1, text="SET HEIGHT", background=colors.blue}):onClick(setHeight)
 heightInput:onEnter(setHeight)
-frame:addButton({x=30, y=12, width=13, height=1, text="ALT PRESET", background=colors.blue}):onClick(selectAltitudePreset)
+frame:addButton({x=30, y=12, width=13, height=1, text="SAVED ALT", background=colors.blue}):onClick(selectAltitudePreset)
 frame:addLabel({x=2, y=13, width=47, height=1, text="PID TUNE: X/Z P I D   ALT bias P I D", foreground=colors.lightBlue})
 pidInput = frame:addInput({x=2, y=14, width=35, height=1, placeholder="0.035 0.0005 0.18 4 1 0.03 2", background=colors.white, foreground=colors.black})
 showGainValues = function()
