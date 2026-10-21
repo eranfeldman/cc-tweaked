@@ -291,7 +291,8 @@ local function updateFlight(gpsFresh)
   local altitudeError = altitude - position.y
   local dt = altitudeSensorReady and altitudeDt or sampleDt
   if burnerSweep then
-    burnerCommand, burner = burnerSweep.level, burnerSweep.level
+    burnerCommand = burnerCommand + clamp(burnerSweep.level - burnerCommand, -burnerSlewPerSecond * dt, burnerSlewPerSecond * dt)
+    burner = math.floor(burnerCommand + .5)
   elseif manualBurner ~= nil then
     burnerCommand, burner = manualBurner, manualBurner
   else
@@ -376,7 +377,8 @@ local function updateBurnerSweep()
   if math.abs(position.y - burnerSweep.startedY) > 24 or math.abs(velocity.y) >= 3 then
     finishBurnerSweep("Sweep safety stop: moved 24 blocks or reached 3 blocks/sec."); return
   end
-  if math.abs(velocity.y) < .12 then burnerSweep.stableSince = burnerSweep.stableSince or now
+  local atLevel = math.abs(burnerCommand - burnerSweep.level) < .05
+  if atLevel and math.abs(velocity.y) < .12 then burnerSweep.stableSince = burnerSweep.stableSince or now
   else burnerSweep.stableSince = nil end
   if burnerSweep.stableSince and now - burnerSweep.stableSince >= 4 then
     local pressure = tonumber(("%.4f"):format(altitudeSensorPressure))
