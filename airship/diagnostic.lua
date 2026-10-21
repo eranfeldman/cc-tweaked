@@ -37,14 +37,40 @@ local sensor = findAvionics("altitude_sensor")
 local navigation = findAvionics("navigation_table")
 local gimbal = findAvionics("gimbal_sensor")
 if not sensor then error("Connect an Avionics altitude_sensor first") end
-local thrusters = {}
+local thrusters, seen = {}, {}
+local function addThruster(name, device)
+  if device and not seen[name] then
+    seen[name] = true
+    thrusters[#thrusters+1] = {name=name,device=device}
+  end
+end
 for _,name in ipairs(peripheral.getNames()) do
-  for _,kind in ipairs({peripheral.getType(name)}) do
-    if kind=="liquid_vector_thruster" then
-      local device=peripheral.wrap(name)
-      if device then thrusters[#thrusters+1]={name=name,device=device} end
-      break
+  local kinds={peripheral.getType(name)}
+  for _,kind in ipairs(kinds) do
+    if kind=="liquid_vector_thruster" then addThruster(name,peripheral.wrap(name)) end
+  end
+  local root=peripheral.wrap(name)
+  if root and type(root.getNamesRemote)=="function" then
+    local function scan(hub,path,depth)
+      if depth>2 then return end
+      local ok,names=pcall(hub.getNamesRemote)
+      if not ok or type(names)~="table" then return end
+      for _,childName in ipairs(names) do
+        local typeOk,remoteType=pcall(hub.getTypeRemote,childName)
+        local types=type(remoteType)=="table" and remoteType or {remoteType}
+        local child=setmetatable({}, {__index=function(_,method)
+          return function(...) return hub.callRemote(childName,method,...) end
+        end})
+        for _,kind in ipairs(types) do
+          if kind=="liquid_vector_thruster" then
+            addThruster(path.."/"..childName,child)
+          elseif (kind=="peripheral_hub" or kind=="malahit_hub") and depth<2 then
+            scan(child,path.."/"..childName,depth+1)
+          end
+        end
+      end
     end
+    scan(root,name,1)
   end
 end
 table.sort(thrusters,function(a,b)

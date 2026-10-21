@@ -1,17 +1,6 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.1.1"
+local AIRSHIP_BUILD = "1.1.2"
 local basalt = require("basalt")
-local ids = {
-  "liquid_vector_thruster_0", "liquid_vector_thruster_1",
-  "liquid_vector_thruster_2", "liquid_vector_thruster_3",
-  "liquid_vector_thruster_4", "liquid_vector_thruster_5",
-  "liquid_vector_thruster_6", "liquid_vector_thruster_7"
-}
-local thrusters = {}
-for _, name in ipairs(ids) do
-  thrusters[name] = peripheral.wrap(name)
-  if not thrusters[name] then error("Missing thruster: " .. name) end
-end
 
 local monitor = peripheral.find("monitor")
 local monitorName
@@ -123,6 +112,48 @@ findAvionics = function(kind)
       end
     end
   end
+end
+local function findThrusters()
+  local found = {}
+  for _, name in ipairs(peripheral.getNames()) do
+    local kinds = {peripheral.getType(name)}
+    for _, kind in ipairs(kinds) do
+      if kind == "liquid_vector_thruster" then
+        local device = peripheral.wrap(name)
+        if device then found[name] = device end
+      end
+    end
+    local hub = peripheral.wrap(name)
+    if hub and type(hub.getNamesRemote) == "function" then
+      local function scan(remoteHub, path, depth)
+        if depth > 2 then return end
+        local ok, names = pcall(remoteHub.getNamesRemote)
+        if not ok or type(names) ~= "table" then return end
+        for _, childName in ipairs(names) do
+          local typeOk, remoteType = pcall(remoteHub.getTypeRemote, childName)
+          local types = type(remoteType) == "table" and remoteType or {remoteType}
+          local child = setmetatable({}, {__index=function(_, method)
+            return function(...) return remoteHub.callRemote(childName, method, ...) end
+          end})
+          for _, kind in ipairs(types) do
+            if kind == "liquid_vector_thruster" then
+              found[path .. "/" .. childName] = child
+            elseif (kind == "peripheral_hub" or kind == "malahit_hub") and depth < 2 then
+              scan(child, path .. "/" .. childName, depth + 1)
+            end
+          end
+        end
+      end
+      scan(hub, name, 1)
+    end
+  end
+  return found
+end
+local thrusters = findThrusters()
+local thrusterCount = 0
+for _ in pairs(thrusters) do thrusterCount = thrusterCount + 1 end
+if thrusterCount ~= 8 then
+  error("Expected 8 liquid_vector_thruster peripherals, found " .. thrusterCount .. "; check the wired hub")
 end
 local altitudeSensor = findAvionics("altitude_sensor")
 local navigationTable = findAvionics("navigation_table")
