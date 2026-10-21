@@ -1,19 +1,33 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.18"
+local AIRSHIP_BUILD = "1.2.19"
+print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
+local yieldSequence = 0
+local function yieldComputer()
+  -- A queued event yields without the tick delay of sleep(0).
+  yieldSequence = yieldSequence + 1
+  local event = "airship_yield_" .. yieldSequence
+  os.queueEvent(event)
+  os.pullEvent(event)
+end
+yieldComputer()
+print("Discovering peripherals...")
 local monitor = peripheral.find("monitor")
 local directGpu, directDisplay, directWidth, directHeight, directGpuError
 local directGpuEnabled = true
 local findAvionics
 local function setupDirectGpu()
   local gpuFound = peripheral.wrap("directgpu_5") or peripheral.find("directgpu")
+  yieldComputer()
   if not gpuFound then directGpuError = "DirectGPU peripheral not found"; return false end
   local listOk, displays = pcall(gpuFound.listDisplays)
+  yieldComputer()
   local display = listOk and type(displays) == "table" and displays[1]
   local function getInfo(id)
     if id == nil then return nil, "no display ID returned" end
     local ok, info = pcall(gpuFound.getDisplayInfo, id)
+    yieldComputer()
     if not ok then return nil, tostring(info) end
     if not info or type(info.pixelWidth) ~= "number" or type(info.pixelHeight) ~= "number" then
       return nil, "display info has no pixel dimensions"
@@ -24,6 +38,7 @@ local function setupDirectGpu()
   local setupError
   if not info then
     local created, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 1)
+    yieldComputer()
     if created then display = newDisplay; info, infoError = getInfo(display)
     else setupError = "create display: " .. tostring(newDisplay) end
   end
@@ -34,6 +49,7 @@ local function setupDirectGpu()
     return true
   else
     local scanOk, monitorInfo = pcall(gpuFound.autoDetectMonitor)
+    yieldComputer()
     if not scanOk then
       setupError = setupError or ("monitor scan: " .. tostring(monitorInfo))
       directGpuError = "Setup failed: " .. setupError
@@ -49,14 +65,18 @@ end
 -- Resolve devices behind the Malahit hub nested behind the wired peripheral hub.
 findAvionics = function(kind)
   local direct = peripheral.find(kind)
+  yieldComputer()
   if direct then return direct end
   for _, rootName in ipairs(peripheral.getNames()) do
     local root = peripheral.wrap(rootName)
+    yieldComputer()
     if root and type(root.getNamesRemote) == "function" then
       local ok, names = pcall(root.getNamesRemote)
+      yieldComputer()
       if ok and type(names) == "table" then
         for _, remoteName in ipairs(names) do
           local typeOk, remoteType = pcall(root.getTypeRemote, remoteName)
+          yieldComputer()
           local types = type(remoteType) == "table" and remoteType or {remoteType}
           for _, remoteKind in ipairs(types) do
             if remoteKind == kind then
@@ -65,9 +85,11 @@ findAvionics = function(kind)
               end})
             elseif remoteKind == "malahit_hub" or remoteKind == "peripheral_hub" then
               local childOk, childNames = pcall(root.callRemote, remoteName, "getNamesRemote")
+              yieldComputer()
               if childOk and type(childNames) == "table" then
                 for _, childName in ipairs(childNames) do
                   local childTypeOk, childType = pcall(root.callRemote, remoteName, "getTypeRemote", childName)
+                  yieldComputer()
                   local childTypes = type(childType) == "table" and childType or {childType}
                   for _, childKind in ipairs(childTypes) do
                     if childKind == kind then
@@ -99,19 +121,23 @@ local function findThrusters()
         add(name, peripheral.wrap(name))
       end
     end
+    yieldComputer()
   end
   local count = 0
   for _ in pairs(found) do count = count + 1 end
   if count >= 8 then return found end
   for _, name in ipairs(peripheral.getNames()) do
     local hub = peripheral.wrap(name)
+    yieldComputer()
     if hub and type(hub.getNamesRemote) == "function" then
       local function scan(remoteHub, path, depth)
         if depth > 2 then return end
         local ok, names = pcall(remoteHub.getNamesRemote)
+        yieldComputer()
         if not ok or type(names) ~= "table" then return end
         for _, childName in ipairs(names) do
           local typeOk, remoteType = pcall(remoteHub.getTypeRemote, childName)
+          yieldComputer()
           local types = type(remoteType) == "table" and remoteType or {remoteType}
           local child = setmetatable({}, {__index=function(_, method)
             return function(...) return remoteHub.callRemote(childName, method, ...) end
@@ -130,15 +156,18 @@ local function findThrusters()
   end
   return found
 end
+print("Discovering thrusters...")
 local thrusters = findThrusters()
 local thrusterCount = 0
 for _ in pairs(thrusters) do thrusterCount = thrusterCount + 1 end
 if thrusterCount ~= 8 then
   error("Expected 8 liquid_vector_thruster peripherals, found " .. thrusterCount .. "; check the wired hub")
 end
+print("Discovering avionics...")
 local altitudeSensor = findAvionics("altitude_sensor")
 local navigationTable = findAvionics("navigation_table")
 local gimbalSensor = findAvionics("gimbal_sensor")
+print("Setting up display...")
 if directGpuEnabled then setupDirectGpu() else directGpuError = "DirectGPU paused for stability; using CC monitor" end
 local frame = basalt.getMainFrame()
 local monitorFrame
@@ -275,10 +304,12 @@ local altitudeSensorReady = false
 local lastGpsAt
 
 local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
-local function outputs()
+local function outputs(cooperative)
   for _, thruster in pairs(thrusters) do
     thruster.setVector(vectorX, vectorY)
+    if cooperative then yieldComputer() end
     thruster.setThrustNormalized(power)
+    if cooperative then yieldComputer() end
   end
   redstone.setAnalogOutput("front", burner)
 end
@@ -315,7 +346,13 @@ local function locate()
   local now = os.clock()
   if altitudeSensor then
     local ok, height, verticalSpeed, pressure = pcall(function()
-      return altitudeSensor.getHeight(), altitudeSensor.getVerticalSpeed(), altitudeSensor.getAirPressure()
+      local height = altitudeSensor.getHeight()
+      yieldComputer()
+      local verticalSpeed = altitudeSensor.getVerticalSpeed()
+      yieldComputer()
+      local pressure = altitudeSensor.getAirPressure()
+      yieldComputer()
+      return height, verticalSpeed, pressure
     end)
     if ok and type(height) == "number" and height == height and math.abs(height) < math.huge then
       altitudeSensorHeight, altitudeSensorReady = height, true
@@ -326,10 +363,12 @@ local function locate()
   end
   if navigationTable then
     local ok, heading = pcall(navigationTable.getHeadingRad)
+    yieldComputer()
     if ok and type(heading) == "number" and heading == heading and math.abs(heading) < math.huge then shipHeading = heading end
   end
   if gimbalSensor then
     local ok, rates = pcall(gimbalSensor.getAngularRatesRad)
+    yieldComputer()
     if ok and type(rates) == "table" and type(rates[2]) == "number" then yawRate = rates[2] end
   end
   local x, y, z = gps.locate(.5, false)
@@ -549,6 +588,7 @@ local function readThrusterPower()
   local total, count = 0, 0
   for _, thruster in pairs(thrusters) do
     local ok, value = pcall(thruster.getPower)
+    yieldComputer()
     if ok and type(value) == "number" and value == value then total, count = total + value, count + 1 end
   end
   measuredThrust = count > 0 and total / count * 15 or 0
@@ -572,12 +612,8 @@ local function renderDirectMonitor()
   if not directGpu then return end
   local gpu, display = directGpu, directDisplay
   local revision = gpuRenderRevision
-  local callsSinceYield = 0
   local function yieldFrame()
-    callsSinceYield = callsSinceYield + 1
-    if callsSinceYield < 4 then return end
-    callsSinceYield = 0
-    sleep(0)
+    yieldComputer()
     if revision ~= gpuRenderRevision then error("DirectGPU frame superseded", 0) end
   end
   local l = gpuLayout()
@@ -668,7 +704,7 @@ local function renderDirectMonitor()
     txt(b.label,tx,b.y+math.floor((b.h-textSize)/2),textSize,ink,"bold")
   end
   gpu.updateDisplay(display)
-  sleep(0)
+  yieldComputer()
 end
 local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton, monitorGpuNotice, compactGpuNotice
 local showGainValues
@@ -1065,12 +1101,13 @@ local ok, err = pcall(function()
   altitude = startY and math.floor(startY + .5) or nil
   if altitude then mode = "HOLDING ALTITUDE" else mode = "WAITING FOR GPS" end
   basalt.schedule(function()
+    yieldComputer()
     while running do
       local success, failure = pcall(function()
         local gpsFresh = locate()
         updateFlight(gpsFresh)
         updateBurnerSweep()
-        outputs()
+        outputs(true)
       end)
       if not success then
         local sweep = burnerSweep
@@ -1083,16 +1120,19 @@ local ok, err = pcall(function()
     end
   end)
   basalt.schedule(function()
+    yieldComputer()
     while running do
       refresh()
       sleep(gpuRedrawPending and 0 or .05)
     end
   end)
   basalt.schedule(function()
+    yieldComputer()
     while running do
       if directGpu and os.clock() - lastGpuCheck >= 5 then
         lastGpuCheck = os.clock()
         local alive, info = pcall(directGpu.getDisplayInfo, directDisplay)
+        yieldComputer()
         if not alive or not info then
           directGpu = nil; directGpuEnabled = false
           directGpuError = "Display check failed: " .. tostring(info or "no display info")
