@@ -24,16 +24,22 @@ if gpuFound then
     return ok and info and type(info.pixelWidth) == "number" and type(info.pixelHeight) == "number" and info or nil
   end
   local info = getInfo(display)
+  local setupError
   if not info then
     local ok, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 0)
-    if ok then display, info = newDisplay, getInfo(newDisplay) end
+    if ok then
+      display, info = newDisplay, getInfo(newDisplay)
+    else
+      setupError = tostring(newDisplay)
+    end
   end
   if info then
     directGpu, directDisplay = gpuFound, display
     directWidth, directHeight = info.pixelWidth, info.pixelHeight
   else
     local scanOk, monitorName = pcall(gpuFound.autoDetectMonitor)
-    directGpuError = scanOk and (monitorName and "Display setup failed; restart controller" or "No monitor near DirectGPU block; move it beside monitor") or "DirectGPU display setup failed; check the GPU block"
+    if not scanOk then setupError = tostring(monitorName) end
+    directGpuError = setupError and ("Setup failed: " .. setupError) or (scanOk and (monitorName and "Display setup failed; restart controller" or "No monitor near DirectGPU block; move it beside monitor") or "DirectGPU display setup failed")
   end
 end
 local altitudeSensor = peripheral.find("altitude_sensor")
