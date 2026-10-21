@@ -1,18 +1,16 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.1.8"
+local AIRSHIP_BUILD = "1.1.9"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
 local directGpu, directDisplay, directWidth, directHeight, directGpuError
-local directGpuEnabled = false
+local directGpuEnabled = true
 local findAvionics
 local function setupDirectGpu()
   local gpuFound = peripheral.find("directgpu")
   if not gpuFound then directGpuError = "DirectGPU peripheral not found"; return false end
   local listOk, displays = pcall(gpuFound.listDisplays)
-  if listOk and type(displays) == "table" then
-    for _, oldDisplay in ipairs(displays) do pcall(gpuFound.removeDisplay, oldDisplay) end
-  end
+  local display = listOk and type(displays) == "table" and displays[1]
   local function getInfo(id)
     if id == nil then return nil, "no display ID returned" end
     local ok, info = pcall(gpuFound.getDisplayInfo, id)
@@ -22,10 +20,13 @@ local function setupDirectGpu()
     end
     return info
   end
-  local created, display = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 1)
-  local setupError = not created and ("create display: " .. tostring(display)) or nil
-  local info, infoError
-  if created then info, infoError = getInfo(display) end
+  local info, infoError = getInfo(display)
+  local setupError
+  if not info then
+    local created, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 1)
+    if created then display = newDisplay; info, infoError = getInfo(display)
+    else setupError = "create display: " .. tostring(newDisplay) end
+  end
   if info then
     directGpu, directDisplay = gpuFound, display
     directWidth, directHeight = info.pixelWidth, info.pixelHeight
@@ -1022,7 +1023,7 @@ local function refresh()
     monitorSystem.text = ("B%d/15 T%.1f GPS %s AV %s H:%d"):format(burner, measuredThrust, position and "OK" or "LOST", altitudeSensorReady and "OK" or "--", savedCount)
     monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
   end
-  if directGpu and os.clock() - lastGpuRender >= .25 then
+  if directGpu and os.clock() - lastGpuRender >= 1 then
     createGpuButtons()
     local ok = pcall(renderDirectMonitor)
     if ok then lastGpuRender = os.clock()
@@ -1092,7 +1093,7 @@ local ok, err = pcall(function()
           end
         end
       end
-      sleep(directGpu and .2 or 2)
+      sleep(directGpu and .5 or 2)
     end
   end)
   basalt.schedule(function()
