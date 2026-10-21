@@ -71,7 +71,6 @@ for _, name in ipairs(names) do
       for _, remoteName in ipairs(list) do remoteNames[remoteName] = true end
     end
     reportCall("getLinks", wrapped.getLinks)
-    reportCall("getGeometry", wrapped.getGeometry)
   end
 
   local methods = {}
