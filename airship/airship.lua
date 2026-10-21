@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.2"
+local AIRSHIP_BUILD = "1.2.3"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -1055,7 +1055,7 @@ local ok, err = pcall(function()
         sweepSummaryUntil = os.clock() + 15
         running = false; status.text = sweepSummary; status.foreground = colors.red; refresh(); basalt.stop(); return
       end
-      sleep(.05)
+      sleep(.2)
     end
   end)
   basalt.schedule(function()
