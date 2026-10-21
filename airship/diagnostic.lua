@@ -79,7 +79,7 @@ print(("Start Y %.1f, vertical speed %.2f, pressure %.4f"):format(startY,startVy
 print(("Gains: XY %.4f %.5f %.3f; altitude bias/P/I/D %.2f %.3f %.4f %.3f"):format(
   gains[1],gains[2],gains[3],gains[4],gains[5],gains[6],gains[7]))
 print(mode.."; saved hover-map points: "..#hoverPoints)
-print("Test: hold, altitude +3, return, altitude -3, return; then X+, X-, Z+, Z- targets 8 blocks away.")
+print("Test: hold, altitude +3, return, altitude -3, return; then X+, X-, Z+, Z- targets 10 blocks from start.")
 print("The Pastebin upload is public and contains relative X/Z only. Type YES to start:")
 if read()~="YES" then print("Cancelled; no outputs changed."); return end
 
@@ -203,9 +203,9 @@ local function runDiagnostic()
   runPhase("ALT_RETURN_BASE_1",20,startY)
   runPhase("ALT_STEP_DOWN_3",25,startY-3)
   runPhase("ALT_RETURN_BASE_2",20,startY)
-  local axes={{"AUTO_X_PLUS",8,0},{"AUTO_X_MINUS",-8,0},{"AUTO_Z_PLUS",0,8},{"AUTO_Z_MINUS",0,-8}}
+  local axes={{"AUTO_X_PLUS",10,0},{"AUTO_X_MINUS",-10,0},{"AUTO_Z_PLUS",0,10},{"AUTO_Z_MINUS",0,-10}}
   for _,axis in ipairs(axes) do
-    runPhase(axis[1],40,startY,state.x-x0+axis[2],state.z-z0+axis[3])
+    runPhase(axis[1],60,startY,axis[2],axis[3])
   end
 end
 local function waitForQ()
