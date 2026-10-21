@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.1.4"
+local AIRSHIP_BUILD = "1.1.5"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -16,7 +16,7 @@ end
 local directGpu, directDisplay, directWidth, directHeight, directGpuError
 local findAvionics
 local function setupDirectGpu()
-  local gpuFound = findAvionics and findAvionics("directgpu") or peripheral.find("directgpu")
+  local gpuFound = peripheral.find("directgpu")
   if not gpuFound then directGpuError = "DirectGPU peripheral not found"; return false end
   monitorName = nil
   for _, name in ipairs(peripheral.getNames()) do
@@ -113,6 +113,7 @@ findAvionics = function(kind)
     end
   end
 end
+monitor = monitor or findAvionics("monitor")
 local function findThrusters()
   local found = {}
   local function add(name, device)
