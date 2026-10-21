@@ -770,8 +770,8 @@ local ok, err = pcall(function()
   basalt.schedule(function()
     while running do
       if directGpu then
-        local alive = pcall(directGpu.getDisplayInfo, directDisplay)
-        if not alive then directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting" end
+        local alive, info = pcall(directGpu.getDisplayInfo, directDisplay)
+        if not alive or not info then directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting" end
       end
       if not directGpu then
         pcall(setupDirectGpu)
