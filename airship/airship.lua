@@ -675,6 +675,7 @@ local function holdHere()
   end
 end
 local function engageAutopilot()
+  if calibrationRunning then status.text = "Wait for direction calibration to finish."; status.foreground = colors.orange; return end
   if not navigationTable or not shipHeading then status.text = "Navigation table heading unavailable; autopilot cannot steer while ship rotates."; status.foreground = colors.red; return end
   if not calibrated then status.text = "Run low-power direction calibration first."; status.foreground = colors.orange
   elseif not position or not target then status.text = "GPS fix and destination are required."; status.foreground = colors.red
@@ -687,7 +688,6 @@ local function testVector(x, y, label)
   status.foreground = colors.orange
 end
 local function confirmCalibration()
-  if calibrated then status.text = "Calibration already saved on this computer."; return end
   if calibrationRunning then status.text = "Direction calibration is already running."; return end
   if mode == "STOPPED" then status.text = "Resume flight control before calibrating."; status.foreground = colors.red; return end
   if not position then status.text = "Wait for GPS before calibrating."; status.foreground = colors.red; return end
@@ -715,8 +715,8 @@ local function confirmCalibration()
     file.close()
     calibrationRunning, calibrated = false, true
     vectorX, vectorY, power, mode = 0, 0, 0, "HOLDING ALTITUDE"
-    if calibrateButton then calibrateButton.text, calibrateButton.background = "CALIBRATED", colors.green end
-    if monitorCalibrateButton then monitorCalibrateButton.text, monitorCalibrateButton.background = "CALIBRATED", colors.green end
+    if calibrateButton then calibrateButton.text, calibrateButton.background = "RECALIBRATE", colors.green end
+    if monitorCalibrateButton then monitorCalibrateButton.text, monitorCalibrateButton.background = "RECALIBRATE", colors.green end
     status.text = "Four low-power direction checks finished. Calibration saved."; status.foreground = colors.lime
   end)
 end
@@ -748,7 +748,7 @@ local function createGpuButtons()
     buttonRow({
       {"FWD",nil,{70,82,96},function() testVector(0,.2,"TEST Y+") end},
       {"BACK",nil,{70,82,96},function() testVector(0,-.2,"TEST Y-") end},
-      {calibrated and "READY" or "CAL",nil,calibrated and {55,130,90} or {130,78,31},confirmCalibration},
+      {calibrated and "RECAL" or "CAL",nil,calibrated and {55,130,90} or {130,78,31},confirmCalibration},
       {"MANUAL",nil,{100,75,35},toggleManualBurner},
       {"LOCK",nil,{100,75,35},lockHoverLevel},
       {"SWEEP 15-5",nil,{130,78,31},startBurnerSweep},
@@ -788,7 +788,7 @@ if monitorFrame then
   monitorFrame:addButton({x=25, y=7, width=8, height=1, text="STOP", background=colors.red}):onClick(stop)
   monitorFrame:addButton({x=2, y=8, width=12, height=1, text="TEST FWD", background=colors.gray}):onClick(function() testVector(0, .2, "TEST Y+") end)
   monitorFrame:addButton({x=15, y=8, width=12, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
-  monitorCalibrateButton = monitorFrame:addButton({x=2, y=9, width=14, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
+  monitorCalibrateButton = monitorFrame:addButton({x=2, y=9, width=14, height=1, text=calibrated and "RECALIBRATE" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
   monitorFrame:addLabel({x=17, y=9, width=width-17, height=1, text="type on PC", foreground=colors.lightGray})
   monitorFrame:addButton({x=2, y=10, width=14, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
   monitorFrame:addButton({x=18, y=10, width=12, height=1, text="SAVED ALT", background=colors.blue}):onClick(selectAltitudePreset)
@@ -835,7 +835,7 @@ if compact then
   frame:addButton({x=24, y=9, width=8, height=1, text="STOP", background=colors.red}):onClick(stop)
   frame:addButton({x=2, y=10, width=12, height=1, text="TEST FWD", background=colors.gray}):onClick(function() testVector(0, .2, "TEST Y+") end)
   frame:addButton({x=15, y=10, width=12, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
-  calibrateButton = frame:addButton({x=2, y=11, width=13, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
+  calibrateButton = frame:addButton({x=2, y=11, width=13, height=1, text=calibrated and "RECALIBRATE" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
   frame:addButton({x=16, y=11, width=10, height=1, text="SWEEP V", background=colors.orange}):onClick(startBurnerSweep)
   frame:addButton({x=27, y=11, width=12, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
   frame:addButton({x=40, y=11, width=10, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
@@ -949,7 +949,7 @@ local function calibrationButton(x, y, width, label, color, action)
 end
 calibrationButton(2, 6, 22, "Y+ / FWD", colors.gray, function() testVector(0, .2, "TEST Y+") end)
 calibrationButton(26, 6, 22, "Y- / BACK", colors.gray, function() testVector(0, -.2, "TEST Y-") end)
-calibrateButton = calibrationPage:addButton({x=2, y=9, width=14, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
+calibrateButton = calibrationPage:addButton({x=2, y=9, width=14, height=1, text=calibrated and "RECALIBRATE" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
 calibrationPage:addButton({x=18, y=9, width=12, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
 calibrationPage:addButton({x=32, y=9, width=15, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
 calibrationButton(2, 12, 16, "SWEEP 15-5", colors.orange, startBurnerSweep)
