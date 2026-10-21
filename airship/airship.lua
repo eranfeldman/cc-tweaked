@@ -42,11 +42,11 @@ if gpuFound then
   if not info then
     local ok, newDisplay
     if monitorName then
-      ok, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, monitorName, 0)
+      ok, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, monitorName, 1)
       if not ok then setupError = "create display for " .. monitorName .. ": " .. tostring(newDisplay) end
     end
     if not monitorName or not ok or newDisplay == nil then
-      ok, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 0)
+      ok, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 1)
       if ok then setupError = nil else setupError = "create display: " .. tostring(newDisplay) end
     end
     if ok then
