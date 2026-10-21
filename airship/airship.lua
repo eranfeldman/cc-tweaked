@@ -13,6 +13,16 @@ for _, name in ipairs(ids) do
 end
 
 local monitor = peripheral.find("monitor")
+local monitorName
+for _, name in ipairs(peripheral.getNames()) do
+  for _, kind in ipairs({peripheral.getType(name)}) do
+    if type(kind) == "string" and kind:find("monitor", 1, true) then
+      monitorName = name
+      break
+    end
+  end
+  if monitorName then break end
+end
 local directGpu, directDisplay, directWidth, directHeight, directGpuError
 local gpuFound = peripheral.find("directgpu")
 if gpuFound then
@@ -30,12 +40,20 @@ if gpuFound then
   local info, infoError = getInfo(display)
   local setupError
   if not info then
-    local ok, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 0)
+    local ok, newDisplay
+    if monitorName then
+      ok, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, monitorName, 0)
+      if not ok then setupError = "create display for " .. monitorName .. ": " .. tostring(newDisplay) end
+    end
+    if not monitorName or not ok or newDisplay == nil then
+      ok, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 0)
+      if ok then setupError = nil else setupError = "create display: " .. tostring(newDisplay) end
+    end
     if ok then
       display = newDisplay
       info, infoError = getInfo(display)
     else
-      setupError = "create display: " .. tostring(newDisplay)
+      setupError = setupError or ("create display: " .. tostring(newDisplay))
     end
   end
   if info then
