@@ -1,6 +1,6 @@
 -- Refreshes the controller/updater and removes only known temporary airship files.
-local controllerUrl = "https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship.lua"
-local updaterUrl = "https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship-updater.lua"
+local controllerUrl = "https://raw.githubusercontent.com/eranfeldman/cc-tweaked/db99124ebe00a6e59efb78ae73afed3bbe39aad2/airship/airship.lua"
+local updaterUrl = "https://raw.githubusercontent.com/eranfeldman/cc-tweaked/db99124ebe00a6e59efb78ae73afed3bbe39aad2/airship/airship-updater.lua"
 local controllerTemp, updaterTemp = "/airship.lua.cleaning", "/airship-updater.lua.cleaning"
 local controllerBackup, updaterBackup = "/airship.lua.bak", "/airship-updater.lua.bak"
 
@@ -41,6 +41,7 @@ end
 
 local function stale(name)
   if name == "airship-cleanup.lua" then return false end
+  if name == "hub-diagnostic.lua" then return true end
   if name == "airship.lua.update" or name == "airship.lua.cleaning" or name == "airship-updater.lua.cleaning" or name == "airship-updater-new.lua" or name == "airship-new.lua" or name == "airship-next.lua" then return true end
   if name:match("^airship%-v%d+%.%d+%.%d+%.lua$") then return true end
   if name:match("^airship%-hub%-diagnostic[%-%d]*%.txt$") then return true end
@@ -84,3 +85,4 @@ end
 print("Installed airship v1.1.6 and current updater.")
 print("Removed " .. removed .. " temporary files. Calibration and flight data remain.")
 print("The UPDATE button now runs the refreshed updater; launch airship.lua when ready.")
+pcall(fs.delete, "/airship-cleanup.lua")
