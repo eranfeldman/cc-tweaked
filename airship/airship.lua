@@ -212,7 +212,7 @@ local function outputs()
 end
 local function stop()
   if burnerSweep then
-    sweepSummary = ("Sweep canceled. Saved %d/10; skipped %d."):format(burnerSweep.saved, burnerSweep.skipped)
+    sweepSummary = ("Sweep canceled. Saved %d/11; skipped %d."):format(burnerSweep.saved, burnerSweep.skipped)
     sweepSummaryUntil = os.clock() + 15
   end
   manualBurner = nil
@@ -263,7 +263,7 @@ local function locate()
     if mode ~= "STOPPED" then
       vectorX, vectorY, power, burner, burnerCommand = 0, 0, 0, 0, 0
       if burnerSweep then
-        sweepSummary = ("Sweep aborted: GPS lost. Saved %d/10; skipped %d."):format(burnerSweep.saved, burnerSweep.skipped)
+        sweepSummary = ("Sweep aborted: GPS lost. Saved %d/11; skipped %d."):format(burnerSweep.saved, burnerSweep.skipped)
         sweepSummaryUntil = os.clock() + 15
       end
       burnerSweep, manualBurner = nil, nil
@@ -346,7 +346,7 @@ local function finishBurnerSweep(message)
   burnerSweep, manualBurner = nil, nil
   if position then altitude = math.floor(position.y + .5) end
   setFlightMode("HOLDING ALTITUDE")
-  sweepSummary = (message and (message .. " ") or "Sweep finished. ") .. ("Saved %d/10; skipped %d."):format(sweep.saved, sweep.skipped)
+  sweepSummary = (message and (message .. " ") or "Sweep finished. ") .. ("Saved %d/11; skipped %d."):format(sweep.saved, sweep.skipped)
   sweepSummaryUntil = os.clock() + 15
   status.text = sweepSummary
   status.foreground = message and colors.red or colors.lime
@@ -362,7 +362,7 @@ local function startBurnerSweep()
     burnerSweep = {level=15, startedY=position.y, changedAt=os.clock(), stableSince=nil, saved=0, skipped=0}
     manualBurner, vectorX, vectorY, power, target = nil, 0, 0, 0, nil
     mode = "BURNER SWEEP"
-    status.text = "Sweep started: levels 15 down to 6"; status.foreground = colors.orange
+    status.text = "Sweep started: levels 15 down to 5"; status.foreground = colors.orange
     sweepConfirmAt = nil
   else
     sweepConfirmAt = os.clock()
@@ -384,12 +384,12 @@ local function updateBurnerSweep()
     learnedHover[key] = {pressure=pressure, level=burnerSweep.level, height=altitudeSensorHeight}
     if not saveHoverMap() then finishBurnerSweep("Sweep stopped: calibration file could not be saved."); return end
     burnerSweep.saved = burnerSweep.saved + 1
-    if burnerSweep.level == 6 then finishBurnerSweep(); return end
+    if burnerSweep.level == 5 then finishBurnerSweep(); return end
     burnerSweep.level = burnerSweep.level - 1
     burnerSweep.changedAt, burnerSweep.stableSince = now, nil
   elseif now - burnerSweep.changedAt >= 45 then
     burnerSweep.skipped = burnerSweep.skipped + 1
-    if burnerSweep.level == 6 then finishBurnerSweep(); return end
+    if burnerSweep.level == 5 then finishBurnerSweep(); return end
     burnerSweep.level = burnerSweep.level - 1
     burnerSweep.changedAt, burnerSweep.stableSince = now, nil
   end
@@ -457,18 +457,18 @@ local function renderDirectMonitor()
   txt(("THRUST  %.1f / 15"):format(measuredThrust), 23 + 2 * (cardW + gap), cardY + 60, 12, muted)
   txt(position and ("GPS  X %.1f     Z %.1f"):format(position.x, position.z) or "GPS SIGNAL LOST", 16, 145, 15, position and ink or {255,110,110})
   local baseY = math.floor(h * .62)
-  txt("HOVER CALIBRATION   15  →  6", 16, baseY, 14, muted, "bold")
-  for i=0,9 do
+  txt("HOVER CALIBRATION   15  →  5", 16, baseY, 14, muted, "bold")
+  for i=0,10 do
     local level = 15 - i
-    local x = 16 + i * (math.floor((w - 32) / 10))
+    local x = 16 + i * (math.floor((w - 32) / 11))
     local marked = false
     for _, sample in pairs(learnedHover) do if sample.level == level then marked = true; break end end
     local active = burnerSweep and burnerSweep.level == level
-    rect(x, baseY + 24, math.max(12, math.floor((w - 48) / 12)), 12, active and {255,180,72} or marked and {55,205,160} or {57,73,91})
+    rect(x, baseY + 24, math.max(12, math.floor((w - 48) / 13)), 12, active and {255,180,72} or marked and {55,205,160} or {57,73,91})
     txt(level, x + 2, baseY + 42, 10, marked and {115,235,195} or muted)
   end
   if burnerSweep then
-    txt(("LEVEL %d   SAVED %d/10   SKIPPED %d"):format(burnerSweep.level, burnerSweep.saved, burnerSweep.skipped), 16, baseY + 62, 13, {255,190,90}, "bold")
+    txt(("LEVEL %d   SAVED %d/11   SKIPPED %d"):format(burnerSweep.level, burnerSweep.saved, burnerSweep.skipped), 16, baseY + 62, 13, {255,190,90}, "bold")
   elseif sweepSummary then txt(sweepSummary, 16, baseY + 62, 12, {255,190,90})
   else txt("Tap SWEEP twice to confirm. Levels save as soon as stable.", 16, baseY + 62, 12, muted) end
   for _, b in ipairs(gpuButtons) do
@@ -555,7 +555,7 @@ if monitorFrame then
   monitorFrame:addButton({x=2, y=10, width=14, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
   monitorFrame:addButton({x=18, y=10, width=12, height=1, text="ALT PRESET", background=colors.blue}):onClick(selectAltitudePreset)
   monitorFrame:addButton({x=32, y=10, width=12, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
-  monitorFrame:addButton({x=2, y=11, width=16, height=1, text="SWEEP 15-6", background=colors.orange}):onClick(startBurnerSweep)
+  monitorFrame:addButton({x=2, y=11, width=16, height=1, text="SWEEP 15-5", background=colors.orange}):onClick(startBurnerSweep)
   if directGpuError then monitorGpuNotice = monitorFrame:addLabel({x=2, y=12, width=width-2, height=1, text="GPU: " .. directGpuError, foreground=colors.orange}) end
 end
 
@@ -756,7 +756,7 @@ local ok, err = pcall(function()
       if not success then
         local sweep = burnerSweep
         stop()
-        sweepSummary = "Controller error: " .. tostring(failure) .. (sweep and (" Sweep saved %d/10; skipped %d."):format(sweep.saved, sweep.skipped) or "")
+        sweepSummary = "Controller error: " .. tostring(failure) .. (sweep and (" Sweep saved %d/11; skipped %d."):format(sweep.saved, sweep.skipped) or "")
         sweepSummaryUntil = os.clock() + 15
         running = false; status.text = sweepSummary; status.foreground = colors.red; refresh(); basalt.stop(); return
       end
