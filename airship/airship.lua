@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.15"
+local AIRSHIP_BUILD = "1.2.16"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -572,7 +572,11 @@ local function renderDirectMonitor()
   if not directGpu then return end
   local gpu, display = directGpu, directDisplay
   local revision = gpuRenderRevision
+  local callsSinceYield = 0
   local function yieldFrame()
+    callsSinceYield = callsSinceYield + 1
+    if callsSinceYield < 4 then return end
+    callsSinceYield = 0
     sleep(0)
     if revision ~= gpuRenderRevision then error("DirectGPU frame superseded", 0) end
   end
