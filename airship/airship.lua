@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.11"
+local AIRSHIP_BUILD = "1.2.12"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -657,7 +657,6 @@ local function renderDirectMonitor()
     local tx=b.align=="left" and b.x+12 or b.x+math.max(6,math.floor((b.w-#b.label*textSize*.55)/2))
     txt(b.label,tx,b.y+math.floor((b.h-textSize)/2),textSize,ink,"bold")
   end
-  gpu.updateDisplay(display)
   sleep(0)
 end
 local function showGpuClick(button)
@@ -674,6 +673,7 @@ end
 local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton, monitorGpuNotice, compactGpuNotice
 local showGainValues
 local lastGpuRender = 0
+local lastGpuPresent = 0
 local lastGpuCheck = 0
 local lastThrustRead = 0
 local function adjustAltitude(delta)
@@ -1053,6 +1053,15 @@ local function refresh()
     else
       directGpu = nil; directGpuEnabled = false
       directGpuError = "Draw failed: " .. tostring(renderError)
+      createMonitorUi()
+    end
+  end
+  if directGpu and os.clock() - lastGpuPresent >= .05 then
+    local ok, presentError = pcall(directGpu.updateDisplay, directDisplay)
+    if ok then lastGpuPresent = os.clock()
+    else
+      directGpu = nil; directGpuEnabled = false
+      directGpuError = "Display refresh failed: " .. tostring(presentError)
       createMonitorUi()
     end
   end
