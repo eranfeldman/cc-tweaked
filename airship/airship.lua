@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.12"
+local AIRSHIP_BUILD = "1.2.13"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -657,23 +657,13 @@ local function renderDirectMonitor()
     local tx=b.align=="left" and b.x+12 or b.x+math.max(6,math.floor((b.w-#b.label*textSize*.55)/2))
     txt(b.label,tx,b.y+math.floor((b.h-textSize)/2),textSize,ink,"bold")
   end
-  sleep(0)
-end
-local function showGpuClick(button)
-  if not directGpu then return end
-  local gpu, display = directGpu, directDisplay
-  local textSize = math.max(13, math.floor(directHeight * .022))
-  local x = button.align == "left" and button.x + 12 or button.x + math.max(6, math.floor((button.w - #button.label * textSize * .55) / 2))
-  gpu.fillRect(display, button.x, button.y, button.w, button.h, 77, 139, 183)
-  sleep(0)
-  gpu.drawText(display, button.label, x, button.y + math.floor((button.h - textSize) / 2), 255, 255, 255, "Arial", textSize, "bold")
-  sleep(0)
   gpu.updateDisplay(display)
+  sleep(0)
 end
 local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton, monitorGpuNotice, compactGpuNotice
 local showGainValues
 local lastGpuRender = 0
-local lastGpuPresent = 0
+local gpuRedrawPending = false
 local lastGpuCheck = 0
 local lastThrustRead = 0
 local function adjustAltitude(delta)
@@ -1046,22 +1036,14 @@ local function refresh()
     monitorSystem.text = ("B%d/15 T%.1f GPS %s AV %s H:%d"):format(burner, measuredThrust, position and "OK" or "LOST", altitudeSensorReady and "OK" or "--", savedCount)
     monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
   end
-  if directGpu and os.clock() - lastGpuRender >= .2 then
+  if directGpu and (gpuRedrawPending or os.clock() - lastGpuRender >= .2) then
+    gpuRedrawPending = false
     createGpuButtons()
     local ok, renderError = pcall(renderDirectMonitor)
     if ok then lastGpuRender = os.clock()
     else
       directGpu = nil; directGpuEnabled = false
       directGpuError = "Draw failed: " .. tostring(renderError)
-      createMonitorUi()
-    end
-  end
-  if directGpu and os.clock() - lastGpuPresent >= .05 then
-    local ok, presentError = pcall(directGpu.updateDisplay, directDisplay)
-    if ok then lastGpuPresent = os.clock()
-    else
-      directGpu = nil; directGpuEnabled = false
-      directGpuError = "Display refresh failed: " .. tostring(presentError)
       createMonitorUi()
     end
   end
@@ -1117,27 +1099,18 @@ local ok, err = pcall(function()
         end
       end
       if directGpuEnabled and directGpu then
-        local eventOk, hasEvents = pcall(directGpu.hasEvents, directDisplay)
-        if not eventOk then
+        local pollOk, event = pcall(directGpu.pollEvent, directDisplay)
+        if not pollOk then
           directGpu = nil; directGpuEnabled = false
-          directGpuError = "Event check failed: " .. tostring(hasEvents)
+          directGpuError = "Input poll failed: " .. tostring(event)
           createMonitorUi()
-        elseif hasEvents then
-          local pollOk, event = pcall(directGpu.pollEvent, directDisplay)
-          if not pollOk then
-            directGpu = nil; directGpuEnabled = false
-            directGpuError = "Input poll failed: " .. tostring(event)
-            createMonitorUi()
-          end
-          if event and event.type == "mouse_click" then
-            for _, button in ipairs(gpuButtons) do
-              if event.x >= button.x and event.x <= button.x + button.w and event.y >= button.y and event.y <= button.y + button.h then
-                button.action()
-                if button.label:match("^SWEEP") then sweepSummary = nil end
-                pcall(showGpuClick, button)
-                lastGpuRender = os.clock()
-                break
-              end
+        elseif event and event.type == "mouse_click" then
+          for _, button in ipairs(gpuButtons) do
+            if event.x >= button.x and event.x <= button.x + button.w and event.y >= button.y and event.y <= button.y + button.h then
+              button.action()
+              if button.label:match("^SWEEP") then sweepSummary = nil end
+              gpuRedrawPending = true
+              break
             end
           end
         end
