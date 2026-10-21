@@ -10,12 +10,13 @@ In the computer terminal, install Basalt 2.5, download the updated controller be
 wget run https://basalt.madefor.cc/2.5/install.lua minified
 wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship.lua airship.lua
 wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship-updater.lua airship-updater.lua
+wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/pid-tuner.lua pid-tuner.lua
 airship.lua
 ```
 
 Or copy `airship.lua` into a file on the computer and run `airship.lua`. The computer needs wireless GPS access and all eight peripherals named `liquid_vector_thruster_0` through `_7`. For improved altitude hold, add one Create: Avionics **Altitude Sensor** to the ship and connect it to the same CC peripheral network. Its peripheral type is `altitude_sensor`; the app detects it automatically and falls back to GPS altitude if it is absent.
 
-Install `airship-updater.lua` once beside the controller. Then press **UPDATE** (or **U** on the computer) to stop the controller, open the updater in a second Multishell tab, download and validate the latest controller, replace the installed copy, and launch it. The updater keeps the previous version as `airship.lua.bak`; calibration and PID files are left in place. The button requires CC:Tweaked Multishell.
+Install `airship-updater.lua` once beside the controller. Then press **UPDATE** (or **U** on the computer) to stop the controller, open the updater in a second Multishell tab, download and validate the latest controller, replace the installed copy, and launch it. The updater keeps the previous version as `airship.lua.bak`; calibration and PID files are left in place. The button requires CC:Tweaked Multishell. To tune altitude gains from the last altitude-step diagnostic, install `pid-tuner.lua` beside the controller and run `pid-tuner.lua`; it analyzes the step overshoot, suggests conservative P/D changes, and only saves after you confirm. It cannot tune from a log recorded while the saved burner map bypassed altitude PID.
 
 To check that CC:Tweaked sees it, run `lua` and enter:
 
@@ -23,7 +24,7 @@ To check that CC:Tweaked sees it, run `lua` and enter:
 for _, name in ipairs(peripheral.getNames()) do print(name, peripheral.getType(name)) end
 ```
 
-Look for a row whose type is `altitude_sensor` (the device name may have a numeric suffix). The app uses its `getHeight()` and `getVerticalSpeed()` methods.
+The app searches both directly attached peripherals and peripherals one Malahit hub deep behind the wired peripheral hub. It reads `altitude_sensor` (`getHeight`, `getVerticalSpeed`, `getAirPressure`), `navigation_table` (`getHeadingRad`) and `gimbal_sensor` (`getAngularRatesRad`); DirectGPU can also be discovered through that nested hub. GPS still supplies world position. The navigation table heading rotates GPS error and velocity into the ship's current axes, so turning while navigating does not leave the controller steering in the old direction. If heading is unavailable, destination autopilot refuses to engage.
 
 Attach a CC:Tweaked monitor to the ship's peripheral network. The computer screen stays the control and text-entry console. If a DirectGPU peripheral is also visible to the computer, the monitor shows the high-resolution RGB flight panel with touch controls; its layout scales to the detected display size, including a 4-wide by 3-tall monitor wall. Click the **FLIGHT**, **CALIBRATION**, and **HEIGHTS** tabs above the panel to switch views. The HEIGHTS view lists every saved calibration point with its altitude, burner level, and pressure; use **PREVIOUS/NEXT** to browse longer lists and tap a row to select that height. Otherwise the monitor uses the standard Basalt UI. The DirectGPU block must also be physically near the monitor wall so it can detect that display; a wired modem connection alone exposes the peripheral but does not move its monitor scan. Enter coordinates, altitude targets, and PID values on the computer itself. With no monitor attached, the computer screen shows the full interface. Check for DirectGPU with `peripheral.find("directgpu")`; connect its block to the computer's peripheral network if this returns `nil`.
 
@@ -60,6 +61,8 @@ In a large, obstacle-free area, stop the controller with **Ctrl+T**, then instal
 wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/diagnostic.lua diagnostic.lua
 diagnostic.lua
 ```
+
+After a diagnostic run containing altitude steps, stop the controller and run `pid-tuner.lua`. It reviews the latest CSV and suggests modest P/D changes; confirm to save them, then restart the controller and repeat the test. It does not drive the ship itself.
 
 The ship front must be the edge with thrusters 0 and 6, facing east. It asks for ship size, balloon capacity, burner count and fill, and mass/load. Once you finish entering the data, it discovers every `liquid_vector_thruster` peripheral by type and name, then individually pulses each one on both vector axes. The computer reports each device name with its measured relative X/Z movement and includes those readings in the CSV. This checks the actual response for names such as `liquid_vector_thruster_0`; it does not assume those suffixes match your drawing. After the survey, it automatically runs the altitude steps and four autopilot moves to fixed points 10 blocks from the starting position (X+, X−, Z+, Z−), allowing up to 60 seconds for each to settle. The diagnostic and flight controller now reverse the PID command to account for the fact that the thruster nozzle vector points opposite the resulting craft thrust. The CSV records PID gains, active altitude-control mode, burner signal, thruster commands and readings, altitude, pressure, relative GPS position, and velocity. Absolute GPS coordinates are not recorded. It reads the same saved PID and height-map files as the controller; when a height map exists, the altitude PID is bypassed and the log says so. Speed, altitude-change, and distance cutoffs have been removed. GPS loss still ends the test because navigation data would no longer be valid; **Q** also aborts. On exit it turns off thrusters and restores the burner signal that was active before the test. It saves a new CSV without overwriting older logs, then automatically uploads it using CC:Tweaked's built-in `pastebin put` program to a **public** Pastebin paste. HTTP access must be enabled.
 

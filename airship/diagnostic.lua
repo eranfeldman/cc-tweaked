@@ -1,5 +1,41 @@
--- Guided airship response test. Only relative GPS positions are recorded.
-local sensor = peripheral.find("altitude_sensor")
+-- Resolve Avionics sensors directly or through the nested Malahit peripheral hub.
+local function findAvionics(kind)
+  local direct = peripheral.find(kind)
+  if direct then return direct end
+  for _, rootName in ipairs(peripheral.getNames()) do
+    local root = peripheral.wrap(rootName)
+    if root and type(root.getNamesRemote) == "function" then
+      local ok, names = pcall(root.getNamesRemote)
+      if ok and type(names) == "table" then
+        for _, remoteName in ipairs(names) do
+          local typeOk, remoteType = pcall(root.getTypeRemote, remoteName)
+          local types = type(remoteType) == "table" and remoteType or {remoteType}
+          for _, remoteKind in ipairs(types) do
+            if remoteKind == kind then
+              return setmetatable({}, {__index=function(_, method) return function(...) return root.callRemote(remoteName,method,...) end end})
+            elseif remoteKind == "malahit_hub" or remoteKind == "peripheral_hub" then
+              local childOk, childNames = pcall(root.callRemote, remoteName, "getNamesRemote")
+              if childOk and type(childNames) == "table" then
+                for _, childName in ipairs(childNames) do
+                  local childTypeOk, childType = pcall(root.callRemote, remoteName, "getTypeRemote", childName)
+                  local childTypes = type(childType) == "table" and childType or {childType}
+                  for _, childKind in ipairs(childTypes) do
+                    if childKind == kind then
+                      return setmetatable({}, {__index=function(_, method) return function(...) return root.callRemote(remoteName,"callRemote",childName,method,...) end end})
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end
+local sensor = findAvionics("altitude_sensor")
+local navigation = findAvionics("navigation_table")
+local gimbal = findAvionics("gimbal_sensor")
 if not sensor then error("Connect an Avionics altitude_sensor first") end
 local thrusters = {}
 for _,name in ipairs(peripheral.getNames()) do
@@ -109,10 +145,12 @@ log.writeLine("# Front direction: "..heading)
 log.writeLine("# PID gains: "..table.concat(gains,","))
 log.writeLine("# Hover map points: "..#hoverPoints.."; "..mode)
 log.writeLine("# Automatic movement limits: none; GPS loss stops the test")
-log.writeLine("elapsed_s,phase,dt_s,target_y,altitude_y,vertical_speed,air_pressure,burner_signal,active_thruster,vector_x,vector_y,thrust_command,avg_thruster_power,thruster_read_count,relative_x,relative_z,velocity_x,velocity_z,target_relative_x,target_relative_z")
+log.writeLine("elapsed_s,phase,dt_s,target_y,altitude_y,vertical_speed,air_pressure,burner_signal,active_thruster,vector_x,vector_y,thrust_command,avg_thruster_power,thruster_read_count,relative_x,relative_z,velocity_x,velocity_z,target_relative_x,target_relative_z,heading_rad,yaw_rate_rad_s")
 log.flush()
 
 local state={x=x0,y=startY,z=z0,vx=0,vy=startVy,vz=0,pressure=startPressure}
+local headingRad
+local yawRate
 local prevX,prevZ,prevAt=x0,z0,os.clock()
 local lastGpsAt=prevAt
 local targetY=startY
@@ -154,6 +192,14 @@ local function readSensors()
   end)
   if not success or type(y)~="number" or type(vy)~="number" or type(pressure)~="number" then error("Altitude sensor read failed") end
   state.y,state.vy,state.pressure=y,vy,pressure
+  if navigation then
+    local headingOk, heading = pcall(navigation.getHeadingRad)
+    if headingOk and type(heading) == "number" then headingRad = heading end
+  end
+  if gimbal then
+    local ratesOk, rates = pcall(gimbal.getAngularRatesRad)
+    if ratesOk and type(rates) == "table" and type(rates[2]) == "number" then yawRate = rates[2] end
+  end
   local x,_,z=gps.locate(.05,false)
   if x then
     state.vx=state.vx*.5+((x-prevX)/dt)*.5
@@ -171,10 +217,11 @@ local function record(now,dt)
     local success,value=pcall(t.device.getPower)
     if success and type(value)=="number" then total=total+value; count=count+1 end
   end
-  log.writeLine(("%.3f,%s,%.4f,%.3f,%.3f,%.4f,%.5f,%d,%s,%.4f,%.4f,%.4f,%.4f,%d,%.3f,%.3f,%.4f,%.4f,%s,%s"):format(
+  log.writeLine(("%.3f,%s,%.4f,%.3f,%.3f,%.4f,%.5f,%d,%s,%.4f,%.4f,%.4f,%.4f,%d,%.3f,%.3f,%.4f,%.4f,%s,%s,%s,%s"):format(
     now-started,phase,dt,targetY,state.y,state.vy,state.pressure,burner,activeThruster or "ALL",vectorX,vectorY,power,count>0 and total/count or 0,count,
     state.x-x0,state.z-z0,state.vx,state.vz,
-    targetRelX and ("%.3f"):format(targetRelX) or "",targetRelZ and ("%.3f"):format(targetRelZ) or ""))
+    targetRelX and ("%.3f"):format(targetRelX) or "",targetRelZ and ("%.3f"):format(targetRelZ) or "",
+    headingRad and ("%.5f"):format(headingRad) or "",yawRate and ("%.5f"):format(yawRate) or ""))
   if now-lastFlush>=1 then log.flush(); lastFlush=now end
 end
 local function control(now,dt,autopilot)
@@ -184,10 +231,14 @@ local function control(now,dt,autopilot)
   burner=math.floor(burnerCommand+.5)
   if autopilot then
     local dx=targetRelX-(state.x-x0); local dz=targetRelZ-(state.z-z0)
+    if type(headingRad) ~= "number" then error("Navigation table heading unavailable") end
     if math.abs(dx)<.5 and math.abs(dz)<.5 and math.abs(state.vx)<.12 and math.abs(state.vz)<.12 then vectorX,vectorY,power=0,0,0
     else
-      vectorX=-pidStep(zpid,dz,state.vz,dt)
-      vectorY=-pidStep(xy,dx,state.vx,dt)
+      local c,s=math.cos(headingRad),math.sin(headingRad)
+      local localX,localZ=c*dx-s*dz,s*dx+c*dz
+      local localVX,localVZ=c*state.vx-s*state.vz,s*state.vx+c*state.vz
+      vectorX=-pidStep(zpid,localZ,localVZ,dt)
+      vectorY=-pidStep(xy,localX,localVX,dt)
       power=clamp(math.sqrt(vectorX*vectorX+vectorY*vectorY)/.25*.35,0,.35)
     end
   else vectorX,vectorY,power=0,0,0 end

@@ -24,8 +24,9 @@ for _, name in ipairs(peripheral.getNames()) do
   if monitorName then break end
 end
 local directGpu, directDisplay, directWidth, directHeight, directGpuError
+local findAvionics
 local function setupDirectGpu()
-  local gpuFound = peripheral.find("directgpu")
+  local gpuFound = findAvionics and findAvionics("directgpu") or peripheral.find("directgpu")
   if not gpuFound then directGpuError = "DirectGPU peripheral not found"; return false end
   monitorName = nil
   for _, name in ipairs(peripheral.getNames()) do
@@ -83,8 +84,49 @@ local function setupDirectGpu()
     return false
   end
 end
+-- Resolve devices behind the Malahit hub nested behind the wired peripheral hub.
+findAvionics = function(kind)
+  local direct = peripheral.find(kind)
+  if direct then return direct end
+  for _, rootName in ipairs(peripheral.getNames()) do
+    local root = peripheral.wrap(rootName)
+    if root and type(root.getNamesRemote) == "function" then
+      local ok, names = pcall(root.getNamesRemote)
+      if ok and type(names) == "table" then
+        for _, remoteName in ipairs(names) do
+          local typeOk, remoteType = pcall(root.getTypeRemote, remoteName)
+          local types = type(remoteType) == "table" and remoteType or {remoteType}
+          for _, remoteKind in ipairs(types) do
+            if remoteKind == kind then
+              return setmetatable({}, {__index=function(_, method)
+                return function(...) return root.callRemote(remoteName, method, ...) end
+              end})
+            elseif remoteKind == "malahit_hub" or remoteKind == "peripheral_hub" then
+              local childOk, childNames = pcall(root.callRemote, remoteName, "getNamesRemote")
+              if childOk and type(childNames) == "table" then
+                for _, childName in ipairs(childNames) do
+                  local childTypeOk, childType = pcall(root.callRemote, remoteName, "getTypeRemote", childName)
+                  local childTypes = type(childType) == "table" and childType or {childType}
+                  for _, childKind in ipairs(childTypes) do
+                    if childKind == kind then
+                      return setmetatable({}, {__index=function(_, method)
+                        return function(...) return root.callRemote(remoteName, "callRemote", childName, method, ...) end
+                      end})
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end
+local altitudeSensor = findAvionics("altitude_sensor")
+local navigationTable = findAvionics("navigation_table")
+local gimbalSensor = findAvionics("gimbal_sensor")
 setupDirectGpu()
-local altitudeSensor = peripheral.find("altitude_sensor")
 local frame = basalt.getMainFrame()
 local monitorFrame = monitor and not directGpu and basalt.createFrame(monitor)
 frame.background = colors.black
@@ -104,6 +146,8 @@ local gpuButtons = {}
 local gpuTab, gpuHeightPage = "FLIGHT", 1
 local learnedHover = {}
 local altitudeSensorPressure
+local shipHeading
+local yawRate
 local measuredThrust = 0
 local status, pidSummary, posText, altText, sysText, xInput, heightInput, pidInput, calibrateButton
 local axisTests = {}
@@ -275,6 +319,14 @@ local function locate()
       if type(verticalSpeed) == "number" and verticalSpeed == verticalSpeed and math.abs(verticalSpeed) < math.huge then velocity.y = verticalSpeed end
     end
   end
+  if navigationTable then
+    local ok, heading = pcall(navigationTable.getHeadingRad)
+    if ok and type(heading) == "number" and heading == heading and math.abs(heading) < math.huge then shipHeading = heading end
+  end
+  if gimbalSensor then
+    local ok, rates = pcall(gimbalSensor.getAngularRatesRad)
+    if ok and type(rates) == "table" and type(rates[2]) == "number" then yawRate = rates[2] end
+  end
   local x, y, z = gps.locate(.1, false)
   if x then
     if previousPosition and previousSample then
@@ -337,12 +389,20 @@ local function updateFlight(gpsFresh)
   end
   if gpsFresh and mode == "AUTOPILOT" and target then
     local dx, dz = target.x - position.x, target.z - position.z
+    if not shipHeading then
+      vectorX, vectorY, power = 0, 0, 0
+      mode = "HEADING SENSOR MISSING"
+      return
+    end
     if math.abs(dx) < .5 and math.abs(dz) < .5 and math.abs(velocity.x) < .12 and math.abs(velocity.z) < .12 then
       vectorX, vectorY, power, mode = 0, 0, 0, "DESTINATION REACHED"
     else
       -- Nozzle-vector direction is opposite the craft's thrust direction.
-      vectorX = -pidStep(pid.horizontalZ, dz, velocity.z, sampleDt)
-      vectorY = -pidStep(pid.horizontalX, dx, velocity.x, sampleDt)
+      local c, s = math.cos(shipHeading), math.sin(shipHeading)
+      local localX, localZ = c * dx - s * dz, s * dx + c * dz
+      local localVX, localVZ = c * velocity.x - s * velocity.z, s * velocity.x + c * velocity.z
+      vectorX = -pidStep(pid.horizontalZ, localZ, localVZ, sampleDt)
+      vectorY = -pidStep(pid.horizontalX, localX, localVX, sampleDt)
       power = clamp(math.sqrt(vectorX * vectorX + vectorY * vectorY) / .25 * .35, 0, .35)
     end
   end
@@ -546,7 +606,7 @@ local function renderDirectMonitor()
     local detailFont=math.max(11,math.min(small,math.floor(detailH*.19)))
     txt("FLIGHT STATUS",l.margin+14,detailY+8,detailFont,muted,"bold")
     txt(position and ("GPS  X %.1f     Y %.1f     Z %.1f"):format(position.x,position.y,position.z) or "GPS SIGNAL LOST",l.margin+14,detailY+math.floor(detailH*.34),detailFont,position and ink or {255,110,110})
-    txt(("MODE  %s     AVIONICS  %s     CALIBRATION POINTS  %d"):format(mode,altitudeSensorReady and "READY" or "MISSING",#savedHoverPoints()),l.margin+14,detailY+math.floor(detailH*.62),detailFont,ink)
+    txt(("MODE  %s     AV %s     HDG %s°     YAW %s rad/s"):format(mode,altitudeSensorReady and "READY" or "MISSING",shipHeading and ("%.0f"):format(math.deg(shipHeading)) or "--",yawRate and ("%.2f"):format(yawRate) or "--"),l.margin+14,detailY+math.floor(detailH*.62),detailFont,ink)
     txt(target and ("DESTINATION  X %.0f   Z %.0f"):format(target.x,target.z) or "NO DESTINATION SET",l.margin+14,detailY+math.floor(detailH*.82),detailFont,muted)
   elseif gpuTab == "CALIBRATION" then
     local titleSize=math.max(18,math.floor(h*.032))
@@ -616,6 +676,7 @@ local function holdHere()
   if position then altitude = math.floor(position.y + .5); target = nil; setFlightMode("HOLDING ALTITUDE") end
 end
 local function engageAutopilot()
+  if not navigationTable or not shipHeading then status.text = "Navigation table heading unavailable; autopilot cannot steer while ship rotates."; status.foreground = colors.red; return end
   if not calibrated then status.text = "Run low-power direction checks, then confirm calibration."; status.foreground = colors.orange
   elseif not position or not target then status.text = "GPS fix and destination are required."; status.foreground = colors.red
   else setFlightMode("AUTOPILOT"); status.text = "Autopilot engaged"; status.foreground = colors.lime end
@@ -895,7 +956,7 @@ local function refresh()
   else
     posText.text = position and ("X " .. ("%.1f"):format(position.x) .. "  Y " .. ("%.1f"):format(position.y) .. "\nZ " .. ("%.1f"):format(position.z)) or "GPS not found"
     altText.text = ("Now %s\nTarget %s"):format(position and ("%.1f"):format(position.y) or "--", altitude and ("%.0f"):format(altitude) or "--")
-    sysText.text = ("Burner %d/15\nThrust %.1f/15"):format(burner, measuredThrust)
+    sysText.text = ("Burner %d/15\nThrust %.1f/15\nHeading %s°"):format(burner, measuredThrust, shipHeading and ("%.0f"):format(math.deg(shipHeading)) or "--")
   end
   if not isFocused(heightInput) then heightInput.text = altitude and tostring(math.floor(altitude + .5)) or "" end
   if not isFocused(pidInput) then showGainValues() end
