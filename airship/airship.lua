@@ -1,9 +1,10 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.1.7"
+local AIRSHIP_BUILD = "1.1.8"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
 local directGpu, directDisplay, directWidth, directHeight, directGpuError
+local directGpuEnabled = false
 local findAvionics
 local function setupDirectGpu()
   local gpuFound = peripheral.find("directgpu")
@@ -137,7 +138,7 @@ end
 local altitudeSensor = findAvionics("altitude_sensor")
 local navigationTable = findAvionics("navigation_table")
 local gimbalSensor = findAvionics("gimbal_sensor")
-setupDirectGpu()
+if directGpuEnabled then setupDirectGpu() else directGpuError = "DirectGPU paused for stability; using CC monitor" end
 local frame = basalt.getMainFrame()
 local monitorFrame = monitor and not directGpu and basalt.createFrame(monitor)
 frame.background = colors.black
@@ -1064,7 +1065,7 @@ local ok, err = pcall(function()
         local alive, info = pcall(directGpu.getDisplayInfo, directDisplay)
         if not alive or not info then directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting" end
       end
-      if not directGpu then
+      if directGpuEnabled and not directGpu then
         pcall(setupDirectGpu)
         createGpuButtons()
         if not monitorGpuNotice and monitorFrame then
@@ -1074,7 +1075,7 @@ local ok, err = pcall(function()
           compactGpuNotice = frame:addLabel({x=2, y=13, width=screenWidth-3, height=2, text="DirectGPU: " .. (directGpuError or "ready"), foreground=colors.orange})
         end
       end
-      if directGpu then
+      if directGpuEnabled and directGpu then
         local eventOk, hasEvents = pcall(directGpu.hasEvents, directDisplay)
         if not eventOk then directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting"
         elseif hasEvents then
