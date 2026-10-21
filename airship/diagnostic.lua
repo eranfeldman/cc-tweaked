@@ -39,8 +39,9 @@ local gimbal = findAvionics("gimbal_sensor")
 if not sensor then error("Connect an Avionics altitude_sensor first") end
 local thrusters, seen = {}, {}
 local function addThruster(name, device)
-  if device and not seen[name] then
-    seen[name] = true
+  local id=name:match("([^/]+)$") or name
+  if device and not seen[id] then
+    seen[id] = true
     thrusters[#thrusters+1] = {name=name,device=device}
   end
 end

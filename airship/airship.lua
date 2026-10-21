@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.1.3"
+local AIRSHIP_BUILD = "1.1.4"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -115,12 +115,15 @@ findAvionics = function(kind)
 end
 local function findThrusters()
   local found = {}
+  local function add(name, device)
+    local id = name:match("([^/]+)$") or name
+    if device and not found[id] then found[id] = device end
+  end
   for _, name in ipairs(peripheral.getNames()) do
     local kinds = {peripheral.getType(name)}
     for _, kind in ipairs(kinds) do
       if kind == "liquid_vector_thruster" then
-        local device = peripheral.wrap(name)
-        if device then found[name] = device end
+        add(name, peripheral.wrap(name))
       end
     end
   end
@@ -142,7 +145,7 @@ local function findThrusters()
           end})
           for _, kind in ipairs(types) do
             if kind == "liquid_vector_thruster" then
-              found[path .. "/" .. childName] = child
+              add(path .. "/" .. childName, child)
             elseif (kind == "peripheral_hub" or kind == "malahit_hub") and depth < 2 then
               scan(child, path .. "/" .. childName, depth + 1)
             end
