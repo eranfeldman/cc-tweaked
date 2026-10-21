@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.4"
+local AIRSHIP_BUILD = "1.2.5"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -23,7 +23,7 @@ local function setupDirectGpu()
   local info, infoError = getInfo(display)
   local setupError
   if not info then
-    local created, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 1)
+    local created, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 0)
     if created then display = newDisplay; info, infoError = getInfo(display)
     else setupError = "create display: " .. tostring(newDisplay) end
   end
