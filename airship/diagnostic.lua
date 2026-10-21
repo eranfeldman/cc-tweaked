@@ -290,6 +290,8 @@ local function runDiagnostic()
   runPhase("ALT_RETURN_BASE_1",20,startY)
   runPhase("ALT_STEP_DOWN_3",25,startY-3)
   runPhase("ALT_RETURN_BASE_2",20,startY)
+  -- Thruster mapping can move the ship; start navigation tests from its current position.
+  x0,z0=state.x,state.z
   local axes={{"AUTO_X_PLUS",10,0},{"AUTO_X_MINUS",-10,0},{"AUTO_Z_PLUS",0,10},{"AUTO_Z_MINUS",0,-10}}
   for _,axis in ipairs(axes) do
     runPhase(axis[1],60,startY,axis[2],axis[3])
