@@ -35,7 +35,7 @@ Put a Create Redstone Link transmitter against the computer's **front** (monitor
 ## Using the UI
 
 1. Type **G**, enter destination `X Z` (for example `200 -700`), and press Enter. Type **Y**, enter target altitude, and press Enter. Up/Down changes the altitude target by one block; **H** captures current height, **A** engages autopilot, and **S** cuts outputs.
-2. In a clear area, test the low-power forward/back buttons and use **Left/Right/F/B** keys for the four directions. The ship front is configured as **east**; X+ should move south and Y+ should move east. Press **H** to stop each test. After all four directions are confirmed, click **CALIBRATE** twice within eight seconds or press **C** twice.
+2. In a clear area, press **CALIBRATE** once. It automatically pulses X−, X+, Y+, and Y− at low power, with short pauses, then saves calibration. Press **HOLD** to cancel. Watch the ship during the sequence: it sends the four commands but does not verify the resulting movement. The ship front is configured as **east**; X+ should move south and Y+ should move east. The individual **Left/Right/F/B** keys and forward/back buttons remain available for manual checks.
 3. **T** focuses the PID tuning field. Enter three space-separated values: horizontal `P I D`, then press Enter. These gains affect X/Z steering only.
 4. Choose a saved calibrated height and destination, then press **A**. The horizontal PID steers toward the X/Z destination and uses GPS movement to brake. Thruster throttle is capped at 35% for slower travel and stops when position and speed are close to the target. Height selection sends the burner amount recorded for that height; there is no altitude PID.
 

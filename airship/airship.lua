@@ -139,7 +139,7 @@ local burner = redstone.getAnalogOutput("front") or 0
 local burnerCommand, vectorX, vectorY, power = burner, 0, 0, 0
 local burnerSlewPerSecond = 6
 local calibrated = fs.exists("airship-calibrated")
-local running, calibrationClick, manualBurner, burnerSweep = true, nil, nil, nil
+local running, manualBurner, burnerSweep, calibrationRunning = true, nil, nil, false
 local sweepConfirmAt
 local sweepSummary
 local sweepSummaryUntil
@@ -151,7 +151,6 @@ local shipHeading
 local yawRate
 local measuredThrust = 0
 local status, pidSummary, posText, altText, sysText, xInput, heightInput, pidInput, calibrateButton
-local axisTests = {}
 -- Conservative starting gains; GPS velocity feedback compensates for variable sample timing.
 local pid = {
   horizontalX = {p=.035, i=.0005, d=.18, limit=.25, integral=0},
@@ -270,6 +269,7 @@ local function outputs()
   redstone.setAnalogOutput("front", burner)
 end
 local function stop()
+  calibrationRunning = false
   if burnerSweep then
     sweepSummary = ("Sweep canceled. Saved %d/11; skipped %d."):format(burnerSweep.saved, burnerSweep.skipped)
     sweepSummaryUntil = os.clock() + 15
@@ -296,6 +296,7 @@ local function requestProgramUpdate()
   basalt.stop()
 end
 local function setFlightMode(nextMode)
+  calibrationRunning = false
   manualBurner = nil
   burnerSweep = nil
   vectorX, vectorY, power, mode = 0, 0, 0, nextMode
@@ -667,37 +668,57 @@ local function stepSavedAltitude(delta)
   selectSavedAltitude(index)
 end
 local function holdHere()
-  if position then altitude = math.floor(position.y + .5); target = nil; setFlightMode("HOLDING ALTITUDE") end
+  if position then
+    local canceledCalibration = calibrationRunning
+    altitude = math.floor(position.y + .5); target = nil; setFlightMode("HOLDING ALTITUDE")
+    if canceledCalibration then status.text = "Direction calibration canceled; holding altitude."; status.foreground = colors.orange end
+  end
 end
 local function engageAutopilot()
   if not navigationTable or not shipHeading then status.text = "Navigation table heading unavailable; autopilot cannot steer while ship rotates."; status.foreground = colors.red; return end
-  if not calibrated then status.text = "Run low-power direction checks, then confirm calibration."; status.foreground = colors.orange
+  if not calibrated then status.text = "Run low-power direction calibration first."; status.foreground = colors.orange
   elseif not position or not target then status.text = "GPS fix and destination are required."; status.foreground = colors.red
   else setFlightMode("AUTOPILOT"); status.text = "Autopilot engaged"; status.foreground = colors.lime end
 end
 local function testVector(x, y, label)
-  axisTests[label] = true
+  calibrationRunning = false
   vectorX, vectorY, power, mode = -x, -y, .33, label
   status.text = "Low-power test: " .. label .. "  |  Press HOLD to stop"
   status.foreground = colors.orange
 end
 local function confirmCalibration()
   if calibrated then status.text = "Calibration already saved on this computer."; return end
-  if not (axisTests["TEST X-"] and axisTests["TEST X+"] and axisTests["TEST Y+"] and axisTests["TEST Y-"]) then
-    status.text = "Calibration needs all four direction tests."; status.foreground = colors.red; return
-  end
-  if calibrationClick and os.clock() - calibrationClick < 8 then
-    local file = fs.open("airship-calibrated", "w"); file.write("east front, X right, Y forward"); file.close()
-    calibrated, calibrationClick = true, nil
+  if calibrationRunning then status.text = "Direction calibration is already running."; return end
+  if mode == "STOPPED" then status.text = "Resume flight control before calibrating."; status.foreground = colors.red; return end
+  if not position then status.text = "Wait for GPS before calibrating."; status.foreground = colors.red; return end
+  calibrationRunning = true
+  local tests = {{.2,0,"X-"},{-.2,0,"X+"},{0,-.2,"Y+"},{0,.2,"Y-"}}
+  basalt.schedule(function()
+    for i, test in ipairs(tests) do
+      if not calibrationRunning then return end
+      vectorX, vectorY, power, mode = test[1], test[2], .33, "CAL " .. test[3]
+      status.text = ("Direction check %d/4: %s; press HOLD to cancel."):format(i, test[3])
+      status.foreground = colors.orange
+      sleep(.75)
+      if not calibrationRunning then return end
+      vectorX, vectorY, power = 0, 0, 0
+      sleep(.35)
+    end
+    if not calibrationRunning then return end
+    local file = fs.open("airship-calibrated", "w")
+    if not file then
+      calibrationRunning = false
+      status.text = "Tests finished, but calibration could not be saved."; status.foreground = colors.red
+      return
+    end
+    file.write("east front, X right, Y forward")
+    file.close()
+    calibrationRunning, calibrated = false, true
+    vectorX, vectorY, power, mode = 0, 0, 0, "HOLDING ALTITUDE"
     if calibrateButton then calibrateButton.text, calibrateButton.background = "CALIBRATED", colors.green end
     if monitorCalibrateButton then monitorCalibrateButton.text, monitorCalibrateButton.background = "CALIBRATED", colors.green end
-    mode = "TEST CALIBRATED"
-    status.text = "Calibration saved. Autopilot is ready."; status.foreground = colors.lime
-  else
-    calibrationClick = os.clock()
-    mode = "CALIBRATION CONFIRM"
-    status.text = "Confirm within 8s: X+ south, Y+ east."; status.foreground = colors.orange
-  end
+    status.text = "Four low-power direction checks finished. Calibration saved."; status.foreground = colors.lime
+  end)
 end
 
 local function createGpuButtons()
