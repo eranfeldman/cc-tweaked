@@ -648,6 +648,8 @@ end
 local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton, monitorGpuNotice, compactGpuNotice
 local showGainValues
 local lastGpuRender = 0
+local lastGpuCheck = 0
+local lastThrustRead = 0
 local function adjustAltitude(delta)
   if not position then status.text = "Waiting for GPS before changing altitude."; return end
   altitude = (altitude or math.floor(position.y + .5)) + delta
@@ -968,7 +970,10 @@ local function isFocused(input)
   return false
 end
 local function refresh()
-  readThrusterPower()
+  if os.clock() - lastThrustRead >= 1 then
+    readThrusterPower()
+    lastThrustRead = os.clock()
+  end
   if compact then
     posText.text = position and ("X %.1f Y %.1f Z %.1f"):format(position.x, position.y, position.z) or "GPS not found"
     altText.text = ("ALT %.1f / TARGET %.0f"):format(position and position.y or 0, altitude or 0)
@@ -1049,7 +1054,8 @@ local ok, err = pcall(function()
   end)
   basalt.schedule(function()
     while running do
-      if directGpu then
+      if directGpu and os.clock() - lastGpuCheck >= 5 then
+        lastGpuCheck = os.clock()
         local alive, info = pcall(directGpu.getDisplayInfo, directDisplay)
         if not alive or not info then directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting" end
       end
@@ -1080,7 +1086,7 @@ local ok, err = pcall(function()
           end
         end
       end
-      sleep(directGpu and .05 or 2)
+      sleep(directGpu and .2 or 2)
     end
   end)
   basalt.schedule(function()
