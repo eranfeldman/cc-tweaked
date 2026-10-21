@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.5"
+local AIRSHIP_BUILD = "1.2.6"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -141,7 +141,7 @@ local navigationTable = findAvionics("navigation_table")
 local gimbalSensor = findAvionics("gimbal_sensor")
 if directGpuEnabled then setupDirectGpu() else directGpuError = "DirectGPU paused for stability; using CC monitor" end
 local frame = basalt.getMainFrame()
-local monitorFrame = monitor and not directGpu and basalt.createFrame(monitor)
+local monitorFrame
 frame.background = colors.black
 if monitorFrame then monitorFrame.background = colors.black end
 local screenWidth, screenHeight
@@ -784,7 +784,10 @@ local function createGpuButtons()
 end
 createGpuButtons()
 
-if monitorFrame then
+local function createMonitorUi()
+  if monitorFrame or not monitor then return end
+  monitorFrame = basalt.createFrame(monitor)
+  monitorFrame.background = colors.black
   local width = monitor.getSize()
   monitorFrame:addLabel({x=2, y=1, width=width-2, height=1, text="AIRSHIP v" .. AIRSHIP_BUILD, foreground=colors.white, background=colors.blue})
   monitorStatus = monitorFrame:addLabel({x=2, y=2, width=width-2, height=1, text="Starting...", foreground=colors.yellow})
@@ -806,8 +809,9 @@ if monitorFrame then
   monitorFrame:addButton({x=2, y=11, width=16, height=1, text="SWEEP 15-5", background=colors.orange}):onClick(startBurnerSweep)
   monitorFrame:addButton({x=20, y=11, width=10, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
   monitorFrame:addButton({x=32, y=11, width=12, height=1, text="CLEAR MAP", background=colors.red}):onClick(clearHoverMap)
-  if directGpuError then monitorGpuNotice = monitorFrame:addLabel({x=2, y=12, width=width-2, height=1, text="GPU: " .. directGpuError, foreground=colors.orange}) end
+  monitorGpuNotice = monitorFrame:addLabel({x=2, y=12, width=width-2, height=1, text="GPU: " .. (directGpuError or "CC monitor fallback"), foreground=colors.orange})
 end
+if not directGpu then createMonitorUi() end
 
 local flightPage, calibrationPage
 local savedAltitudeButtons = {}
@@ -1025,9 +1029,13 @@ local function refresh()
   end
   if directGpu and os.clock() - lastGpuRender >= 1 then
     createGpuButtons()
-    local ok = pcall(renderDirectMonitor)
+    local ok, renderError = pcall(renderDirectMonitor)
     if ok then lastGpuRender = os.clock()
-    else directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting" end
+    else
+      directGpu = nil; directGpuEnabled = false
+      directGpuError = "Draw failed: " .. tostring(renderError)
+      createMonitorUi()
+    end
   end
 end
 
@@ -1064,7 +1072,11 @@ local ok, err = pcall(function()
       if directGpu and os.clock() - lastGpuCheck >= 5 then
         lastGpuCheck = os.clock()
         local alive, info = pcall(directGpu.getDisplayInfo, directDisplay)
-        if not alive or not info then directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting" end
+        if not alive or not info then
+          directGpu = nil; directGpuEnabled = false
+          directGpuError = "Display check failed: " .. tostring(info or "no display info")
+          createMonitorUi()
+        end
       end
       if directGpuEnabled and not directGpu then
         pcall(setupDirectGpu)
@@ -1078,10 +1090,17 @@ local ok, err = pcall(function()
       end
       if directGpuEnabled and directGpu then
         local eventOk, hasEvents = pcall(directGpu.hasEvents, directDisplay)
-        if not eventOk then directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting"
+        if not eventOk then
+          directGpu = nil; directGpuEnabled = false
+          directGpuError = "Event check failed: " .. tostring(hasEvents)
+          createMonitorUi()
         elseif hasEvents then
           local pollOk, event = pcall(directGpu.pollEvent, directDisplay)
-          if not pollOk then directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting" end
+          if not pollOk then
+            directGpu = nil; directGpuEnabled = false
+            directGpuError = "Input poll failed: " .. tostring(event)
+            createMonitorUi()
+          end
           if event and event.type == "mouse_click" then
             for _, button in ipairs(gpuButtons) do
               if event.x >= button.x and event.x <= button.x + button.w and event.y >= button.y and event.y <= button.y + button.h then
