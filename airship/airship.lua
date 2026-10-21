@@ -42,12 +42,12 @@ if gpuFound then
     directGpu, directDisplay = gpuFound, display
     directWidth, directHeight = info.pixelWidth, info.pixelHeight
   else
-    local scanOk, x, y, z = pcall(gpuFound.autoDetectMonitor)
+    local scanOk, monitorInfo = pcall(gpuFound.autoDetectMonitor)
     if not scanOk then
-      setupError = setupError or ("monitor scan: " .. tostring(x))
+      setupError = setupError or ("monitor scan: " .. tostring(monitorInfo))
       directGpuError = "Setup failed: " .. setupError
-    elseif x ~= nil then
-      directGpuError = ("Monitor at %s,%s,%s; display %s: %s"):format(tostring(x), tostring(y), tostring(z), tostring(display), tostring(setupError or infoError))
+    elseif monitorInfo ~= nil then
+      directGpuError = "Display setup: " .. tostring(setupError or infoError)
     else
       directGpuError = "No monitor near DirectGPU block; move it beside monitor"
     end
