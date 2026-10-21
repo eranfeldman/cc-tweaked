@@ -1,32 +1,17 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.1.6"
+local AIRSHIP_BUILD = "1.1.7"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
-local monitorName
-for _, name in ipairs(peripheral.getNames()) do
-  for _, kind in ipairs({peripheral.getType(name)}) do
-    if type(kind) == "string" and kind:find("monitor", 1, true) then
-      monitorName = name
-      break
-    end
-  end
-  if monitorName then break end
-end
 local directGpu, directDisplay, directWidth, directHeight, directGpuError
 local findAvionics
 local function setupDirectGpu()
   local gpuFound = peripheral.find("directgpu")
   if not gpuFound then directGpuError = "DirectGPU peripheral not found"; return false end
-  monitorName = nil
-  for _, name in ipairs(peripheral.getNames()) do
-    for _, kind in ipairs({peripheral.getType(name)}) do
-      if type(kind) == "string" and kind:find("monitor", 1, true) then monitorName = name; break end
-    end
-    if monitorName then break end
-  end
   local listOk, displays = pcall(gpuFound.listDisplays)
-  local display = listOk and displays and displays[1]
+  if listOk and type(displays) == "table" then
+    for _, oldDisplay in ipairs(displays) do pcall(gpuFound.removeDisplay, oldDisplay) end
+  end
   local function getInfo(id)
     if id == nil then return nil, "no display ID returned" end
     local ok, info = pcall(gpuFound.getDisplayInfo, id)
@@ -36,25 +21,10 @@ local function setupDirectGpu()
     end
     return info
   end
-  local info, infoError = getInfo(display)
-  local setupError
-  if not info then
-    local ok, newDisplay
-    if monitorName then
-      ok, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, monitorName, 1)
-      if not ok then setupError = "create display for " .. monitorName .. ": " .. tostring(newDisplay) end
-    end
-    if not monitorName or not ok or newDisplay == nil then
-      ok, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 1)
-      if ok then setupError = nil else setupError = "create display: " .. tostring(newDisplay) end
-    end
-    if ok then
-      display = newDisplay
-      info, infoError = getInfo(display)
-    else
-      setupError = setupError or ("create display: " .. tostring(newDisplay))
-    end
-  end
+  local created, display = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 1)
+  local setupError = not created and ("create display: " .. tostring(display)) or nil
+  local info, infoError
+  if created then info, infoError = getInfo(display) end
   if info then
     directGpu, directDisplay = gpuFound, display
     directWidth, directHeight = info.pixelWidth, info.pixelHeight
