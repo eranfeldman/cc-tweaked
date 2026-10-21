@@ -120,7 +120,7 @@ local function hoverBias(height)
     end
   end
 end
-local mode=#hoverPoints==0 and "ALTITUDE PID ACTIVE" or "MAPPED BURNER ACTIVE (altitude PID bypassed)"
+local mode=#hoverPoints==0 and "ALTITUDE PID ACTIVE" or "MAPPED BURNER FEED-FORWARD + PID TRIM ACTIVE"
 print(("Start Y %.1f, vertical speed %.2f, pressure %.4f"):format(startY,startVy,startPressure))
 print(("Gains: XY %.4f %.5f %.3f; altitude bias/P/I/D %.2f %.3f %.4f %.3f"):format(
   gains[1],gains[2],gains[3],gains[4],gains[5],gains[6],gains[7]))
@@ -143,7 +143,7 @@ log.writeLine("# Mass/weight: "..mass)
 log.writeLine("# Cargo/load: "..cargo)
 log.writeLine("# Front direction: "..heading)
 log.writeLine("# PID gains: "..table.concat(gains,","))
-log.writeLine("# Hover map points: "..#hoverPoints.."; "..mode)
+log.writeLine("# Hover map points: "..#hoverPoints.."; "..(#hoverPoints>0 and "MAPPED BURNER FEED-FORWARD + ALTITUDE PID TRIM" or "ALTITUDE PID ACTIVE"))
 log.writeLine("# Automatic movement limits: none; GPS loss stops the test")
 log.writeLine("elapsed_s,phase,dt_s,target_y,altitude_y,vertical_speed,air_pressure,burner_signal,active_thruster,vector_x,vector_y,thrust_command,avg_thruster_power,thruster_read_count,relative_x,relative_z,velocity_x,velocity_z,target_relative_x,target_relative_z,heading_rad,yaw_rate_rad_s")
 log.flush()
@@ -226,7 +226,7 @@ local function record(now,dt)
 end
 local function control(now,dt,autopilot)
   local mapped=hoverBias(targetY)
-  local desired=clamp(mapped or ((hoverBias(targetY) or apid.bias)+pidStep(apid,targetY-state.y,state.vy,dt)),0,15)
+  local desired=clamp((mapped or apid.bias)+pidStep(apid,targetY-state.y,state.vy,dt),0,15)
   burnerCommand=burnerCommand+clamp(desired-burnerCommand,-6*dt,6*dt)
   burner=math.floor(burnerCommand+.5)
   if autopilot then

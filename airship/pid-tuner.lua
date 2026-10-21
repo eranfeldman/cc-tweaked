@@ -10,8 +10,8 @@ if not latest then error("No airship-pid-diagnostic*.csv found. Run diagnostic.l
 
 local f = assert(fs.open("/" .. latest, "r"))
 local text = f.readAll(); f.close()
-if text:find("MAPPED BURNER ACTIVE", 1, true) then
-  error("This log used the saved burner map, so it cannot tune altitude PID gains. Temporarily move airship-hover.cfg, then rerun diagnostic.lua.")
+if text:find("MAPPED BURNER ACTIVE (altitude PID bypassed)", 1, true) then
+  error("This older log bypassed altitude PID. Run the updated diagnostic.lua before tuning.")
 end
 
 local peaks = {}

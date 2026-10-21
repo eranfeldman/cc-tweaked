@@ -383,7 +383,7 @@ local function updateFlight(gpsFresh)
     burnerCommand, burner = manualBurner, manualBurner
   else
     local mappedBurner = hoverBias(altitude)
-    local desiredBurner = clamp(mappedBurner or ((hoverBias(altitude) or pid.altitude.bias) + pidStep(pid.altitude, altitudeError, velocity.y, dt)), 0, 15)
+    local desiredBurner = clamp((mappedBurner or pid.altitude.bias) + pidStep(pid.altitude, altitudeError, velocity.y, dt), 0, 15)
     burnerCommand = burnerCommand + clamp(desiredBurner - burnerCommand, -burnerSlewPerSecond * dt, burnerSlewPerSecond * dt)
     burner = math.floor(burnerCommand + .5)
   end
