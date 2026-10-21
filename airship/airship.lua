@@ -135,7 +135,8 @@ local screenWidth, screenHeight
 screenWidth, screenHeight = term.getSize()
 local compact = screenWidth < 49 or screenHeight < 19
 local position, target, altitude, mode = nil, nil, nil, "STARTING"
-local burner, burnerCommand, vectorX, vectorY, power = 0, 0, 0, 0, 0
+local burner = redstone.getAnalogOutput("front") or 0
+local burnerCommand, vectorX, vectorY, power = burner, 0, 0, 0
 local burnerSlewPerSecond = 6
 local calibrated = fs.exists("airship-calibrated")
 local running, calibrationClick, manualBurner, burnerSweep = true, nil, nil, nil
@@ -154,18 +155,16 @@ local axisTests = {}
 -- Conservative starting gains; GPS velocity feedback compensates for variable sample timing.
 local pid = {
   horizontalX = {p=.035, i=.0005, d=.18, limit=.25, integral=0},
-  horizontalZ = {p=.035, i=.0005, d=.18, limit=.25, integral=0},
-  altitude = {p=.45, i=.005, d=2.5, bias=4, limit=11, integral=0, integralLimit=30}
+  horizontalZ = {p=.035, i=.0005, d=.18, limit=.25, integral=0}
 }
-local gainLimits = {{.005,.15}, {0,.01}, {0,.8}, {0,12}, {.1,3}, {0,.2}, {0,5}}
+local gainLimits = {{.005,.15}, {0,.01}, {0,.8}}
 local function applyGainValues(values)
   for i, bounds in ipairs(gainLimits) do
     if type(values[i]) ~= "number" or values[i] < bounds[1] or values[i] > bounds[2] then return false end
   end
   pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d = values[1], values[2], values[3]
   pid.horizontalZ.p, pid.horizontalZ.i, pid.horizontalZ.d = values[1], values[2], values[3]
-  pid.altitude.bias, pid.altitude.p, pid.altitude.i, pid.altitude.d = values[4], values[5], values[6], values[7]
-  pid.horizontalX.integral, pid.horizontalZ.integral, pid.altitude.integral = 0, 0, 0
+  pid.horizontalX.integral, pid.horizontalZ.integral = 0, 0
   return true
 end
 local function readGainFile()
@@ -178,10 +177,10 @@ local function readGainFile()
     values[#values + 1] = value
   end
   file.close()
-  if #values == #gainLimits then applyGainValues(values) end
+  if #values >= 3 then applyGainValues(values) end
 end
 local function gainValues()
-  return {pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d, pid.altitude.bias, pid.altitude.p, pid.altitude.i, pid.altitude.d}
+  return {pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d}
 end
 if fs.exists("airship-hover.cfg") then
   local file = fs.open("airship-hover.cfg", "r")
@@ -258,8 +257,6 @@ readGainFile()
 local velocity = {x=0, y=0, z=0}
 local previousPosition, previousSample
 local sampleDt = .5
-local altitudeSampleAt
-local altitudeDt = .05
 local altitudeSensorHeight
 local altitudeSensorReady = false
 local lastGpsAt
@@ -302,12 +299,10 @@ local function setFlightMode(nextMode)
   manualBurner = nil
   burnerSweep = nil
   vectorX, vectorY, power, mode = 0, 0, 0, nextMode
-  pid.horizontalX.integral, pid.horizontalZ.integral, pid.altitude.integral = 0, 0, 0
+  pid.horizontalX.integral, pid.horizontalZ.integral = 0, 0
 end
 local function locate()
   local now = os.clock()
-  altitudeDt = clamp(now - (altitudeSampleAt or now - .05), .01, .5)
-  altitudeSampleAt = now
   if altitudeSensor then
     local ok, height, verticalSpeed, pressure = pcall(function()
       return altitudeSensor.getHeight(), altitudeSensor.getVerticalSpeed(), altitudeSensor.getAirPressure()
@@ -373,19 +368,18 @@ local function updateFlight(gpsFresh)
     return
   end
   if mode == "STOPPED" or mode == "GPS LOST - RE-ENGAGE" then return end
-  if not altitude then burner, burnerCommand = 0, 0; mode = "SET ALTITUDE"; return end
-  local altitudeError = altitude - position.y
-  local dt = altitudeSensorReady and altitudeDt or sampleDt
+  if not altitude then mode = "SET ALTITUDE"; return end
   if burnerSweep then
-    burnerCommand = burnerCommand + clamp(burnerSweep.level - burnerCommand, -burnerSlewPerSecond * dt, burnerSlewPerSecond * dt)
+    burnerCommand = burnerCommand + clamp(burnerSweep.level - burnerCommand, -burnerSlewPerSecond * sampleDt, burnerSlewPerSecond * sampleDt)
     burner = math.floor(burnerCommand + .5)
   elseif manualBurner ~= nil then
     burnerCommand, burner = manualBurner, manualBurner
   else
     local mappedBurner = hoverBias(altitude)
-    local desiredBurner = clamp((mappedBurner or pid.altitude.bias) + pidStep(pid.altitude, altitudeError, velocity.y, dt), 0, 15)
-    burnerCommand = burnerCommand + clamp(desiredBurner - burnerCommand, -burnerSlewPerSecond * dt, burnerSlewPerSecond * dt)
-    burner = math.floor(burnerCommand + .5)
+    if mappedBurner then
+      burnerCommand = burnerCommand + clamp(mappedBurner - burnerCommand, -burnerSlewPerSecond * sampleDt, burnerSlewPerSecond * sampleDt)
+      burner = math.floor(burnerCommand + .5)
+    end
   end
   if gpsFresh and mode == "AUTOPILOT" and target then
     local dx, dz = target.x - position.x, target.z - position.z
@@ -808,6 +802,8 @@ if compact then
     local value = tonumber(heightInput.text)
     if not value then status.text = "Enter a numeric height"; status.foreground = colors.red; return end
     altitude = value; setFlightMode("HOLDING ALTITUDE"); frame:setFocused(nil)
+    status.text = hoverBias(value) and ("Height target Y %.1f uses calibrated burner output."):format(value) or "No saved burner calibration; output remains at its current amount."
+    status.foreground = hoverBias(value) and colors.lime or colors.orange
   end
   heightInput:onEnter(setHeight)
   frame:addButton({x=11, y=8, width=10, height=1, text="SET HEIGHT", background=colors.blue}):onClick(setHeight)
@@ -822,9 +818,9 @@ if compact then
   frame:addButton({x=16, y=11, width=10, height=1, text="SWEEP V", background=colors.orange}):onClick(startBurnerSweep)
   frame:addButton({x=27, y=11, width=12, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
   frame:addButton({x=40, y=11, width=10, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
-  pidInput = frame:addInput({x=2, y=12, width=screenWidth-13, height=1, placeholder="X/Z P I D  ALT bias P I D", background=colors.white, foreground=colors.black})
+  pidInput = frame:addInput({x=2, y=12, width=screenWidth-13, height=1, placeholder="Horizontal P I D only", background=colors.white, foreground=colors.black})
   showGainValues = function()
-    pidInput.text = ("%.3g %.1g %.2g %.0f %.1g %.1g %.1g"):format(table.unpack(gainValues()))
+    pidInput.text = ("%.3g %.1g %.2g"):format(table.unpack(gainValues()))
   end
   showGainValues()
   local function setGains()
@@ -880,7 +876,8 @@ local function setHeight()
   if not value then status.text = "Enter a numeric height target."; status.foreground = colors.red; return end
   altitude = value
   setFlightMode("HOLDING ALTITUDE")
-  status.text = ("Height target set to Y %.0f"):format(value); status.foreground = colors.lime
+  status.text = hoverBias(value) and ("Height Y %.0f uses calibrated burner output."):format(value) or "No saved burner calibration; output stays at its current amount."
+  status.foreground = hoverBias(value) and colors.lime or colors.orange
   flightPage:setFocused(nil)
 end
 flightPage:addButton({x=16, y=10, width=12, height=1, text="SET HEIGHT", background=colors.blue}):onClick(setHeight)
@@ -901,17 +898,17 @@ flightButton(28, 12, "AUTOPILOT", colors.lime, engageAutopilot)
 flightButton(41, 9, "STOP", colors.red, stop)
 
 pidSummary = calibrationPage:addLabel({x=2, y=1, width=47, height=1, text="PID  loading gains...", foreground=colors.lightGray})
-calibrationPage:addLabel({x=2, y=3, width=47, height=1, text="PID TUNE: X/Z P I D   ALT bias P I D", foreground=colors.lightBlue})
-pidInput = calibrationPage:addInput({x=2, y=4, width=35, height=1, placeholder="0.035 0.0005 0.18 4 1 0.03 2", background=colors.white, foreground=colors.black})
+calibrationPage:addLabel({x=2, y=3, width=47, height=1, text="HORIZONTAL PID: P I D   |   HEIGHT: BURNER AMOUNT", foreground=colors.lightBlue})
+pidInput = calibrationPage:addInput({x=2, y=4, width=35, height=1, placeholder="0.035 0.0005 0.18", background=colors.white, foreground=colors.black})
 showGainValues = function()
-  pidInput.text = ("%.4f %.5f %.2f %.1f %.2f %.3f %.2f"):format(table.unpack(gainValues()))
+  pidInput.text = ("%.4f %.5f %.2f"):format(table.unpack(gainValues()))
 end
 showGainValues()
 local function setGains()
   local values = {}
   for token in pidInput.text:gmatch("%S+") do
     local value = tonumber(token)
-    if not value then status.text = "Use seven numeric PID values."; status.foreground = colors.red; return end
+    if not value then status.text = "Enter horizontal P I D values only."; status.foreground = colors.red; return end
     values[#values + 1] = value
   end
   if #values ~= #gainLimits or not applyGainValues(values) then
@@ -967,7 +964,7 @@ local function refresh()
       button.background = heights[i] and colors.blue or colors.gray
     end
   end
-  if pidSummary then pidSummary.text = directGpuError and ("GPU: " .. directGpuError) or ("XY %.3f/%.4f/%.2f ALT %.1f/%.1f/%.2f/%.1f"):format(pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d, pid.altitude.bias, pid.altitude.p, pid.altitude.i, pid.altitude.d) end
+  if pidSummary then pidSummary.text = directGpuError and ("GPU: " .. directGpuError) or ("Horizontal PID %.3f / %.4f / %.2f | Height from burner map"):format(pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d) end
   if compactGpuNotice then compactGpuNotice.text = directGpuError and ("DirectGPU: " .. directGpuError) or "DirectGPU ready" end
   if monitorGpuNotice then monitorGpuNotice.text = directGpuError and ("GPU: " .. directGpuError) or "GPU ready" end
   if mode == "AUTOPILOT" then status.text, status.foreground = "AUTOPILOT ACTIVE  |  EAST-FACING SHIP", colors.lime

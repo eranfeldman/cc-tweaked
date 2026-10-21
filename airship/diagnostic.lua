@@ -86,14 +86,14 @@ local mass=ask("Ship mass/weight if known","unknown")
 local cargo=ask("Cargo/load during test","none")
 local heading="east (side with thrusters 0 and 6)"
 
-local gains={.035,.0005,.18,4,.45,.005,2.5}
+local gains={.035,.0005,.18}
 if fs.exists("airship-pid.cfg") then
   local f=fs.open("airship-pid.cfg","r"); local values={}
   for token in f.readAll():gmatch("%S+") do values[#values+1]=tonumber(token) end
   f.close()
-  local valid=#values==7
-  for _,v in ipairs(values) do if not v or v~=v or math.abs(v)==math.huge then valid=false end end
-  if valid then gains=values end
+  local valid=#values>=3
+  for i=1,3 do local v=values[i]; if not v or v~=v or math.abs(v)==math.huge then valid=false end end
+  if valid then gains={values[1],values[2],values[3]} end
 end
 local hoverPoints={}
 if fs.exists("airship-hover.cfg") then
@@ -120,10 +120,9 @@ local function hoverBias(height)
     end
   end
 end
-local mode=#hoverPoints==0 and "ALTITUDE PID ACTIVE" or "MAPPED BURNER FEED-FORWARD + PID TRIM ACTIVE"
+local mode=#hoverPoints==0 and "NO HEIGHT PID; BURNER HELD AT STARTUP LEVEL" or "HEIGHT CONTROL FROM SAVED BURNER MAP"
 print(("Start Y %.1f, vertical speed %.2f, pressure %.4f"):format(startY,startVy,startPressure))
-print(("Gains: XY %.4f %.5f %.3f; altitude bias/P/I/D %.2f %.3f %.4f %.3f"):format(
-  gains[1],gains[2],gains[3],gains[4],gains[5],gains[6],gains[7]))
+print(("Horizontal PID gains: %.4f %.5f %.3f; height uses calibrated burner amounts only."):format(gains[1],gains[2],gains[3]))
 print(mode.."; saved hover-map points: "..#hoverPoints)
 print("Test automatically pulses each thruster, steps altitude, then runs X+, X-, Z+, Z- autopilot moves.")
 print("No speed, altitude-change, or distance cutoff is applied. GPS loss still stops navigation.")
@@ -142,8 +141,9 @@ log.writeLine("# Combined usable fill estimate: "..math.min(balloon,burnerCount*
 log.writeLine("# Mass/weight: "..mass)
 log.writeLine("# Cargo/load: "..cargo)
 log.writeLine("# Front direction: "..heading)
-log.writeLine("# PID gains: "..table.concat(gains,","))
-log.writeLine("# Hover map points: "..#hoverPoints.."; "..(#hoverPoints>0 and "MAPPED BURNER FEED-FORWARD + ALTITUDE PID TRIM" or "ALTITUDE PID ACTIVE"))
+log.writeLine("# Horizontal PID gains: "..table.concat(gains,","))
+log.writeLine("# Height control: burner map only; no altitude PID")
+log.writeLine("# Hover map points: "..#hoverPoints)
 log.writeLine("# Automatic movement limits: none; GPS loss stops the test")
 log.writeLine("elapsed_s,phase,dt_s,target_y,altitude_y,vertical_speed,air_pressure,burner_signal,active_thruster,vector_x,vector_y,thrust_command,avg_thruster_power,thruster_read_count,relative_x,relative_z,velocity_x,velocity_z,target_relative_x,target_relative_z,heading_rad,yaw_rate_rad_s")
 log.flush()
@@ -165,7 +165,6 @@ local phase="START"
 local aborted,abortReason=false,nil
 local xy={p=gains[1],i=gains[2],d=gains[3],limit=.25,integral=0,integralLimit=20}
 local zpid={p=gains[1],i=gains[2],d=gains[3],limit=.25,integral=0,integralLimit=20}
-local apid={p=gains[5],i=gains[6],d=gains[7],bias=gains[4],limit=11,integral=0,integralLimit=30}
 local function clamp(v,lo,hi) return math.max(lo,math.min(hi,v)) end
 local function pidStep(c,e,v,dt)
   local candidate=clamp(c.integral+e*dt,-c.integralLimit,c.integralLimit)
@@ -226,9 +225,10 @@ local function record(now,dt)
 end
 local function control(now,dt,autopilot)
   local mapped=hoverBias(targetY)
-  local desired=clamp((mapped or apid.bias)+pidStep(apid,targetY-state.y,state.vy,dt),0,15)
-  burnerCommand=burnerCommand+clamp(desired-burnerCommand,-6*dt,6*dt)
-  burner=math.floor(burnerCommand+.5)
+  if mapped then
+    burnerCommand=burnerCommand+clamp(mapped-burnerCommand,-6*dt,6*dt)
+    burner=math.floor(burnerCommand+.5)
+  end
   if autopilot then
     local dx=targetRelX-(state.x-x0); local dz=targetRelZ-(state.z-z0)
     if type(headingRad) ~= "number" then error("Navigation table heading unavailable") end
@@ -245,7 +245,7 @@ local function control(now,dt,autopilot)
   outputs()
   record(now,dt)
 end
-local function resetIntegrals() xy.integral,zpid.integral,apid.integral=0,0,0 end
+local function resetIntegrals() xy.integral,zpid.integral=0,0 end
 local function pulseThruster(t,vx,vy,axis)
   phase="THRUSTER_MAP_"..t.name.."_"..axis
   targetY=startY; activeThruster=t.name; vectorX,vectorY,power=vx,vy,.35
