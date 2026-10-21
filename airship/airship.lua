@@ -25,7 +25,8 @@ local position, target, altitude, mode = nil, nil, nil, "STARTING"
 local burner, burnerCommand, vectorX, vectorY, power = 0, 0, 0, 0, 0
 local burnerSlewPerSecond = 6
 local calibrated = fs.exists("airship-calibrated")
-local running, calibrationClick, manualBurner = true, nil, nil
+local running, calibrationClick, manualBurner, burnerSweep = true, nil, nil, nil
+local sweepConfirmAt
 local altitudePresets = {-10, 10, 25, 50}
 local presetIndex, presetBase = 0, nil
 local learnedHover = {}
@@ -68,15 +69,24 @@ end
 if fs.exists("airship-hover.cfg") then
   local file = fs.open("airship-hover.cfg", "r")
   for line in file.readAll():gmatch("[^\r\n]+") do
-    local height, bias = line:match("^([%-%.%d]+)%s+([%-%.%d]+)$")
-    height, bias = tonumber(height), tonumber(bias)
-    if height and bias and bias >= 0 and bias <= 15 then learnedHover[height] = bias end
+    local pressure, level, height = line:match("^([%-%.%d]+)%s+([%-%.%d]+)%s*([%-%.%d]*)$")
+    pressure, level, height = tonumber(pressure), tonumber(level), tonumber(height)
+    if pressure and level and level >= 0 and level <= 15 then
+      local key = ("%.4f:%.3f"):format(pressure, level)
+      learnedHover[key] = {pressure=pressure, level=level, height=height}
+    end
   end
   file.close()
 end
 local function hoverBias(height)
-  local points = {}
-  for y, value in pairs(learnedHover) do points[#points + 1] = {y, value} end
+  local byPressure, points = {}, {}
+  for _, sample in pairs(learnedHover) do
+    local key = ("%.4f"):format(sample.pressure)
+    local point = byPressure[key] or {sample.pressure, 0, 0}
+    point[2], point[3] = point[2] + sample.level, point[3] + 1
+    byPressure[key] = point
+  end
+  for _, point in pairs(byPressure) do points[#points + 1] = {point[1], point[2] / point[3]} end
   table.sort(points, function(a, b) return a[1] < b[1] end)
   height = altitudeSensorPressure or height
   if #points == 0 then return pid.altitude.bias end
@@ -85,6 +95,7 @@ local function hoverBias(height)
   for i = 1, #points - 1 do
     local low, high = points[i], points[i + 1]
     if height >= low[1] and height <= high[1] then
+      if high[1] == low[1] then return high[2] end
       local fraction = (height - low[1]) / (high[1] - low[1])
       return low[2] + (high[2] - low[2]) * fraction
     end
@@ -94,7 +105,7 @@ end
 local function saveHoverMap()
   return pcall(function()
     local file = assert(fs.open("airship-hover.cfg.tmp", "w"))
-    for pressure, value in pairs(learnedHover) do file.writeLine(("%.4f %.3f"):format(pressure, value)) end
+    for _, sample in pairs(learnedHover) do file.writeLine(("%.4f %.3f %.2f"):format(sample.pressure, sample.level, sample.height or 0)) end
     file.close()
     local hadPrevious = fs.exists("airship-hover.cfg")
     if fs.exists("airship-hover.cfg.bak") then fs.delete("airship-hover.cfg.bak") end
@@ -127,11 +138,13 @@ local function outputs()
 end
 local function stop()
   manualBurner = nil
+  burnerSweep = nil
   vectorX, vectorY, power, burner, burnerCommand, mode = 0, 0, 0, 0, 0, "STOPPED"
   pcall(outputs)
 end
 local function setFlightMode(nextMode)
   manualBurner = nil
+  burnerSweep = nil
   vectorX, vectorY, power, mode = 0, 0, 0, nextMode
   pid.horizontalX.integral, pid.horizontalZ.integral, pid.altitude.integral = 0, 0, 0
 end
@@ -171,6 +184,7 @@ local function locate()
     lastGpsAt = nil
     if mode ~= "STOPPED" then
       vectorX, vectorY, power, burner, burnerCommand = 0, 0, 0, 0, 0
+      burnerSweep, manualBurner = nil, nil
       mode = mode == "AUTOPILOT" and "GPS LOST - RE-ENGAGE" or "WAITING FOR GPS"
     end
   end
@@ -194,7 +208,9 @@ local function updateFlight(gpsFresh)
   if not altitude then burner, burnerCommand = 0, 0; mode = "SET ALTITUDE"; return end
   local altitudeError = altitude - position.y
   local dt = altitudeSensorReady and altitudeDt or sampleDt
-  if manualBurner ~= nil then
+  if burnerSweep then
+    burnerCommand, burner = burnerSweep.level, burnerSweep.level
+  elseif manualBurner ~= nil then
     burnerCommand, burner = manualBurner, manualBurner
   else
     local desiredBurner = clamp(hoverBias(altitude) + pidStep(pid.altitude, altitudeError, velocity.y, dt), 0, 15)
@@ -233,15 +249,71 @@ local function lockHoverLevel()
     status.text = "Wait until vertical speed is below 0.12, then lock."; status.foreground = colors.orange; return
   end
   local level = redstone.getAnalogOutput("front")
-  learnedHover[altitudeSensorPressure] = level
+  local pressure = tonumber(("%.4f"):format(altitudeSensorPressure))
+  local key = ("%.4f:%.3f"):format(pressure, level)
+  learnedHover[key] = {pressure=pressure, level=level, height=altitudeSensorHeight}
   if saveHoverMap() then
-    status.text = ("Locked burner level %d at Y %.1f / pressure %.3f"):format(level, altitudeSensorHeight, altitudeSensorPressure)
+    status.text = ("Locked signal %d at Y %.1f / pressure %.3f"):format(level, altitudeSensorHeight, altitudeSensorPressure)
     status.foreground = colors.lime
   else
     status.text = "Level captured in memory, but could not save airship-hover.cfg."; status.foreground = colors.red
   end
 end
+local function finishBurnerSweep(message)
+  local sweep = burnerSweep
+  burnerSweep, manualBurner = nil, nil
+  if position then altitude = math.floor(position.y + .5) end
+  setFlightMode("HOLDING ALTITUDE")
+  status.text = message and (message .. (" Saved %d/10, skipped %d."):format(sweep.saved, sweep.skipped))
+    or ("Sweep done: saved %d/10, skipped %d"):format(sweep.saved, sweep.skipped)
+  status.foreground = message and colors.red or colors.lime
+end
+local function startBurnerSweep()
+  if type(burnerSweep) == "table" then status.text = "Burner sweep is already running."; return end
+  if mode == "STOPPED" then status.text = "Resume flight control before starting the sweep."; status.foreground = colors.red; return end
+  if not position or not altitudeSensorReady or not altitudeSensorPressure then
+    status.text = "Sweep needs GPS and Avionics altitude/pressure."; status.foreground = colors.red; return
+  end
+  if sweepConfirmAt and os.clock() - sweepConfirmAt < 8 then
+    burnerSweep = {level=15, startedY=position.y, changedAt=os.clock(), stableSince=nil, saved=0, skipped=0}
+    manualBurner, vectorX, vectorY, power, target = nil, 0, 0, 0, nil
+    mode = "BURNER SWEEP"
+    status.text = "Sweep started: levels 15 down to 6"; status.foreground = colors.orange
+    sweepConfirmAt = nil
+  else
+    sweepConfirmAt = os.clock()
+    status.text = "Sweep armed. Confirm again within 8 seconds."; status.foreground = colors.orange
+  end
+end
+local function updateBurnerSweep()
+  if type(burnerSweep) ~= "table" then return end
+  local now = os.clock()
+  if not position or not altitudeSensorPressure then finishBurnerSweep("Sweep aborted: GPS or pressure reading lost."); return end
+  if math.abs(position.y - burnerSweep.startedY) > 8 or math.abs(velocity.y) >= 1.2 then
+    finishBurnerSweep("Sweep safety stop: moved 8 blocks or reached 1.2 blocks/sec."); return
+  end
+  if math.abs(velocity.y) < .12 then burnerSweep.stableSince = burnerSweep.stableSince or now
+  else burnerSweep.stableSince = nil end
+  if burnerSweep.stableSince and now - burnerSweep.stableSince >= 4 then
+    local pressure = tonumber(("%.4f"):format(altitudeSensorPressure))
+    local key = ("%.4f:%.3f"):format(pressure, burnerSweep.level)
+    learnedHover[key] = {pressure=pressure, level=burnerSweep.level, height=altitudeSensorHeight}
+    if not saveHoverMap() then finishBurnerSweep("Sweep stopped: calibration file could not be saved."); return end
+    burnerSweep.saved = burnerSweep.saved + 1
+    if burnerSweep.level == 6 then finishBurnerSweep(); return end
+    burnerSweep.level = burnerSweep.level - 1
+    burnerSweep.changedAt, burnerSweep.stableSince = now, nil
+  elseif now - burnerSweep.changedAt >= 45 then
+    burnerSweep.skipped = burnerSweep.skipped + 1
+    if burnerSweep.level == 6 then finishBurnerSweep(); return end
+    burnerSweep.level = burnerSweep.level - 1
+    burnerSweep.changedAt, burnerSweep.stableSince = now, nil
+  end
+  status.text = ("SWEEP %d/15 | saved %d, skipped %d"):format(burnerSweep.level, burnerSweep.saved, burnerSweep.skipped)
+  status.foreground = colors.orange
+end
 local function toggleManualBurner()
+  if type(burnerSweep) == "table" then status.text = "Finish or stop the burner sweep first."; return end
   if manualBurner ~= nil then
     manualBurner = nil
     if position then altitude = math.floor(position.y + .5) end
@@ -332,6 +404,7 @@ if monitorFrame then
   monitorFrame:addButton({x=2, y=10, width=14, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
   monitorFrame:addButton({x=18, y=10, width=12, height=1, text="ALT PRESET", background=colors.blue}):onClick(selectAltitudePreset)
   monitorFrame:addButton({x=32, y=10, width=12, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
+  monitorFrame:addButton({x=2, y=11, width=16, height=1, text="SWEEP 15-6", background=colors.orange}):onClick(startBurnerSweep)
 end
 
 if compact then
@@ -369,7 +442,7 @@ if compact then
   frame:addButton({x=20, y=10, width=8, height=1, text="TEST FWD", background=colors.gray}):onClick(function() testVector(0, .2, "TEST Y+") end)
   frame:addButton({x=29, y=10, width=8, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
   calibrateButton = frame:addButton({x=2, y=11, width=13, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
-  frame:addLabel({x=16, y=11, width=8, height=1, text="PID gains", foreground=colors.lightBlue})
+  frame:addButton({x=16, y=11, width=10, height=1, text="SWEEP V", background=colors.orange}):onClick(startBurnerSweep)
   frame:addButton({x=27, y=11, width=12, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
   frame:addButton({x=40, y=11, width=10, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
   pidInput = frame:addInput({x=2, y=12, width=screenWidth-13, height=1, placeholder="X/Z P I D  ALT bias P I D", background=colors.white, foreground=colors.black})
@@ -493,6 +566,7 @@ local function refresh()
   elseif mode == "DESTINATION REACHED" then status.text, status.foreground = "DESTINATION REACHED  |  HOLDING ALTITUDE", colors.lime
   elseif mode == "SET ALTITUDE" then status.text, status.foreground = "GPS ready  |  set an altitude target", colors.orange
   elseif mode == "CALIBRATION CONFIRM" then status.text, status.foreground = "Confirm calibration within 8 seconds", colors.orange
+  elseif mode == "BURNER SWEEP" and burnerSweep then status.text, status.foreground = ("SWEEP %d/15 | saved %d, skipped %d | press S to stop"):format(burnerSweep.level, burnerSweep.saved, burnerSweep.skipped), colors.orange
   elseif mode == "MANUAL BURNER" then status.text, status.foreground = ("MANUAL BURNER %d/15 | UP/DOWN adjust, K locks"):format(manualBurner or 0), colors.orange
   elseif mode:match("^TEST ") then status.text, status.foreground = mode .. "  |  press HOLD to stop", colors.orange
   elseif mode == "STOPPED" then status.text, status.foreground = "OUTPUTS STOPPED", colors.red end
@@ -513,6 +587,7 @@ local ok, err = pcall(function()
       local success = pcall(function()
         local gpsFresh = locate()
         updateFlight(gpsFresh)
+        updateBurnerSweep()
         outputs()
       end)
       if not success then stop(); running = false; status.text = "Peripheral error: outputs stopped"; status.foreground = colors.red; basalt.stop(); return end
@@ -546,6 +621,7 @@ local ok, err = pcall(function()
         elseif key == keys.p then selectAltitudePreset()
         elseif key == keys.m then toggleManualBurner()
         elseif key == keys.k then lockHoverLevel()
+        elseif key == keys.v then startBurnerSweep()
         elseif key == keys.a then engageAutopilot()
         elseif key == keys.s then stop()
         elseif key == keys.c then confirmCalibration()
