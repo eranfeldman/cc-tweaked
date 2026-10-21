@@ -3,9 +3,12 @@ local controllerUrl = "https://raw.githubusercontent.com/eranfeldman/cc-tweaked/
 local updaterUrl = "https://raw.githubusercontent.com/eranfeldman/cc-tweaked/db99124ebe00a6e59efb78ae73afed3bbe39aad2/airship/airship-updater.lua"
 local controllerTemp, updaterTemp = "/airship.lua.cleaning", "/airship-updater.lua.cleaning"
 local controllerBackup, updaterBackup = "/airship.lua.bak", "/airship-updater.lua.bak"
+local runningProgram = shell.getRunningProgram and shell.getRunningProgram()
+local runningName = runningProgram and fs.getName(runningProgram)
 
 local function buildAtLeast(version, minimum)
-  local a,b,c = version and version:match("^(%d+)%.(%d+)%.(%d+)$")
+  if type(version) ~= "string" then return false end
+  local a,b,c = version:match("^(%d+)%.(%d+)%.(%d+)$")
   local x,y,z = minimum:match("^(%d+)%.(%d+)%.(%d+)$")
   if not a or not x then return false end
   a,b,c,x,y,z = tonumber(a),tonumber(b),tonumber(c),tonumber(x),tonumber(y),tonumber(z)
@@ -40,7 +43,8 @@ local function replace(path, temp, backup)
 end
 
 local function stale(name)
-  if name == "airship-cleanup.lua" then return false end
+  if name == runningName then return false end
+  if name == "airship-cleanup.lua" then return true end
   if name == "hub-diagnostic.lua" then return true end
   if name == "airship.lua.update" or name == "airship.lua.cleaning" or name == "airship-updater.lua.cleaning" or name == "airship-updater-new.lua" or name == "airship-new.lua" or name == "airship-next.lua" then return true end
   if name:match("^airship%-v%d+%.%d+%.%d+%.lua$") then return true end
@@ -85,4 +89,4 @@ end
 print("Installed airship v1.1.6 and current updater.")
 print("Removed " .. removed .. " temporary files. Calibration and flight data remain.")
 print("The UPDATE button now runs the refreshed updater; launch airship.lua when ready.")
-pcall(fs.delete, "/airship-cleanup.lua")
+if runningProgram then pcall(fs.delete, runningProgram) end
