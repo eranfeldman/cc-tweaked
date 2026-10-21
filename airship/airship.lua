@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.14"
+local AIRSHIP_BUILD = "1.2.15"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -1042,7 +1042,7 @@ local function refresh()
     monitorSystem.text = ("B%d/15 T%.1f GPS %s AV %s H:%d"):format(burner, measuredThrust, position and "OK" or "LOST", altitudeSensorReady and "OK" or "--", savedCount)
     monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
   end
-  if directGpu and (gpuRedrawPending or os.clock() - lastGpuRender >= .1) then
+  if directGpu and (gpuRedrawPending or os.clock() - lastGpuRender >= .05) then
     gpuRedrawPending = false
     createGpuButtons()
     local ok, renderError = pcall(renderDirectMonitor)
