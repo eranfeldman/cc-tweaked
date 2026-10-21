@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.9"
+local AIRSHIP_BUILD = "1.2.10"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -660,6 +660,17 @@ local function renderDirectMonitor()
   gpu.updateDisplay(display)
   sleep(0)
 end
+local function showGpuClick(button)
+  if not directGpu then return end
+  local gpu, display = directGpu, directDisplay
+  local textSize = math.max(13, math.floor(directHeight * .022))
+  local x = button.align == "left" and button.x + 12 or button.x + math.max(6, math.floor((button.w - #button.label * textSize * .55) / 2))
+  gpu.fillRect(display, button.x, button.y, button.w, button.h, 77, 139, 183)
+  sleep(0)
+  gpu.drawText(display, button.label, x, button.y + math.floor((button.h - textSize) / 2), 255, 255, 255, "Arial", textSize, "bold")
+  sleep(0)
+  gpu.updateDisplay(display)
+end
 local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton, monitorGpuNotice, compactGpuNotice
 local showGainValues
 local lastGpuRender = 0
@@ -1114,7 +1125,8 @@ local ok, err = pcall(function()
               if event.x >= button.x and event.x <= button.x + button.w and event.y >= button.y and event.y <= button.y + button.h then
                 button.action()
                 if button.label:match("^SWEEP") then sweepSummary = nil end
-                lastGpuRender = 0
+                pcall(showGpuClick, button)
+                lastGpuRender = os.clock() - .8
                 break
               end
             end
