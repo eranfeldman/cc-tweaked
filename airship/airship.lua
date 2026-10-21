@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.16"
+local AIRSHIP_BUILD = "1.2.17"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -158,7 +158,7 @@ local sweepSummary
 local sweepSummaryUntil
 local gpuButtons = {}
 local gpuTab, gpuHeightPage = "FLIGHT", 1
-local gpuRenderRevision = 0
+local pendingGpuClick
 local learnedHover = {}
 local altitudeSensorPressure
 local shipHeading
@@ -571,14 +571,12 @@ end
 local function renderDirectMonitor()
   if not directGpu then return end
   local gpu, display = directGpu, directDisplay
-  local revision = gpuRenderRevision
   local callsSinceYield = 0
   local function yieldFrame()
     callsSinceYield = callsSinceYield + 1
     if callsSinceYield < 4 then return end
     callsSinceYield = 0
     sleep(0)
-    if revision ~= gpuRenderRevision then error("DirectGPU frame superseded", 0) end
   end
   local l = gpuLayout()
   local w, h = l.w, l.h
@@ -668,6 +666,15 @@ local function renderDirectMonitor()
     txt(b.label,tx,b.y+math.floor((b.h-textSize)/2),textSize,ink,"bold")
   end
   gpu.updateDisplay(display)
+  local clicked = pendingGpuClick
+  if clicked then
+    pendingGpuClick = nil
+    local textSize = math.max(13, math.floor(h * .022))
+    local tx = clicked.align == "left" and clicked.x + 12 or clicked.x + math.max(6, math.floor((clicked.w - #clicked.label * textSize * .55) / 2))
+    gpu.fillRect(display, clicked.x, clicked.y, clicked.w, clicked.h, 77, 139, 183)
+    gpu.drawText(display, clicked.label, tx, clicked.y + math.floor((clicked.h - textSize) / 2), 255, 255, 255, "Arial", textSize, "bold")
+    gpu.updateDisplay(display)
+  end
   sleep(0)
 end
 local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton, monitorGpuNotice, compactGpuNotice
@@ -1051,7 +1058,6 @@ local function refresh()
     createGpuButtons()
     local ok, renderError = pcall(renderDirectMonitor)
     if ok then lastGpuRender = os.clock()
-    elseif renderError == "DirectGPU frame superseded" then gpuRedrawPending = true
     else
       directGpu = nil; directGpuEnabled = false
       directGpuError = "Draw failed: " .. tostring(renderError)
@@ -1120,7 +1126,7 @@ local ok, err = pcall(function()
             if event.x >= button.x and event.x <= button.x + button.w and event.y >= button.y and event.y <= button.y + button.h then
               button.action()
               if button.label:match("^SWEEP") then sweepSummary = nil end
-              gpuRenderRevision = gpuRenderRevision + 1
+              pendingGpuClick = button
               gpuRedrawPending = true
               break
             end
