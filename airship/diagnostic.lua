@@ -80,8 +80,7 @@ print(("Gains: XY %.4f %.5f %.3f; altitude bias/P/I/D %.2f %.3f %.4f %.3f"):form
   gains[1],gains[2],gains[3],gains[4],gains[5],gains[6],gains[7]))
 print(mode.."; saved hover-map points: "..#hoverPoints)
 print("Test: hold, altitude +3, return, altitude -3, return; then X+, X-, Z+, Z- targets 10 blocks from start.")
-print("The Pastebin upload is public and contains relative X/Z only. Type YES to start:")
-if read()~="YES" then print("Cancelled; no outputs changed."); return end
+print("Starting automatically. The Pastebin upload is public and contains relative X/Z only.")
 
 local filename="airship-pid-diagnostic.csv"
 local suffix=1
