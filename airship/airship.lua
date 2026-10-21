@@ -25,11 +25,12 @@ local position, target, altitude, mode = nil, nil, nil, "STARTING"
 local burner, burnerCommand, vectorX, vectorY, power = 0, 0, 0, 0, 0
 local burnerSlewPerSecond = 6
 local calibrated = fs.exists("airship-calibrated")
-local running, calibrationClick, altitudeLearning = true, nil, nil
+local running, calibrationClick, manualBurner = true, nil, nil
 local altitudePresets = {-10, 10, 25, 50}
 local presetIndex, presetBase = 0, nil
 local learnedHover = {}
 local altitudeSensorPressure
+local measuredThrust = 0
 local status, pidSummary, posText, altText, sysText, xInput, heightInput, pidInput, calibrateButton
 local axisTests = {}
 -- Conservative starting gains; GPS velocity feedback compensates for variable sample timing.
@@ -125,12 +126,12 @@ local function outputs()
   redstone.setAnalogOutput("front", burner)
 end
 local function stop()
-  altitudeLearning = nil
+  manualBurner = nil
   vectorX, vectorY, power, burner, burnerCommand, mode = 0, 0, 0, 0, 0, "STOPPED"
   pcall(outputs)
 end
 local function setFlightMode(nextMode)
-  if nextMode ~= "LEARNING HOVER" then altitudeLearning = nil end
+  manualBurner = nil
   vectorX, vectorY, power, mode = 0, 0, 0, nextMode
   pid.horizontalX.integral, pid.horizontalZ.integral, pid.altitude.integral = 0, 0, 0
 end
@@ -193,9 +194,13 @@ local function updateFlight(gpsFresh)
   if not altitude then burner, burnerCommand = 0, 0; mode = "SET ALTITUDE"; return end
   local altitudeError = altitude - position.y
   local dt = altitudeSensorReady and altitudeDt or sampleDt
-  local desiredBurner = clamp(hoverBias(altitude) + pidStep(pid.altitude, altitudeError, velocity.y, dt), 0, 15)
-  burnerCommand = burnerCommand + clamp(desiredBurner - burnerCommand, -burnerSlewPerSecond * dt, burnerSlewPerSecond * dt)
-  burner = math.floor(burnerCommand + .5)
+  if manualBurner ~= nil then
+    burnerCommand, burner = manualBurner, manualBurner
+  else
+    local desiredBurner = clamp(hoverBias(altitude) + pidStep(pid.altitude, altitudeError, velocity.y, dt), 0, 15)
+    burnerCommand = burnerCommand + clamp(desiredBurner - burnerCommand, -burnerSlewPerSecond * dt, burnerSlewPerSecond * dt)
+    burner = math.floor(burnerCommand + .5)
+  end
   if gpsFresh and mode == "AUTOPILOT" and target then
     local dx, dz = target.x - position.x, target.z - position.z
     if math.abs(dx) < .5 and math.abs(dz) < .5 and math.abs(velocity.x) < .12 and math.abs(velocity.z) < .12 then
@@ -217,53 +222,53 @@ local function selectAltitudePreset()
   status.text = ("Preset %d: target Y %.0f"):format(presetIndex, altitude)
   status.foreground = colors.lightBlue
 end
-local function learnAltitude()
-  if altitudeLearning then
-    altitudeLearning = nil; mode = "HOLDING ALTITUDE"
-    status.text = "Altitude learning canceled; holding target."; status.foreground = colors.lightBlue
-    return
+local function lockHoverLevel()
+  if manualBurner == nil then
+    status.text = "Press M to set the manual burner level before locking."; status.foreground = colors.orange; return
   end
-  if not altitudeSensorReady or not altitude then
-    status.text = "Altitude learning needs GPS and the Avionics sensor."; status.foreground = colors.red; return
+  if not altitudeSensorReady or not altitudeSensorPressure then
+    status.text = "Lock needs Avionics altitude and pressure readings."; status.foreground = colors.red; return
   end
-  if not altitudeSensorPressure then status.text = "Avionics pressure reading is unavailable."; status.foreground = colors.red; return end
-  altitudeLearning = {target=altitude, started=os.clock(), stableSince=nil, samples={}, pressures={}, nextSample=os.clock()}
-  mode = "LEARNING HOVER"
-  status.text = "Learning: hold target height steady"; status.foreground = colors.orange
+  if not position or math.abs(velocity.y) >= .12 then
+    status.text = "Wait until vertical speed is below 0.12, then lock."; status.foreground = colors.orange; return
+  end
+  local level = redstone.getAnalogOutput("front")
+  learnedHover[altitudeSensorPressure] = level
+  if saveHoverMap() then
+    status.text = ("Locked burner level %d at Y %.1f / pressure %.3f"):format(level, altitudeSensorHeight, altitudeSensorPressure)
+    status.foreground = colors.lime
+  else
+    status.text = "Level captured in memory, but could not save airship-hover.cfg."; status.foreground = colors.red
+  end
 end
-local function updateAltitudeLearning()
-  if not altitudeLearning then return end
-  local now = os.clock()
-  if now - altitudeLearning.started > 180 then
-    altitudeLearning = nil; mode = "HOLDING ALTITUDE"
-    status.text = "Learning timed out; no calibration saved."; status.foreground = colors.red
-    return
+local function toggleManualBurner()
+  if manualBurner ~= nil then
+    manualBurner = nil
+    if position then altitude = math.floor(position.y + .5) end
+    setFlightMode("HOLDING ALTITUDE")
+    status.text = "Auto altitude hold restored at current height."; status.foreground = colors.lime
+  else
+    manualBurner = redstone.getAnalogOutput("front")
+    vectorX, vectorY, power, target = 0, 0, 0, nil
+    mode = "MANUAL BURNER"
+    status.text = ("Manual burner: %d/15; Up/Down adjusts, K locks"):format(manualBurner)
+    status.foreground = colors.orange
   end
-  if not position or math.abs(position.y - altitudeLearning.target) > 1.5 or math.abs(velocity.y) > .12 then
-    altitudeLearning.stableSince = nil
-    return
+end
+local function adjustManualBurner(delta)
+  if manualBurner == nil then return false end
+  manualBurner = clamp(manualBurner + delta, 0, 15)
+  status.text = ("Manual burner: %d/15; settle, then K to lock"):format(manualBurner)
+  status.foreground = colors.orange
+  return true
+end
+local function readThrusterPower()
+  local total, count = 0, 0
+  for _, thruster in pairs(thrusters) do
+    local ok, value = pcall(thruster.getPower)
+    if ok and type(value) == "number" and value == value then total, count = total + value, count + 1 end
   end
-  altitudeLearning.stableSince = altitudeLearning.stableSince or now
-  if now - altitudeLearning.stableSince >= 5 and now >= altitudeLearning.nextSample then
-    altitudeLearning.samples[#altitudeLearning.samples + 1] = burnerCommand
-    altitudeLearning.pressures[#altitudeLearning.pressures + 1] = altitudeSensorPressure
-    altitudeLearning.nextSample = now + 1
-    status.text = ("Learning hover: %d/20 stable samples"):format(#altitudeLearning.samples)
-  end
-  if #altitudeLearning.samples >= 20 then
-    local total, pressure = 0, 0
-    for i, value in ipairs(altitudeLearning.samples) do total, pressure = total + value, pressure + altitudeLearning.pressures[i] end
-    learnedHover[pressure / #altitudeLearning.pressures] = clamp(total / #altitudeLearning.samples, 0, 15)
-    local saved = saveHoverMap()
-    altitudeLearning = nil; mode = "HOLDING ALTITUDE"
-    if saved then
-      status.text = ("Saved hover %.2f at pressure %.3f"):format(total / 20, pressure / 20)
-      status.foreground = colors.lime
-    else
-      status.text = "Learned in memory, but could not save the calibration file."
-      status.foreground = colors.red
-    end
-  end
+  measuredThrust = count > 0 and total / count * 15 or 0
 end
 
 local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton
@@ -324,8 +329,9 @@ if monitorFrame then
   monitorFrame:addButton({x=29, y=8, width=8, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
   monitorCalibrateButton = monitorFrame:addButton({x=2, y=9, width=14, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
   monitorFrame:addLabel({x=17, y=9, width=width-17, height=1, text="type on PC", foreground=colors.lightGray})
-  monitorFrame:addButton({x=2, y=10, width=14, height=1, text="LEARN HOVER", background=colors.orange}):onClick(learnAltitude)
+  monitorFrame:addButton({x=2, y=10, width=14, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
   monitorFrame:addButton({x=18, y=10, width=12, height=1, text="ALT PRESET", background=colors.blue}):onClick(selectAltitudePreset)
+  monitorFrame:addButton({x=32, y=10, width=12, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
 end
 
 if compact then
@@ -364,8 +370,8 @@ if compact then
   frame:addButton({x=29, y=10, width=8, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
   calibrateButton = frame:addButton({x=2, y=11, width=13, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
   frame:addLabel({x=16, y=11, width=8, height=1, text="PID gains", foreground=colors.lightBlue})
-  frame:addButton({x=27, y=11, width=12, height=1, text="LEARN HOVER", background=colors.orange}):onClick(learnAltitude)
-  frame:addButton({x=40, y=11, width=10, height=1, text="PRESET P", background=colors.blue}):onClick(selectAltitudePreset)
+  frame:addButton({x=27, y=11, width=12, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
+  frame:addButton({x=40, y=11, width=10, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
   pidInput = frame:addInput({x=2, y=12, width=screenWidth-13, height=1, placeholder="X/Z P I D  ALT bias P I D", background=colors.white, foreground=colors.black})
   showGainValues = function()
     pidInput.text = ("%.3g %.1g %.2g %.0f %.1g %.1g %.1g"):format(table.unpack(gainValues()))
@@ -463,18 +469,19 @@ button(26, 17, 11, "Y+ / FWD", colors.gray, function() testVector(0, .2, "TEST Y
 button(38, 17, 11, "Y- / BACK", colors.gray, function() testVector(0, -.2, "TEST Y-") end)
 
 calibrateButton = frame:addButton({x=2, y=19, width=14, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
-frame:addLabel({x=18, y=19, width=14, height=1, text="G dest Y height", foreground=colors.lightGray})
-frame:addButton({x=34, y=19, width=15, height=1, text="LEARN HOVER", background=colors.orange}):onClick(learnAltitude)
+frame:addButton({x=18, y=19, width=14, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
+frame:addButton({x=34, y=19, width=15, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
 end
 
 local function refresh()
+  readThrusterPower()
   if compact then
     posText.text = position and ("X %.1f Y %.1f Z %.1f"):format(position.x, position.y, position.z) or "GPS not found"
     altText.text = ("ALT %.1f / TARGET %.0f"):format(position and position.y or 0, altitude or 0)
   else
     posText.text = position and ("X " .. ("%.1f"):format(position.x) .. "  Y " .. ("%.1f"):format(position.y) .. "\nZ " .. ("%.1f"):format(position.z)) or "GPS not found"
     altText.text = ("Now %s\nTarget %s"):format(position and ("%.1f"):format(position.y) or "--", altitude and ("%.0f"):format(altitude) or "--")
-    sysText.text = ("Burner %d/15\nThrust %d/15"):format(burner, math.floor(power * 15 + .5))
+    sysText.text = ("Burner %d/15\nThrust %.1f/15"):format(burner, measuredThrust)
   end
   if frame:getFocused() ~= heightInput then heightInput.text = altitude and tostring(math.floor(altitude + .5)) or "" end
   if frame:getFocused() ~= pidInput then showGainValues() end
@@ -486,13 +493,13 @@ local function refresh()
   elseif mode == "DESTINATION REACHED" then status.text, status.foreground = "DESTINATION REACHED  |  HOLDING ALTITUDE", colors.lime
   elseif mode == "SET ALTITUDE" then status.text, status.foreground = "GPS ready  |  set an altitude target", colors.orange
   elseif mode == "CALIBRATION CONFIRM" then status.text, status.foreground = "Confirm calibration within 8 seconds", colors.orange
-  elseif mode == "LEARNING HOVER" then status.text, status.foreground = ("Learning hover level: %d/20 samples"):format(altitudeLearning and #altitudeLearning.samples or 0), colors.orange
+  elseif mode == "MANUAL BURNER" then status.text, status.foreground = ("MANUAL BURNER %d/15 | UP/DOWN adjust, K locks"):format(manualBurner or 0), colors.orange
   elseif mode:match("^TEST ") then status.text, status.foreground = mode .. "  |  press HOLD to stop", colors.orange
   elseif mode == "STOPPED" then status.text, status.foreground = "OUTPUTS STOPPED", colors.red end
   if monitorFrame then
     monitorPos.text = position and ("X %.1f Y %.1f Z %.1f"):format(position.x, position.y, position.z) or "GPS not found"
     monitorAlt.text = ("ALT %.1f / TARGET %.0f"):format(position and position.y or 0, altitude or 0)
-    monitorSystem.text = ("BURNER %d/15  THRUST %d/15"):format(burner, math.floor(power * 15 + .5))
+    monitorSystem.text = ("BURNER %d/15 THRUST %.1f/15"):format(burner, measuredThrust)
     monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
   end
 end
@@ -506,7 +513,6 @@ local ok, err = pcall(function()
       local success = pcall(function()
         local gpsFresh = locate()
         updateFlight(gpsFresh)
-        updateAltitudeLearning()
         outputs()
       end)
       if not success then stop(); running = false; status.text = "Peripheral error: outputs stopped"; status.foreground = colors.red; basalt.stop(); return end
@@ -524,10 +530,11 @@ local ok, err = pcall(function()
       local _, key = os.pullEvent("key")
       local focused = frame:getFocused()
       if focused == xInput or focused == heightInput or focused == pidInput then
-        if key == keys.up then adjustAltitude(1) elseif key == keys.down then adjustAltitude(-1) end
+        if key == keys.up then if not adjustManualBurner(1) then adjustAltitude(1) end
+        elseif key == keys.down then if not adjustManualBurner(-1) then adjustAltitude(-1) end end
       else
-        if key == keys.up then adjustAltitude(1)
-        elseif key == keys.down then adjustAltitude(-1)
+        if key == keys.up then if not adjustManualBurner(1) then adjustAltitude(1) end
+        elseif key == keys.down then if not adjustManualBurner(-1) then adjustAltitude(-1) end
         elseif key == keys.left then testVector(-.2, 0, "TEST X-")
         elseif key == keys.right then testVector(.2, 0, "TEST X+")
         elseif key == keys.f then testVector(0, .2, "TEST Y+")
@@ -537,7 +544,8 @@ local ok, err = pcall(function()
         elseif key == keys.t then pidInput:focus()
         elseif key == keys.h then holdHere()
         elseif key == keys.p then selectAltitudePreset()
-        elseif key == keys.l then learnAltitude()
+        elseif key == keys.m then toggleManualBurner()
+        elseif key == keys.k then lockHoverLevel()
         elseif key == keys.a then engageAutopilot()
         elseif key == keys.s then stop()
         elseif key == keys.c then confirmCalibration()
