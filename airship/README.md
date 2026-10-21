@@ -40,3 +40,16 @@ Starting values: horizontal `0.035 0.0005 0.18`; altitude `bias 4, P 0.45, I 0.0
 Test in a backup/creative world with short moves. Burner output now ramps at no more than 6 redstone levels per second and uses all analog strengths 0–15 instead of jumping immediately to the PID result. If altitude overshoots, lower altitude P or raise D; if it keeps rising at the target, lower bias; if it sinks, raise bias. Make small changes and use **T** to save them. The right bias depends on how much burner signal is needed to hold this ship up.
 
 The UI refreshes on a 20 Hz timer. The altitude PID reads the Avionics sensor every control-loop pass; sensor speed is sampled at server tick rate and the sensor documentation notes a one-tick lag. GPS calls use a 0.1-second timeout, horizontal navigation updates on fresh GPS fixes, and outputs are cut after 0.5 seconds without GPS. Basalt 2.5 requires HTTP access if you download it with `wget`; the app and `basalt.lua` must be in the same folder. GPS is still required for X/Z autopilot navigation. If GPS is lost during autopilot, outputs are cut and you must re-engage after the fix returns. The controller does not check obstacles or handle landing. The exact PID response depends on the ship, burner/link behavior, and sensor/GPS quality; the defaults have not been flight-tested.
+
+## Collect altitude tuning data
+
+In a safe test area, stop the controller with **Ctrl+T**, then install and start the diagnostic:
+
+```text
+wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/diagnostic.lua diagnostic.lua
+diagnostic.lua
+```
+
+It prompts for ship/balloon facts, then logs time, altitude, vertical speed, air pressure, and the computer's front redstone strength five times per second. It does not record GPS coordinates or player/server names. Enter a burner strength and label such as `4 hover`, hold each setting long enough to see the response, then try a nearby higher and lower setting (for example `5 hover+1`, then `3 hover-1`). Type `q` to finish; the script sets the link signal to 0 and saves a new CSV without overwriting older logs. It asks before uploading; typing `UPLOAD` sends a **public** Pastebin paste using CC:Tweaked's built-in `pastebin put` program. HTTP access must be enabled for that upload.
+
+The initial prompts use the facts provided so far: 15x15 footprint, 845 blocks of balloon capacity (please verify), four burners, 210 max fill each, and 840 combined. Correct any value that is different on the ship. Keep the altitude test short and clear of obstacles; `q` cuts burner input but the balloon's existing lift does not disappear instantly.
