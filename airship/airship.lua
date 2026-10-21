@@ -24,8 +24,16 @@ for _, name in ipairs(peripheral.getNames()) do
   if monitorName then break end
 end
 local directGpu, directDisplay, directWidth, directHeight, directGpuError
-local gpuFound = peripheral.find("directgpu")
-if gpuFound then
+local function setupDirectGpu()
+  local gpuFound = peripheral.find("directgpu")
+  if not gpuFound then directGpuError = "DirectGPU peripheral not found"; return false end
+  monitorName = nil
+  for _, name in ipairs(peripheral.getNames()) do
+    for _, kind in ipairs({peripheral.getType(name)}) do
+      if type(kind) == "string" and kind:find("monitor", 1, true) then monitorName = name; break end
+    end
+    if monitorName then break end
+  end
   local listOk, displays = pcall(gpuFound.listDisplays)
   local display = listOk and displays and displays[1]
   local function getInfo(id)
@@ -59,6 +67,8 @@ if gpuFound then
   if info then
     directGpu, directDisplay = gpuFound, display
     directWidth, directHeight = info.pixelWidth, info.pixelHeight
+    directGpuError = nil
+    return true
   else
     local scanOk, monitorInfo = pcall(gpuFound.autoDetectMonitor)
     if not scanOk then
@@ -69,8 +79,11 @@ if gpuFound then
     else
       directGpuError = "No monitor near DirectGPU block; move it beside monitor"
     end
+    directGpu = nil
+    return false
   end
 end
+setupDirectGpu()
 local altitudeSensor = peripheral.find("altitude_sensor")
 local frame = basalt.getMainFrame()
 local monitorFrame = monitor and not directGpu and basalt.createFrame(monitor)
@@ -504,7 +517,10 @@ local function confirmCalibration()
   end
 end
 
-if directGpu then
+local gpuButtonsReady = false
+local function createGpuButtons()
+  if not directGpu or gpuButtonsReady then return end
+  gpuButtonsReady = true
   local y, h, gap = directHeight - 48, 36, 6
   local x, bw = 12, math.floor((directWidth - 24 - 6 * gap) / 7)
   addGpuButton(x, y, bw, h, "ALT -", {35,62,91}, function() adjustAltitude(-1) end)
@@ -515,6 +531,7 @@ if directGpu then
   addGpuButton(x+5*(bw+gap), y, bw, h, "MANUAL", {100,75,35}, toggleManualBurner)
   addGpuButton(x+6*(bw+gap), y, bw, h, "STOP", {125,48,56}, stop)
 end
+createGpuButtons()
 
 if monitorFrame then
   local width = monitor.getSize()
@@ -694,7 +711,8 @@ local function refresh()
   if frame:getFocused() ~= heightInput then heightInput.text = altitude and tostring(math.floor(altitude + .5)) or "" end
   if frame:getFocused() ~= pidInput then showGainValues() end
   if pidSummary then pidSummary.text = directGpuError and ("GPU: " .. directGpuError) or ("XY %.3f/%.4f/%.2f ALT %.1f/%.1f/%.2f/%.1f"):format(pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d, pid.altitude.bias, pid.altitude.p, pid.altitude.i, pid.altitude.d) end
-  if compactGpuNotice then compactGpuNotice.text = "DirectGPU: " .. directGpuError end
+  if compactGpuNotice then compactGpuNotice.text = directGpuError and ("DirectGPU: " .. directGpuError) or "DirectGPU ready" end
+  if monitorGpuNotice then monitorGpuNotice.text = directGpuError and ("GPU: " .. directGpuError) or "GPU ready" end
   if mode == "AUTOPILOT" then status.text, status.foreground = "AUTOPILOT ACTIVE  |  EAST-FACING SHIP", colors.lime
   elseif mode == "GPS LOST - RE-ENGAGE" then status.text, status.foreground = mode, colors.red
   elseif mode == "WAITING FOR GPS" then status.text, status.foreground = "Waiting for GPS signal...", colors.orange
@@ -715,7 +733,10 @@ local function refresh()
     monitorSystem.text = ("BURNER %d/15 THRUST %.1f/15"):format(burner, measuredThrust)
     monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
   end
-  if directGpu then renderDirectMonitor() end
+  if directGpu then
+    local ok = pcall(renderDirectMonitor)
+    if not ok then directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting" end
+  end
 end
 
 local ok, err = pcall(function()
@@ -746,11 +767,28 @@ local ok, err = pcall(function()
       sleep(.05)
     end
   end)
-  if directGpu then
-    basalt.schedule(function()
-      while running do
-        if directGpu.hasEvents(directDisplay) then
-          local event = directGpu.pollEvent(directDisplay)
+  basalt.schedule(function()
+    while running do
+      if directGpu then
+        local alive = pcall(directGpu.getDisplayInfo, directDisplay)
+        if not alive then directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting" end
+      end
+      if not directGpu then
+        pcall(setupDirectGpu)
+        createGpuButtons()
+        if not monitorGpuNotice and monitorFrame then
+          monitorGpuNotice = monitorFrame:addLabel({x=2, y=12, width=monitor.getSize()-2, height=1, text="GPU: " .. (directGpuError or "ready"), foreground=colors.orange})
+        end
+        if not compactGpuNotice and compact then
+          compactGpuNotice = frame:addLabel({x=2, y=13, width=screenWidth-3, height=2, text="DirectGPU: " .. (directGpuError or "ready"), foreground=colors.orange})
+        end
+      end
+      if directGpu then
+        local eventOk, hasEvents = pcall(directGpu.hasEvents, directDisplay)
+        if not eventOk then directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting"
+        elseif hasEvents then
+          local pollOk, event = pcall(directGpu.pollEvent, directDisplay)
+          if not pollOk then directGpu = nil; directGpuError = "DirectGPU connection lost; reconnecting" end
           if event and event.type == "mouse_click" then
             for _, button in ipairs(gpuButtons) do
               if event.x >= button.x and event.x <= button.x + button.w and event.y >= button.y and event.y <= button.y + button.h then
@@ -761,10 +799,10 @@ local ok, err = pcall(function()
             end
           end
         end
-        sleep(.05)
       end
-    end)
-  end
+      sleep(directGpu and .05 or 2)
+    end
+  end)
   basalt.schedule(function()
     while running do
       local _, key = os.pullEvent("key")
