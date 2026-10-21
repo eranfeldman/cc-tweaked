@@ -9,10 +9,13 @@ In the computer terminal, install Basalt 2.5, download the updated controller be
 ```text
 wget run https://basalt.madefor.cc/2.5/install.lua minified
 wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship.lua airship.lua
+wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship-updater.lua airship-updater.lua
 airship.lua
 ```
 
 Or copy `airship.lua` into a file on the computer and run `airship.lua`. The computer needs wireless GPS access and all eight peripherals named `liquid_vector_thruster_0` through `_7`. For improved altitude hold, add one Create: Avionics **Altitude Sensor** to the ship and connect it to the same CC peripheral network. Its peripheral type is `altitude_sensor`; the app detects it automatically and falls back to GPS altitude if it is absent.
+
+Install `airship-updater.lua` once beside the controller. Then press **UPDATE** (or **U** on the computer) to stop the controller, open the updater in a second Multishell tab, download and validate the latest controller, replace the installed copy, and launch it. The updater keeps the previous version as `airship.lua.bak`; calibration and PID files are left in place. The button requires CC:Tweaked Multishell.
 
 To check that CC:Tweaked sees it, run `lua` and enter:
 

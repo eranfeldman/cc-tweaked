@@ -215,6 +215,22 @@ local function stop()
   vectorX, vectorY, power, burner, burnerCommand, mode = 0, 0, 0, 0, 0, "STOPPED"
   pcall(outputs)
 end
+local updateRequested = false
+local function requestProgramUpdate()
+  if not shell or type(shell.openTab) ~= "function" then
+    status.text = "Update button needs CC:Tweaked Multishell."
+    status.foreground = colors.orange
+    return
+  end
+  if not fs.exists("/airship-updater.lua") then
+    status.text = "Updater missing; install airship-updater.lua once."
+    status.foreground = colors.red
+    return
+  end
+  updateRequested = true
+  stop()
+  basalt.stop()
+end
 local function setFlightMode(nextMode)
   manualBurner = nil
   burnerSweep = nil
@@ -530,14 +546,15 @@ local function createGpuButtons()
   if not directGpu or gpuButtonsReady then return end
   gpuButtonsReady = true
   local y, h, gap = directHeight - 48, 36, 6
-  local x, bw = 12, math.floor((directWidth - 24 - 6 * gap) / 7)
+  local x, bw = 12, math.floor((directWidth - 24 - 7 * gap) / 8)
   addGpuButton(x, y, bw, h, "ALT -", {35,62,91}, function() adjustAltitude(-1) end)
   addGpuButton(x+(bw+gap), y, bw, h, "ALT +", {35,62,91}, function() adjustAltitude(1) end)
   addGpuButton(x+2*(bw+gap), y, bw, h, "HOLD", {35,62,91}, holdHere)
   addGpuButton(x+3*(bw+gap), y, bw, h, "AUTO", {42,112,83}, engageAutopilot)
   addGpuButton(x+4*(bw+gap), y, bw, h, "SWEEP", {130,78,31}, startBurnerSweep)
   addGpuButton(x+5*(bw+gap), y, bw, h, "MANUAL", {100,75,35}, toggleManualBurner)
-  addGpuButton(x+6*(bw+gap), y, bw, h, "STOP", {125,48,56}, stop)
+  addGpuButton(x+6*(bw+gap), y, bw, h, "UPDATE", {46,107,130}, requestProgramUpdate)
+  addGpuButton(x+7*(bw+gap), y, bw, h, "STOP", {125,48,56}, stop)
 end
 createGpuButtons()
 
@@ -563,6 +580,7 @@ if monitorFrame then
   monitorFrame:addButton({x=18, y=10, width=12, height=1, text="SAVED ALT", background=colors.blue}):onClick(selectAltitudePreset)
   monitorFrame:addButton({x=32, y=10, width=12, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
   monitorFrame:addButton({x=2, y=11, width=16, height=1, text="SWEEP 15-5", background=colors.orange}):onClick(startBurnerSweep)
+  monitorFrame:addButton({x=20, y=11, width=10, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
   if directGpuError then monitorGpuNotice = monitorFrame:addLabel({x=2, y=12, width=width-2, height=1, text="GPU: " .. directGpuError, foreground=colors.orange}) end
 end
 
@@ -619,6 +637,7 @@ if compact then
   pidInput:onEnter(setGains)
   frame:addButton({x=screenWidth-10, y=12, width=8, height=1, text="SET PID", background=colors.blue}):onClick(setGains)
   if directGpuError then compactGpuNotice = frame:addLabel({x=2, y=13, width=screenWidth-3, height=2, text="DirectGPU: " .. directGpuError, foreground=colors.orange}) end
+  frame:addButton({x=screenWidth-12, y=15, width=10, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
 else
 frame:addLabel({x=2, y=1, width=47, height=1, text="AIRSHIP  /  FLIGHT DECK", foreground=colors.white, background=colors.blue})
 status = frame:addLabel({x=2, y=2, width=47, height=1, text="Starting controller...", foreground=colors.yellow})
@@ -701,9 +720,10 @@ button(14, 17, 11, "X+ / RIGHT", colors.gray, function() testVector(.2, 0, "TEST
 button(26, 17, 11, "Y+ / FWD", colors.gray, function() testVector(0, .2, "TEST Y+") end)
 button(38, 17, 11, "Y- / BACK", colors.gray, function() testVector(0, -.2, "TEST Y-") end)
 
-calibrateButton = frame:addButton({x=2, y=19, width=14, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
-frame:addButton({x=18, y=19, width=14, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
-frame:addButton({x=34, y=19, width=15, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
+calibrateButton = frame:addButton({x=2, y=19, width=12, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
+frame:addButton({x=15, y=19, width=10, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
+frame:addButton({x=26, y=19, width=12, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
+frame:addButton({x=39, y=19, width=10, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
 end
 
 local function refresh()
@@ -834,6 +854,7 @@ local ok, err = pcall(function()
         elseif key == keys.m then toggleManualBurner()
         elseif key == keys.k then lockHoverLevel()
         elseif key == keys.v then startBurnerSweep()
+        elseif key == keys.u then requestProgramUpdate()
         elseif key == keys.a then engageAutopilot()
         elseif key == keys.s then stop()
         elseif key == keys.c then confirmCalibration()
@@ -845,4 +866,8 @@ local ok, err = pcall(function()
 end)
 running = false
 stop()
+if updateRequested then
+  local ok, err = pcall(shell.openTab, "/airship-updater.lua")
+  if not ok then term.setTextColor(colors.red); print("Could not open updater: " .. tostring(err)) end
+end
 if not ok then term.setTextColor(colors.red); print("Airship UI stopped: " .. tostring(err)) end
