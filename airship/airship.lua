@@ -146,24 +146,21 @@ if fs.exists("airship-hover.cfg") then
     local pressure, level, height = line:match("^([%-%.%d]+)%s+([%-%.%d]+)%s*([%-%.%d]*)$")
     pressure, level, height = tonumber(pressure), tonumber(level), tonumber(height)
     if pressure and level and level >= 0 and level <= 15 then
-      local key = ("%.4f:%.3f"):format(pressure, level)
+      local key = ("%.3f"):format(height or pressure)
       learnedHover[key] = {pressure=pressure, level=level, height=height}
     end
   end
   file.close()
 end
 local function hoverBias(height)
-  local byPressure, points = {}, {}
+  local points = {}
   for _, sample in pairs(learnedHover) do
-    local key = ("%.4f"):format(sample.pressure)
-    local point = byPressure[key] or {sample.pressure, 0, 0}
-    point[2], point[3] = point[2] + sample.level, point[3] + 1
-    byPressure[key] = point
+    if type(sample.height) == "number" then
+      points[#points + 1] = {sample.height, sample.level}
+    end
   end
-  for _, point in pairs(byPressure) do points[#points + 1] = {point[1], point[2] / point[3]} end
   table.sort(points, function(a, b) return a[1] < b[1] end)
-  height = altitudeSensorPressure or height
-  if #points == 0 then return pid.altitude.bias end
+  if #points == 0 then return nil end
   if height <= points[1][1] then return points[1][2] end
   if height >= points[#points][1] then return points[#points][2] end
   for i = 1, #points - 1 do
@@ -174,7 +171,7 @@ local function hoverBias(height)
       return low[2] + (high[2] - low[2]) * fraction
     end
   end
-  return pid.altitude.bias
+  return nil
 end
 local function saveHoverMap()
   return pcall(function()
@@ -296,7 +293,8 @@ local function updateFlight(gpsFresh)
   elseif manualBurner ~= nil then
     burnerCommand, burner = manualBurner, manualBurner
   else
-    local desiredBurner = clamp(hoverBias(altitude) + pidStep(pid.altitude, altitudeError, velocity.y, dt), 0, 15)
+    local mappedBurner = hoverBias(altitude)
+    local desiredBurner = clamp(mappedBurner or ((hoverBias(altitude) or pid.altitude.bias) + pidStep(pid.altitude, altitudeError, velocity.y, dt)), 0, 15)
     burnerCommand = burnerCommand + clamp(desiredBurner - burnerCommand, -burnerSlewPerSecond * dt, burnerSlewPerSecond * dt)
     burner = math.floor(burnerCommand + .5)
   end
@@ -333,7 +331,7 @@ local function lockHoverLevel()
   end
   local level = redstone.getAnalogOutput("front")
   local pressure = tonumber(("%.4f"):format(altitudeSensorPressure))
-  local key = ("%.4f:%.3f"):format(pressure, level)
+  local key = ("%.3f"):format(altitudeSensorHeight)
   learnedHover[key] = {pressure=pressure, level=level, height=altitudeSensorHeight}
   if saveHoverMap() then
     status.text = ("Locked signal %d at Y %.1f / pressure %.3f"):format(level, altitudeSensorHeight, altitudeSensorPressure)
@@ -360,7 +358,7 @@ local function startBurnerSweep()
   end
   if sweepConfirmAt and os.clock() - sweepConfirmAt < 8 then
     sweepSummary = nil
-    burnerSweep = {level=15, startedY=position.y, changedAt=os.clock(), stableSince=nil, saved=0, skipped=0}
+    burnerSweep = {level=15, changedAt=os.clock(), stableSince=nil, saved=0, skipped=0}
     manualBurner, vectorX, vectorY, power, target = nil, 0, 0, 0, nil
     mode = "BURNER SWEEP"
     status.text = "Sweep started: levels 15 down to 5"; status.foreground = colors.orange
@@ -374,15 +372,12 @@ local function updateBurnerSweep()
   if type(burnerSweep) ~= "table" then return end
   local now = os.clock()
   if not position or not altitudeSensorPressure then finishBurnerSweep("Sweep aborted: GPS or pressure reading lost."); return end
-  if math.abs(position.y - burnerSweep.startedY) > 24 or math.abs(velocity.y) >= 3 then
-    finishBurnerSweep("Sweep safety stop: moved 24 blocks or reached 3 blocks/sec."); return
-  end
   local atLevel = math.abs(burnerCommand - burnerSweep.level) < .05
   if atLevel and math.abs(velocity.y) < .12 then burnerSweep.stableSince = burnerSweep.stableSince or now
   else burnerSweep.stableSince = nil end
   if burnerSweep.stableSince and now - burnerSweep.stableSince >= 4 then
     local pressure = tonumber(("%.4f"):format(altitudeSensorPressure))
-    local key = ("%.4f:%.3f"):format(pressure, burnerSweep.level)
+    local key = ("%.3f"):format(altitudeSensorHeight)
     learnedHover[key] = {pressure=pressure, level=burnerSweep.level, height=altitudeSensorHeight}
     if not saveHoverMap() then finishBurnerSweep("Sweep stopped: calibration file could not be saved."); return end
     burnerSweep.saved = burnerSweep.saved + 1
