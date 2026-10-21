@@ -188,6 +188,28 @@ local function saveHoverMap()
     if fs.exists("airship-hover.cfg.bak") then fs.delete("airship-hover.cfg.bak") end
   end)
 end
+local clearHoverConfirmAt
+local function clearHoverMap()
+  if not clearHoverConfirmAt or os.clock() - clearHoverConfirmAt >= 8 then
+    clearHoverConfirmAt = os.clock()
+    status.text = "Tap CLEAR again within 8 seconds to erase saved heights."
+    status.foreground = colors.orange
+    return
+  end
+  clearHoverConfirmAt = nil
+  local previous = learnedHover
+  learnedHover = {}
+  local ok, err = saveHoverMap()
+  if ok then
+    gpuHeightPage = 1
+    status.text = "All saved calibration heights cleared."
+    status.foreground = colors.lime
+  else
+    learnedHover = previous
+    status.text = "Could not clear saved heights: " .. tostring(err)
+    status.foreground = colors.red
+  end
+end
 readGainFile()
 local velocity = {x=0, y=0, z=0}
 local previousPosition, previousSample
@@ -574,6 +596,21 @@ local function adjustAltitude(delta)
   altitude = (altitude or math.floor(position.y + .5)) + delta
   setFlightMode("HOLDING ALTITUDE")
 end
+local function stepSavedAltitude(delta)
+  if not position then status.text = "Waiting for GPS before changing altitude."; return end
+  local heights = savedAltitudes()
+  if #heights == 0 then adjustAltitude(delta); return end
+  local current = altitude or position.y
+  local index
+  if delta > 0 then
+    for i, height in ipairs(heights) do if height > current + .001 then index = i; break end end
+    index = index or 1
+  else
+    for i = #heights, 1, -1 do if heights[i] < current - .001 then index = i; break end end
+    index = index or #heights
+  end
+  selectSavedAltitude(index)
+end
 local function holdHere()
   if position then altitude = math.floor(position.y + .5); target = nil; setFlightMode("HOLDING ALTITUDE") end
 end
@@ -623,8 +660,8 @@ local function createGpuButtons()
   end
   if gpuTab=="FLIGHT" then
     buttonRow({
-      {"ALT -",nil,{35,62,91},function() adjustAltitude(-1) end},
-      {"ALT +",nil,{35,62,91},function() adjustAltitude(1) end},
+      {"ALT -",nil,{35,62,91},function() stepSavedAltitude(-1) end},
+      {"ALT +",nil,{35,62,91},function() stepSavedAltitude(1) end},
       {"SAVED",nil,{43,90,132},selectAltitudePreset},
       {"HOLD",nil,{35,62,91},holdHere},
       {"AUTO",nil,{42,112,83},engageAutopilot},
@@ -632,8 +669,6 @@ local function createGpuButtons()
     },l.buttonY)
   elseif gpuTab=="CALIBRATION" then
     buttonRow({
-      {"X-",nil,{70,82,96},function() testVector(-.2,0,"TEST X-") end},
-      {"X+",nil,{70,82,96},function() testVector(.2,0,"TEST X+") end},
       {"FWD",nil,{70,82,96},function() testVector(0,.2,"TEST Y+") end},
       {"BACK",nil,{70,82,96},function() testVector(0,-.2,"TEST Y-") end},
       {calibrated and "READY" or "CAL",nil,calibrated and {55,130,90} or {130,78,31},confirmCalibration},
@@ -642,6 +677,7 @@ local function createGpuButtons()
       {"SWEEP 15-5",nil,{130,78,31},startBurnerSweep},
       {"UPD",nil,{46,107,130},requestProgramUpdate},
       {"STOP",nil,{125,48,56},stop},
+      {clearHoverConfirmAt and os.clock()-clearHoverConfirmAt<8 and "CLEAR?" or "CLEAR",nil,{125,48,56},clearHoverMap},
     },l.buttonY)
   else
     local heights=savedHoverPoints()
@@ -668,15 +704,13 @@ if monitorFrame then
   monitorPos = monitorFrame:addLabel({x=2, y=3, width=width-2, height=1, text="GPS --", foreground=colors.white})
   monitorAlt = monitorFrame:addLabel({x=2, y=4, width=width-2, height=1, text="ALT -- / TARGET --", foreground=colors.lightBlue})
   monitorSystem = monitorFrame:addLabel({x=2, y=5, width=width-2, height=1, text="BURNER 0/15  THRUST 0/15", foreground=colors.lightGray})
-  monitorFrame:addButton({x=2, y=6, width=8, height=1, text="ALT -", background=colors.orange}):onClick(function() adjustAltitude(-1) end)
-  monitorFrame:addButton({x=11, y=6, width=8, height=1, text="ALT +", background=colors.orange}):onClick(function() adjustAltitude(1) end)
+  monitorFrame:addButton({x=2, y=6, width=8, height=1, text="ALT -", background=colors.orange}):onClick(function() stepSavedAltitude(-1) end)
+  monitorFrame:addButton({x=11, y=6, width=8, height=1, text="ALT +", background=colors.orange}):onClick(function() stepSavedAltitude(1) end)
   monitorFrame:addButton({x=2, y=7, width=10, height=1, text="HOLD HERE", background=colors.blue}):onClick(holdHere)
   monitorFrame:addButton({x=13, y=7, width=11, height=1, text="AUTOPILOT", background=colors.lime}):onClick(engageAutopilot)
   monitorFrame:addButton({x=25, y=7, width=8, height=1, text="STOP", background=colors.red}):onClick(stop)
-  monitorFrame:addButton({x=2, y=8, width=8, height=1, text="TEST X-", background=colors.gray}):onClick(function() testVector(-.2, 0, "TEST X-") end)
-  monitorFrame:addButton({x=11, y=8, width=8, height=1, text="TEST X+", background=colors.gray}):onClick(function() testVector(.2, 0, "TEST X+") end)
-  monitorFrame:addButton({x=20, y=8, width=8, height=1, text="TEST FWD", background=colors.gray}):onClick(function() testVector(0, .2, "TEST Y+") end)
-  monitorFrame:addButton({x=29, y=8, width=8, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
+  monitorFrame:addButton({x=2, y=8, width=12, height=1, text="TEST FWD", background=colors.gray}):onClick(function() testVector(0, .2, "TEST Y+") end)
+  monitorFrame:addButton({x=15, y=8, width=12, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
   monitorCalibrateButton = monitorFrame:addButton({x=2, y=9, width=14, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
   monitorFrame:addLabel({x=17, y=9, width=width-17, height=1, text="type on PC", foreground=colors.lightGray})
   monitorFrame:addButton({x=2, y=10, width=14, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
@@ -684,6 +718,7 @@ if monitorFrame then
   monitorFrame:addButton({x=32, y=10, width=12, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
   monitorFrame:addButton({x=2, y=11, width=16, height=1, text="SWEEP 15-5", background=colors.orange}):onClick(startBurnerSweep)
   monitorFrame:addButton({x=20, y=11, width=10, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
+  monitorFrame:addButton({x=32, y=11, width=12, height=1, text="CLEAR MAP", background=colors.red}):onClick(clearHoverMap)
   if directGpuError then monitorGpuNotice = monitorFrame:addLabel({x=2, y=12, width=width-2, height=1, text="GPU: " .. directGpuError, foreground=colors.orange}) end
 end
 
@@ -714,15 +749,13 @@ if compact then
   end
   heightInput:onEnter(setHeight)
   frame:addButton({x=11, y=8, width=10, height=1, text="SET HEIGHT", background=colors.blue}):onClick(setHeight)
-  frame:addButton({x=22, y=8, width=6, height=1, text="ALT -", background=colors.orange}):onClick(function() adjustAltitude(-1) end)
-  frame:addButton({x=29, y=8, width=6, height=1, text="ALT +", background=colors.orange}):onClick(function() adjustAltitude(1) end)
+  frame:addButton({x=22, y=8, width=6, height=1, text="ALT -", background=colors.orange}):onClick(function() stepSavedAltitude(-1) end)
+  frame:addButton({x=29, y=8, width=6, height=1, text="ALT +", background=colors.orange}):onClick(function() stepSavedAltitude(1) end)
   frame:addButton({x=2, y=9, width=10, height=1, text="HOLD HERE", background=colors.blue}):onClick(holdHere)
   frame:addButton({x=13, y=9, width=10, height=1, text="AUTOPILOT", background=colors.lime}):onClick(engageAutopilot)
   frame:addButton({x=24, y=9, width=8, height=1, text="STOP", background=colors.red}):onClick(stop)
-  frame:addButton({x=2, y=10, width=8, height=1, text="TEST X-", background=colors.gray}):onClick(function() testVector(-.2, 0, "TEST X-") end)
-  frame:addButton({x=11, y=10, width=8, height=1, text="TEST X+", background=colors.gray}):onClick(function() testVector(.2, 0, "TEST X+") end)
-  frame:addButton({x=20, y=10, width=8, height=1, text="TEST FWD", background=colors.gray}):onClick(function() testVector(0, .2, "TEST Y+") end)
-  frame:addButton({x=29, y=10, width=8, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
+  frame:addButton({x=2, y=10, width=12, height=1, text="TEST FWD", background=colors.gray}):onClick(function() testVector(0, .2, "TEST Y+") end)
+  frame:addButton({x=15, y=10, width=12, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
   calibrateButton = frame:addButton({x=2, y=11, width=13, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
   frame:addButton({x=16, y=11, width=10, height=1, text="SWEEP V", background=colors.orange}):onClick(startBurnerSweep)
   frame:addButton({x=27, y=11, width=12, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
@@ -799,8 +832,8 @@ end
 local function flightButton(x, width, label, color, action)
   return flightPage:addButton({x=x, y=14, width=width, height=2, text=label, background=color}):onClick(action)
 end
-flightButton(2, 7, "ALT -", colors.orange, function() adjustAltitude(-1) end)
-flightButton(10, 7, "ALT +", colors.orange, function() adjustAltitude(1) end)
+flightButton(2, 7, "ALT -", colors.orange, function() stepSavedAltitude(-1) end)
+flightButton(10, 7, "ALT +", colors.orange, function() stepSavedAltitude(1) end)
 flightButton(18, 9, "HOLD", colors.blue, holdHere)
 flightButton(28, 12, "AUTOPILOT", colors.lime, engageAutopilot)
 flightButton(41, 9, "STOP", colors.red, stop)
@@ -834,15 +867,14 @@ pidInput:onEnter(setGains)
 local function calibrationButton(x, y, width, label, color, action)
   return calibrationPage:addButton({x=x, y=y, width=width, height=2, text=label, background=color}):onClick(action)
 end
-calibrationButton(2, 6, 11, "X- / LEFT", colors.gray, function() testVector(-.2, 0, "TEST X-") end)
-calibrationButton(14, 6, 11, "X+ / RIGHT", colors.gray, function() testVector(.2, 0, "TEST X+") end)
-calibrationButton(26, 6, 11, "Y+ / FWD", colors.gray, function() testVector(0, .2, "TEST Y+") end)
-calibrationButton(38, 6, 11, "Y- / BACK", colors.gray, function() testVector(0, -.2, "TEST Y-") end)
+calibrationButton(2, 6, 22, "Y+ / FWD", colors.gray, function() testVector(0, .2, "TEST Y+") end)
+calibrationButton(26, 6, 22, "Y- / BACK", colors.gray, function() testVector(0, -.2, "TEST Y-") end)
 calibrateButton = calibrationPage:addButton({x=2, y=9, width=14, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
 calibrationPage:addButton({x=18, y=9, width=12, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
 calibrationPage:addButton({x=32, y=9, width=15, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
 calibrationButton(2, 12, 16, "SWEEP 15-5", colors.orange, startBurnerSweep)
-calibrationPage:addLabel({x=20, y=12, width=29, height=1, text="Sweep saves each stable altitude", foreground=colors.lightGray})
+calibrationPage:addLabel({x=20, y=12, width=13, height=1, text="Sweep saves stable heights", foreground=colors.lightGray})
+calibrationPage:addButton({x=35, y=12, width=14, height=1, text="CLEAR HEIGHTS", background=colors.red}):onClick(clearHoverMap)
 end
 
 local function isFocused(input)
