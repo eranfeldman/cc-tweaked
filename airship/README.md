@@ -39,6 +39,12 @@ Starting values: horizontal `0.035 0.0005 0.18`; altitude `bias 4, P 0.45, I 0.0
 
 Test in a backup/creative world with short moves. Burner output now ramps at no more than 6 redstone levels per second and uses all analog strengths 0–15 instead of jumping immediately to the PID result. If altitude overshoots, lower altitude P or raise D; if it keeps rising at the target, lower bias; if it sinks, raise bias. Make small changes and use **T** to save them. The right bias depends on how much burner signal is needed to hold this ship up.
 
+## Automatic altitude calibration
+
+Press **P** or **ALT PRESET** to select a target 10 blocks below, or 10, 25, or 50 blocks above the height where you first selected a preset. **HOLD HERE** resets that reference. At each selected target, wait for the ship to settle, then press **L** or **LEARN HOVER**. It requires the Avionics altitude and air-pressure readings, waits for a steady 5 seconds, then averages 20 one-second burner samples and saves the measured hover level in `airship-hover.cfg`. The controller interpolates saved hover levels by measured air pressure; the normal altitude PID continues correcting small errors. Repeat at other preset heights and after changing the ship's weight or burners. The automatic integral term adapts while holding altitude, while this calibration table learns the feed-forward burner level.
+
+This intentionally does not sweep burner strengths 0–15: testing extremes can send the ship into a rapid climb or descent. Calibration learns while the altitude controller is already holding the chosen height. It times out after 3 minutes if it cannot collect stable samples; press **L** or **LEARN HOVER** again to cancel and keep altitude hold active.
+
 The UI refreshes on a 20 Hz timer. The altitude PID reads the Avionics sensor every control-loop pass; sensor speed is sampled at server tick rate and the sensor documentation notes a one-tick lag. GPS calls use a 0.1-second timeout, horizontal navigation updates on fresh GPS fixes, and outputs are cut after 0.5 seconds without GPS. Basalt 2.5 requires HTTP access if you download it with `wget`; the app and `basalt.lua` must be in the same folder. GPS is still required for X/Z autopilot navigation. If GPS is lost during autopilot, outputs are cut and you must re-engage after the fix returns. The controller does not check obstacles or handle landing. The exact PID response depends on the ship, burner/link behavior, and sensor/GPS quality; the defaults have not been flight-tested.
 
 ## Collect altitude tuning data

@@ -25,7 +25,12 @@ local position, target, altitude, mode = nil, nil, nil, "STARTING"
 local burner, burnerCommand, vectorX, vectorY, power = 0, 0, 0, 0, 0
 local burnerSlewPerSecond = 6
 local calibrated = fs.exists("airship-calibrated")
-local running, calibrationClick = true, nil
+local running, calibrationClick, altitudeLearning = true, nil, nil
+local altitudePresets = {-10, 10, 25, 50}
+local presetIndex, presetBase = 0, nil
+local learnedHover = {}
+local altitudeSensorPressure
+local status, pidSummary, posText, altText, sysText, xInput, heightInput, pidInput, calibrateButton
 local axisTests = {}
 -- Conservative starting gains; GPS velocity feedback compensates for variable sample timing.
 local pid = {
@@ -59,6 +64,48 @@ end
 local function gainValues()
   return {pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d, pid.altitude.bias, pid.altitude.p, pid.altitude.i, pid.altitude.d}
 end
+if fs.exists("airship-hover.cfg") then
+  local file = fs.open("airship-hover.cfg", "r")
+  for line in file.readAll():gmatch("[^\r\n]+") do
+    local height, bias = line:match("^([%-%.%d]+)%s+([%-%.%d]+)$")
+    height, bias = tonumber(height), tonumber(bias)
+    if height and bias and bias >= 0 and bias <= 15 then learnedHover[height] = bias end
+  end
+  file.close()
+end
+local function hoverBias(height)
+  local points = {}
+  for y, value in pairs(learnedHover) do points[#points + 1] = {y, value} end
+  table.sort(points, function(a, b) return a[1] < b[1] end)
+  height = altitudeSensorPressure or height
+  if #points == 0 then return pid.altitude.bias end
+  if height <= points[1][1] then return points[1][2] end
+  if height >= points[#points][1] then return points[#points][2] end
+  for i = 1, #points - 1 do
+    local low, high = points[i], points[i + 1]
+    if height >= low[1] and height <= high[1] then
+      local fraction = (height - low[1]) / (high[1] - low[1])
+      return low[2] + (high[2] - low[2]) * fraction
+    end
+  end
+  return pid.altitude.bias
+end
+local function saveHoverMap()
+  return pcall(function()
+    local file = assert(fs.open("airship-hover.cfg.tmp", "w"))
+    for pressure, value in pairs(learnedHover) do file.writeLine(("%.4f %.3f"):format(pressure, value)) end
+    file.close()
+    local hadPrevious = fs.exists("airship-hover.cfg")
+    if fs.exists("airship-hover.cfg.bak") then fs.delete("airship-hover.cfg.bak") end
+    if hadPrevious then fs.move("airship-hover.cfg", "airship-hover.cfg.bak") end
+    local moved, err = pcall(fs.move, "airship-hover.cfg.tmp", "airship-hover.cfg")
+    if not moved then
+      if hadPrevious then fs.move("airship-hover.cfg.bak", "airship-hover.cfg") end
+      error(err)
+    end
+    if fs.exists("airship-hover.cfg.bak") then fs.delete("airship-hover.cfg.bak") end
+  end)
+end
 readGainFile()
 local velocity = {x=0, y=0, z=0}
 local previousPosition, previousSample
@@ -78,10 +125,12 @@ local function outputs()
   redstone.setAnalogOutput("front", burner)
 end
 local function stop()
+  altitudeLearning = nil
   vectorX, vectorY, power, burner, burnerCommand, mode = 0, 0, 0, 0, 0, "STOPPED"
   pcall(outputs)
 end
 local function setFlightMode(nextMode)
+  if nextMode ~= "LEARNING HOVER" then altitudeLearning = nil end
   vectorX, vectorY, power, mode = 0, 0, 0, nextMode
   pid.horizontalX.integral, pid.horizontalZ.integral, pid.altitude.integral = 0, 0, 0
 end
@@ -90,11 +139,12 @@ local function locate()
   altitudeDt = clamp(now - (altitudeSampleAt or now - .05), .01, .5)
   altitudeSampleAt = now
   if altitudeSensor then
-    local ok, height, verticalSpeed = pcall(function()
-      return altitudeSensor.getHeight(), altitudeSensor.getVerticalSpeed()
+    local ok, height, verticalSpeed, pressure = pcall(function()
+      return altitudeSensor.getHeight(), altitudeSensor.getVerticalSpeed(), altitudeSensor.getAirPressure()
     end)
     if ok and type(height) == "number" and height == height and math.abs(height) < math.huge then
       altitudeSensorHeight, altitudeSensorReady = height, true
+      if type(pressure) == "number" and pressure == pressure and math.abs(pressure) < math.huge then altitudeSensorPressure = pressure end
       if position then position.y = height end
       if type(verticalSpeed) == "number" and verticalSpeed == verticalSpeed and math.abs(verticalSpeed) < math.huge then velocity.y = verticalSpeed end
     end
@@ -143,7 +193,7 @@ local function updateFlight(gpsFresh)
   if not altitude then burner, burnerCommand = 0, 0; mode = "SET ALTITUDE"; return end
   local altitudeError = altitude - position.y
   local dt = altitudeSensorReady and altitudeDt or sampleDt
-  local desiredBurner = clamp(pid.altitude.bias + pidStep(pid.altitude, altitudeError, velocity.y, dt), 0, 15)
+  local desiredBurner = clamp(hoverBias(altitude) + pidStep(pid.altitude, altitudeError, velocity.y, dt), 0, 15)
   burnerCommand = burnerCommand + clamp(desiredBurner - burnerCommand, -burnerSlewPerSecond * dt, burnerSlewPerSecond * dt)
   burner = math.floor(burnerCommand + .5)
   if gpsFresh and mode == "AUTOPILOT" and target then
@@ -158,7 +208,64 @@ local function updateFlight(gpsFresh)
   end
 end
 
-local status, pidSummary, posText, altText, sysText, xInput, heightInput, pidInput, calibrateButton
+local function selectAltitudePreset()
+  if not position then status.text = "Waiting for GPS before selecting a height."; return end
+  presetBase = presetBase or math.floor(position.y + .5)
+  presetIndex = presetIndex % #altitudePresets + 1
+  altitude = presetBase + altitudePresets[presetIndex]
+  setFlightMode("HOLDING ALTITUDE")
+  status.text = ("Preset %d: target Y %.0f"):format(presetIndex, altitude)
+  status.foreground = colors.lightBlue
+end
+local function learnAltitude()
+  if altitudeLearning then
+    altitudeLearning = nil; mode = "HOLDING ALTITUDE"
+    status.text = "Altitude learning canceled; holding target."; status.foreground = colors.lightBlue
+    return
+  end
+  if not altitudeSensorReady or not altitude then
+    status.text = "Altitude learning needs GPS and the Avionics sensor."; status.foreground = colors.red; return
+  end
+  if not altitudeSensorPressure then status.text = "Avionics pressure reading is unavailable."; status.foreground = colors.red; return end
+  altitudeLearning = {target=altitude, started=os.clock(), stableSince=nil, samples={}, pressures={}, nextSample=os.clock()}
+  mode = "LEARNING HOVER"
+  status.text = "Learning: hold target height steady"; status.foreground = colors.orange
+end
+local function updateAltitudeLearning()
+  if not altitudeLearning then return end
+  local now = os.clock()
+  if now - altitudeLearning.started > 180 then
+    altitudeLearning = nil; mode = "HOLDING ALTITUDE"
+    status.text = "Learning timed out; no calibration saved."; status.foreground = colors.red
+    return
+  end
+  if not position or math.abs(position.y - altitudeLearning.target) > 1.5 or math.abs(velocity.y) > .12 then
+    altitudeLearning.stableSince = nil
+    return
+  end
+  altitudeLearning.stableSince = altitudeLearning.stableSince or now
+  if now - altitudeLearning.stableSince >= 5 and now >= altitudeLearning.nextSample then
+    altitudeLearning.samples[#altitudeLearning.samples + 1] = burnerCommand
+    altitudeLearning.pressures[#altitudeLearning.pressures + 1] = altitudeSensorPressure
+    altitudeLearning.nextSample = now + 1
+    status.text = ("Learning hover: %d/20 stable samples"):format(#altitudeLearning.samples)
+  end
+  if #altitudeLearning.samples >= 20 then
+    local total, pressure = 0, 0
+    for i, value in ipairs(altitudeLearning.samples) do total, pressure = total + value, pressure + altitudeLearning.pressures[i] end
+    learnedHover[pressure / #altitudeLearning.pressures] = clamp(total / #altitudeLearning.samples, 0, 15)
+    local saved = saveHoverMap()
+    altitudeLearning = nil; mode = "HOLDING ALTITUDE"
+    if saved then
+      status.text = ("Saved hover %.2f at pressure %.3f"):format(total / 20, pressure / 20)
+      status.foreground = colors.lime
+    else
+      status.text = "Learned in memory, but could not save the calibration file."
+      status.foreground = colors.red
+    end
+  end
+end
+
 local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton
 local showGainValues
 local function adjustAltitude(delta)
@@ -167,7 +274,7 @@ local function adjustAltitude(delta)
   setFlightMode("HOLDING ALTITUDE")
 end
 local function holdHere()
-  if position then altitude = math.floor(position.y + .5); target = nil; setFlightMode("HOLDING ALTITUDE") end
+  if position then altitude = math.floor(position.y + .5); presetBase = altitude; presetIndex = 0; target = nil; setFlightMode("HOLDING ALTITUDE") end
 end
 local function engageAutopilot()
   if not calibrated then status.text = "Run low-power direction checks, then confirm calibration."; status.foreground = colors.orange
@@ -217,6 +324,8 @@ if monitorFrame then
   monitorFrame:addButton({x=29, y=8, width=8, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
   monitorCalibrateButton = monitorFrame:addButton({x=2, y=9, width=14, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
   monitorFrame:addLabel({x=17, y=9, width=width-17, height=1, text="type on PC", foreground=colors.lightGray})
+  monitorFrame:addButton({x=2, y=10, width=14, height=1, text="LEARN HOVER", background=colors.orange}):onClick(learnAltitude)
+  monitorFrame:addButton({x=18, y=10, width=12, height=1, text="ALT PRESET", background=colors.blue}):onClick(selectAltitudePreset)
 end
 
 if compact then
@@ -255,6 +364,8 @@ if compact then
   frame:addButton({x=29, y=10, width=8, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
   calibrateButton = frame:addButton({x=2, y=11, width=13, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
   frame:addLabel({x=16, y=11, width=8, height=1, text="PID gains", foreground=colors.lightBlue})
+  frame:addButton({x=27, y=11, width=12, height=1, text="LEARN HOVER", background=colors.orange}):onClick(learnAltitude)
+  frame:addButton({x=40, y=11, width=10, height=1, text="PRESET P", background=colors.blue}):onClick(selectAltitudePreset)
   pidInput = frame:addInput({x=2, y=12, width=screenWidth-13, height=1, placeholder="X/Z P I D  ALT bias P I D", background=colors.white, foreground=colors.black})
   showGainValues = function()
     pidInput.text = ("%.3g %.1g %.2g %.0f %.1g %.1g %.1g"):format(table.unpack(gainValues()))
@@ -313,6 +424,7 @@ local function setHeight()
 end
 frame:addButton({x=16, y=12, width=12, height=1, text="SET HEIGHT", background=colors.blue}):onClick(setHeight)
 heightInput:onEnter(setHeight)
+frame:addButton({x=30, y=12, width=13, height=1, text="ALT PRESET", background=colors.blue}):onClick(selectAltitudePreset)
 frame:addLabel({x=2, y=13, width=47, height=1, text="PID TUNE: X/Z P I D   ALT bias P I D", foreground=colors.lightBlue})
 pidInput = frame:addInput({x=2, y=14, width=35, height=1, placeholder="0.035 0.0005 0.18 4 1 0.03 2", background=colors.white, foreground=colors.black})
 showGainValues = function()
@@ -351,7 +463,8 @@ button(26, 17, 11, "Y+ / FWD", colors.gray, function() testVector(0, .2, "TEST Y
 button(38, 17, 11, "Y- / BACK", colors.gray, function() testVector(0, -.2, "TEST Y-") end)
 
 calibrateButton = frame:addButton({x=2, y=19, width=14, height=1, text=calibrated and "CALIBRATED" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
-frame:addLabel({x=18, y=19, width=31, height=1, text="G dest  Y height  T tune  A auto", foreground=colors.lightGray})
+frame:addLabel({x=18, y=19, width=14, height=1, text="G dest Y height", foreground=colors.lightGray})
+frame:addButton({x=34, y=19, width=15, height=1, text="LEARN HOVER", background=colors.orange}):onClick(learnAltitude)
 end
 
 local function refresh()
@@ -373,6 +486,7 @@ local function refresh()
   elseif mode == "DESTINATION REACHED" then status.text, status.foreground = "DESTINATION REACHED  |  HOLDING ALTITUDE", colors.lime
   elseif mode == "SET ALTITUDE" then status.text, status.foreground = "GPS ready  |  set an altitude target", colors.orange
   elseif mode == "CALIBRATION CONFIRM" then status.text, status.foreground = "Confirm calibration within 8 seconds", colors.orange
+  elseif mode == "LEARNING HOVER" then status.text, status.foreground = ("Learning hover level: %d/20 samples"):format(altitudeLearning and #altitudeLearning.samples or 0), colors.orange
   elseif mode:match("^TEST ") then status.text, status.foreground = mode .. "  |  press HOLD to stop", colors.orange
   elseif mode == "STOPPED" then status.text, status.foreground = "OUTPUTS STOPPED", colors.red end
   if monitorFrame then
@@ -392,6 +506,7 @@ local ok, err = pcall(function()
       local success = pcall(function()
         local gpsFresh = locate()
         updateFlight(gpsFresh)
+        updateAltitudeLearning()
         outputs()
       end)
       if not success then stop(); running = false; status.text = "Peripheral error: outputs stopped"; status.foreground = colors.red; basalt.stop(); return end
@@ -421,6 +536,8 @@ local ok, err = pcall(function()
         elseif key == keys.y then heightInput:focus()
         elseif key == keys.t then pidInput:focus()
         elseif key == keys.h then holdHere()
+        elseif key == keys.p then selectAltitudePreset()
+        elseif key == keys.l then learnAltitude()
         elseif key == keys.a then engageAutopilot()
         elseif key == keys.s then stop()
         elseif key == keys.c then confirmCalibration()
