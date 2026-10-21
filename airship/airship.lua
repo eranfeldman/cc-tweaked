@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.1.5"
+local AIRSHIP_BUILD = "1.1.6"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -322,11 +322,6 @@ local function stop()
 end
 local updateRequested = false
 local function requestProgramUpdate()
-  if not shell or type(shell.openTab) ~= "function" then
-    status.text = "Update button needs CC:Tweaked Multishell."
-    status.foreground = colors.orange
-    return
-  end
   if not fs.exists("/airship-updater.lua") then
     status.text = "Updater missing; install airship-updater.lua once."
     status.foreground = colors.red
@@ -1167,7 +1162,8 @@ end)
 running = false
 stop()
 if updateRequested then
-  local ok, err = pcall(shell.openTab, "/airship-updater.lua")
-  if not ok then term.setTextColor(colors.red); print("Could not open updater: " .. tostring(err)) end
+  local opened = false
+  if shell and type(shell.openTab) == "function" then opened = pcall(shell.openTab, "/airship-updater.lua") end
+  if not opened then shell.run("/airship-updater.lua") end
 end
 if not ok then term.setTextColor(colors.red); print("Airship UI stopped: " .. tostring(err)) end
