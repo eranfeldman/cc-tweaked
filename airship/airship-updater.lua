@@ -1,11 +1,20 @@
 local url = "https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship.lua"
-local expectedBuild = "1.1.0"
+local minimumBuild = "1.1.0"
 local target, temporary, backup = "/airship.lua", "/airship.lua.update", "/airship.lua.bak"
+
+local function atLeast(version, minimum)
+  if not version then return false end
+  local a, b, c = version:match("^(%d+)%.(%d+)%.(%d+)$")
+  local x, y, z = minimum:match("^(%d+)%.(%d+)%.(%d+)$")
+  if not a or not x then return false end
+  a, b, c, x, y, z = tonumber(a), tonumber(b), tonumber(c), tonumber(x), tonumber(y), tonumber(z)
+  return a > x or a == x and (b > y or b == y and c >= z)
+end
 
 term.clear()
 term.setCursorPos(1, 1)
 print("Airship controller updater")
-print("Downloading latest controller (expected v" .. expectedBuild .. ")...")
+print("Downloading latest controller (minimum v" .. minimumBuild .. ")...")
 if fs.exists(temporary) then fs.delete(temporary) end
 if not shell.run("wget", url .. "?cache=" .. tostring(os.epoch("utc")), temporary) then
   printError("Download failed. The old controller is unchanged.")
@@ -26,9 +35,9 @@ local downloadedFile = fs.open(temporary, "r")
 local source = downloadedFile.readAll()
 downloadedFile.close()
 local downloadedBuild = source:match('local AIRSHIP_BUILD = "([^"]+)"')
-if downloadedBuild ~= expectedBuild then
+if not atLeast(downloadedBuild, minimumBuild) then
   fs.delete(temporary)
-  printError("Downloaded version mismatch: got " .. tostring(downloadedBuild) .. ", expected " .. expectedBuild .. ".")
+  printError("Downloaded version is too old or invalid: " .. tostring(downloadedBuild) .. ".")
   return
 end
 

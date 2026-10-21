@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.1.0"
+local AIRSHIP_BUILD = "1.1.1"
 local basalt = require("basalt")
 local ids = {
   "liquid_vector_thruster_0", "liquid_vector_thruster_1",
