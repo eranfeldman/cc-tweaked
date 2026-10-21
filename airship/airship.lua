@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.8"
+local AIRSHIP_BUILD = "1.2.9"
 local basalt = require("basalt")
 
 local monitor = peripheral.find("monitor")
@@ -1114,13 +1114,14 @@ local ok, err = pcall(function()
               if event.x >= button.x and event.x <= button.x + button.w and event.y >= button.y and event.y <= button.y + button.h then
                 button.action()
                 if button.label:match("^SWEEP") then sweepSummary = nil end
+                lastGpuRender = 0
                 break
               end
             end
           end
         end
       end
-      sleep(directGpu and .5 or 2)
+      sleep(directGpu and .05 or 2)
     end
   end)
   basalt.schedule(function()
