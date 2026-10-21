@@ -13,9 +13,24 @@ for _, name in ipairs(ids) do
 end
 
 local monitor = peripheral.find("monitor")
+local directGpu, directDisplay, directWidth, directHeight
+local gpuFound = peripheral.find("directgpu")
+if gpuFound then
+  local listOk, displays = pcall(gpuFound.listDisplays)
+  local display = listOk and displays and displays[1]
+  local ok = display ~= nil
+  if not ok then ok, display = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 0) end
+  if ok and display then
+    local infoOk, info = pcall(gpuFound.getDisplayInfo, display)
+    if infoOk and info and type(info.pixelWidth) == "number" and type(info.pixelHeight) == "number" then
+      directGpu, directDisplay = gpuFound, display
+      directWidth, directHeight = info.pixelWidth, info.pixelHeight
+    end
+  end
+end
 local altitudeSensor = peripheral.find("altitude_sensor")
 local frame = basalt.getMainFrame()
-local monitorFrame = monitor and basalt.createFrame(monitor)
+local monitorFrame = monitor and not directGpu and basalt.createFrame(monitor)
 frame.background = colors.black
 if monitorFrame then monitorFrame.background = colors.black end
 local screenWidth, screenHeight
@@ -27,6 +42,9 @@ local burnerSlewPerSecond = 6
 local calibrated = fs.exists("airship-calibrated")
 local running, calibrationClick, manualBurner, burnerSweep = true, nil, nil, nil
 local sweepConfirmAt
+local sweepSummary
+local sweepSummaryUntil
+local gpuButtons = {}
 local altitudePresets = {-10, 10, 25, 50}
 local presetIndex, presetBase = 0, nil
 local learnedHover = {}
@@ -137,6 +155,10 @@ local function outputs()
   redstone.setAnalogOutput("front", burner)
 end
 local function stop()
+  if burnerSweep then
+    sweepSummary = ("Sweep canceled. Saved %d/10; skipped %d."):format(burnerSweep.saved, burnerSweep.skipped)
+    sweepSummaryUntil = os.clock() + 15
+  end
   manualBurner = nil
   burnerSweep = nil
   vectorX, vectorY, power, burner, burnerCommand, mode = 0, 0, 0, 0, 0, "STOPPED"
@@ -184,6 +206,10 @@ local function locate()
     lastGpsAt = nil
     if mode ~= "STOPPED" then
       vectorX, vectorY, power, burner, burnerCommand = 0, 0, 0, 0, 0
+      if burnerSweep then
+        sweepSummary = ("Sweep aborted: GPS lost. Saved %d/10; skipped %d."):format(burnerSweep.saved, burnerSweep.skipped)
+        sweepSummaryUntil = os.clock() + 15
+      end
       burnerSweep, manualBurner = nil, nil
       mode = mode == "AUTOPILOT" and "GPS LOST - RE-ENGAGE" or "WAITING FOR GPS"
     end
@@ -264,8 +290,9 @@ local function finishBurnerSweep(message)
   burnerSweep, manualBurner = nil, nil
   if position then altitude = math.floor(position.y + .5) end
   setFlightMode("HOLDING ALTITUDE")
-  status.text = message and (message .. (" Saved %d/10, skipped %d."):format(sweep.saved, sweep.skipped))
-    or ("Sweep done: saved %d/10, skipped %d"):format(sweep.saved, sweep.skipped)
+  sweepSummary = (message and (message .. " ") or "Sweep finished. ") .. ("Saved %d/10; skipped %d."):format(sweep.saved, sweep.skipped)
+  sweepSummaryUntil = os.clock() + 15
+  status.text = sweepSummary
   status.foreground = message and colors.red or colors.lime
 end
 local function startBurnerSweep()
@@ -275,6 +302,7 @@ local function startBurnerSweep()
     status.text = "Sweep needs GPS and Avionics altitude/pressure."; status.foreground = colors.red; return
   end
   if sweepConfirmAt and os.clock() - sweepConfirmAt < 8 then
+    sweepSummary = nil
     burnerSweep = {level=15, startedY=position.y, changedAt=os.clock(), stableSince=nil, saved=0, skipped=0}
     manualBurner, vectorX, vectorY, power, target = nil, 0, 0, 0, nil
     mode = "BURNER SWEEP"
@@ -289,8 +317,8 @@ local function updateBurnerSweep()
   if type(burnerSweep) ~= "table" then return end
   local now = os.clock()
   if not position or not altitudeSensorPressure then finishBurnerSweep("Sweep aborted: GPS or pressure reading lost."); return end
-  if math.abs(position.y - burnerSweep.startedY) > 8 or math.abs(velocity.y) >= 1.2 then
-    finishBurnerSweep("Sweep safety stop: moved 8 blocks or reached 1.2 blocks/sec."); return
+  if math.abs(position.y - burnerSweep.startedY) > 24 or math.abs(velocity.y) >= 3 then
+    finishBurnerSweep("Sweep safety stop: moved 24 blocks or reached 3 blocks/sec."); return
   end
   if math.abs(velocity.y) < .12 then burnerSweep.stableSince = burnerSweep.stableSince or now
   else burnerSweep.stableSince = nil end
@@ -343,6 +371,56 @@ local function readThrusterPower()
   measuredThrust = count > 0 and total / count * 15 or 0
 end
 
+local function addGpuButton(x, y, w, h, label, color, action)
+  gpuButtons[#gpuButtons + 1] = {x=x, y=y, w=w, h=h, label=label, color=color, action=action}
+end
+local function renderDirectMonitor()
+  if not directGpu then return end
+  local gpu, display = directGpu, directDisplay
+  local w, h = directWidth, directHeight
+  local function rect(x, y, rw, rh, color) gpu.fillRect(display, x, y, rw, rh, color[1], color[2], color[3]) end
+  local function txt(value, x, y, size, color, style)
+    gpu.drawText(display, tostring(value), x, y, color[1], color[2], color[3], "Arial", size, style or "plain")
+  end
+  local bg, panel, ink, muted = {10,17,29}, {20,32,48}, {229,240,250}, {143,164,184}
+  gpu.clear(display, bg[1], bg[2], bg[3])
+  rect(0, 0, w, 42, {15,29,47})
+  txt("A I R S H I P", 16, 10, 22, ink, "bold")
+  txt(mode == "BURNER SWEEP" and "CALIBRATING" or mode, math.floor(w * .47), 14, 15, mode == "BURNER SWEEP" and {255,190,90} or {88,220,190}, "bold")
+  local gap, cardW = 12, math.floor((w - 36) / 3)
+  local cardY, cardH = 54, 76
+  for i=0,2 do rect(12 + i * (cardW + gap), cardY, cardW, cardH, panel) end
+  txt("ALTITUDE", 23, cardY + 10, 12, muted, "bold")
+  txt(position and ("%.1f m"):format(position.y) or "--", 23, cardY + 33, 27, ink, "bold")
+  txt(("TARGET  %s"):format(altitude and ("%.0f"):format(altitude) or "--"), 23, cardY + 60, 12, muted)
+  txt("VERTICAL SPEED", 23 + cardW + gap, cardY + 10, 12, muted, "bold")
+  txt(("%.2f"):format(velocity.y), 23 + cardW + gap, cardY + 33, 27, ink, "bold")
+  txt("blocks / sec", 23 + cardW + gap, cardY + 60, 12, muted)
+  txt("BURNER", 23 + 2 * (cardW + gap), cardY + 10, 12, muted, "bold")
+  txt(("%d / 15"):format(burner), 23 + 2 * (cardW + gap), cardY + 33, 27, {255,190,90}, "bold")
+  txt(("THRUST  %.1f / 15"):format(measuredThrust), 23 + 2 * (cardW + gap), cardY + 60, 12, muted)
+  txt(position and ("GPS  X %.1f     Z %.1f"):format(position.x, position.z) or "GPS SIGNAL LOST", 16, 145, 15, position and ink or {255,110,110})
+  local baseY = math.floor(h * .62)
+  txt("HOVER CALIBRATION   15  →  6", 16, baseY, 14, muted, "bold")
+  for i=0,9 do
+    local level = 15 - i
+    local x = 16 + i * (math.floor((w - 32) / 10))
+    local marked = false
+    for _, sample in pairs(learnedHover) do if sample.level == level then marked = true; break end end
+    local active = burnerSweep and burnerSweep.level == level
+    rect(x, baseY + 24, math.max(12, math.floor((w - 48) / 12)), 12, active and {255,180,72} or marked and {55,205,160} or {57,73,91})
+    txt(level, x + 2, baseY + 42, 10, marked and {115,235,195} or muted)
+  end
+  if burnerSweep then
+    txt(("LEVEL %d   SAVED %d/10   SKIPPED %d"):format(burnerSweep.level, burnerSweep.saved, burnerSweep.skipped), 16, baseY + 62, 13, {255,190,90}, "bold")
+  elseif sweepSummary then txt(sweepSummary, 16, baseY + 62, 12, {255,190,90})
+  else txt("Tap SWEEP twice to confirm. Levels save as soon as stable.", 16, baseY + 62, 12, muted) end
+  for _, b in ipairs(gpuButtons) do
+    rect(b.x, b.y, b.w, b.h, b.color)
+    txt(b.label, b.x + 10, b.y + math.floor((b.h - 18) / 2), 14, ink, "bold")
+  end
+  gpu.updateDisplay(display)
+end
 local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton
 local showGainValues
 local function adjustAltitude(delta)
@@ -381,6 +459,17 @@ local function confirmCalibration()
     mode = "CALIBRATION CONFIRM"
     status.text = "Confirm within 8s: X+ south, Y+ east."; status.foreground = colors.orange
   end
+end
+
+if directGpu then
+  local y, h, gap = directHeight - 48, 36, 8
+  local x, bw = 12, math.floor((directWidth - 24 - 5 * gap) / 6)
+  addGpuButton(x, y, bw, h, "ALT -", {35,62,91}, function() adjustAltitude(-1) end)
+  addGpuButton(x+(bw+gap), y, bw, h, "ALT +", {35,62,91}, function() adjustAltitude(1) end)
+  addGpuButton(x+2*(bw+gap), y, bw, h, "HOLD", {35,62,91}, holdHere)
+  addGpuButton(x+3*(bw+gap), y, bw, h, "SWEEP", {130,78,31}, startBurnerSweep)
+  addGpuButton(x+4*(bw+gap), y, bw, h, "MANUAL", {100,75,35}, toggleManualBurner)
+  addGpuButton(x+5*(bw+gap), y, bw, h, "STOP", {125,48,56}, stop)
 end
 
 if monitorFrame then
@@ -567,15 +656,19 @@ local function refresh()
   elseif mode == "SET ALTITUDE" then status.text, status.foreground = "GPS ready  |  set an altitude target", colors.orange
   elseif mode == "CALIBRATION CONFIRM" then status.text, status.foreground = "Confirm calibration within 8 seconds", colors.orange
   elseif mode == "BURNER SWEEP" and burnerSweep then status.text, status.foreground = ("SWEEP %d/15 | saved %d, skipped %d | press S to stop"):format(burnerSweep.level, burnerSweep.saved, burnerSweep.skipped), colors.orange
-  elseif mode == "MANUAL BURNER" then status.text, status.foreground = ("MANUAL BURNER %d/15 | UP/DOWN adjust, K locks"):format(manualBurner or 0), colors.orange
+  end
+  if mode == "MANUAL BURNER" then status.text, status.foreground = ("MANUAL BURNER %d/15 | UP/DOWN adjust, K locks"):format(manualBurner or 0), colors.orange
   elseif mode:match("^TEST ") then status.text, status.foreground = mode .. "  |  press HOLD to stop", colors.orange
   elseif mode == "STOPPED" then status.text, status.foreground = "OUTPUTS STOPPED", colors.red end
+  if sweepSummary and os.clock() < sweepSummaryUntil then status.text, status.foreground = sweepSummary, colors.orange
+  elseif sweepSummary then sweepSummary = nil end
   if monitorFrame then
     monitorPos.text = position and ("X %.1f Y %.1f Z %.1f"):format(position.x, position.y, position.z) or "GPS not found"
     monitorAlt.text = ("ALT %.1f / TARGET %.0f"):format(position and position.y or 0, altitude or 0)
     monitorSystem.text = ("BURNER %d/15 THRUST %.1f/15"):format(burner, measuredThrust)
     monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
   end
+  if directGpu then renderDirectMonitor() end
 end
 
 local ok, err = pcall(function()
@@ -584,13 +677,19 @@ local ok, err = pcall(function()
   if altitude then mode = "HOLDING ALTITUDE" else mode = "WAITING FOR GPS" end
   basalt.schedule(function()
     while running do
-      local success = pcall(function()
+      local success, failure = pcall(function()
         local gpsFresh = locate()
         updateFlight(gpsFresh)
         updateBurnerSweep()
         outputs()
       end)
-      if not success then stop(); running = false; status.text = "Peripheral error: outputs stopped"; status.foreground = colors.red; basalt.stop(); return end
+      if not success then
+        local sweep = burnerSweep
+        stop()
+        sweepSummary = "Controller error: " .. tostring(failure) .. (sweep and (" Sweep saved %d/10; skipped %d."):format(sweep.saved, sweep.skipped) or "")
+        sweepSummaryUntil = os.clock() + 15
+        running = false; status.text = sweepSummary; status.foreground = colors.red; refresh(); basalt.stop(); return
+      end
       sleep(.05)
     end
   end)
@@ -600,6 +699,25 @@ local ok, err = pcall(function()
       sleep(.05)
     end
   end)
+  if directGpu then
+    basalt.schedule(function()
+      while running do
+        if directGpu.hasEvents(directDisplay) then
+          local event = directGpu.pollEvent(directDisplay)
+          if event and event.type == "mouse_click" then
+            for _, button in ipairs(gpuButtons) do
+              if event.x >= button.x and event.x <= button.x + button.w and event.y >= button.y and event.y <= button.y + button.h then
+                button.action()
+                if button.label == "SWEEP" then sweepSummary = nil end
+                break
+              end
+            end
+          end
+        end
+        sleep(.05)
+      end
+    end)
+  end
   basalt.schedule(function()
     while running do
       local _, key = os.pullEvent("key")
