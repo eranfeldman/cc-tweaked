@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.3.5"
+local AIRSHIP_BUILD = "1.3.6"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -181,7 +181,7 @@ local Autopilot = (function()
       local a=drive*along-derivative*values[2]+p.gains[2]*bandwidth^2*self.integral[i]
       acceleration[i]=clamp(a,-maxAccel,maxAccel)+p.drag[i]*ratio*values[2]
     end
-    local yaw=clamp(.3*wrap(self.headingTarget-s.heading)-1.2*s.yaw,-.12,.12)+p.drag[3]*ratio*s.yaw
+    local yaw=clamp(.22*wrap(self.headingTarget-s.heading)-1.8*s.yaw,-.12,.12)+p.drag[3]*ratio*s.yaw
     local desired={acceleration[1]-self.trim[1],acceleration[2]-self.trim[2],yaw-self.trim[3]}
     local commands,residual=self:allocate(p,desired)
     self.applied={desired[1]-(residual and residual[1] or 0),desired[2]-(residual and residual[2] or 0),desired[3]-(residual and residual[3]/p.yawWeight or 0)}
@@ -701,11 +701,26 @@ local function navigationSample()
   if not position or not lastGpsAt or now-lastGpsAt>2 or not pressureAt or now-pressureAt>2 or not headingAt or now-headingAt>2 or not yawAt or now-yawAt>2 then return nil end
   return {t=now,x=position.x,z=position.z,vx=velocity.x,vz=velocity.z,heading=shipHeading,yaw=yawRate,pressure=altitudeSensorPressure,tilt=shipTilt}
 end
+local readoutSamples,readoutSampleAt,readoutGoalKey={},nil,nil
 local function navigationReadout()
-  local speed=math.sqrt(velocity.x^2+velocity.z^2)
+  local goalKey=target and (target.x..":"..target.z) or nil
+  if goalKey~=readoutGoalKey then readoutSamples,readoutSampleAt,readoutGoalKey={},nil,goalKey end
+  if position and lastGpsAt and lastGpsAt~=readoutSampleAt then
+    local distance=target and math.sqrt((target.x-position.x)^2+(target.z-position.z)^2) or nil
+    readoutSamples[#readoutSamples+1]={t=lastGpsAt,vx=velocity.x,vz=velocity.z,distance=distance}
+    readoutSampleAt=lastGpsAt
+    while #readoutSamples>2 and lastGpsAt-readoutSamples[1].t>4 do table.remove(readoutSamples,1) end
+  end
+  local avgX,avgZ,n=0,0,#readoutSamples
+  for _,sample in ipairs(readoutSamples) do avgX,avgZ=avgX+sample.vx,avgZ+sample.vz end
+  if n>0 then avgX,avgZ=avgX/n,avgZ/n else avgX,avgZ=velocity.x,velocity.z end
+  local speed=math.sqrt(avgX^2+avgZ^2)
+  if not position then speed=0 end
   local distance=position and target and math.sqrt((target.x-position.x)^2+(target.z-position.z)^2) or nil
-  local closing=distance and distance>.01 and ((target.x-position.x)*velocity.x+(target.z-position.z)*velocity.z)/distance or 0
-  local eta=distance and (mode=="DESTINATION REACHED" and 0 or (mode=="AUTOPILOT" and closing>.1 and distance/closing or nil)) or nil
+  local first,last=readoutSamples[1],readoutSamples[n]
+  local span=first and last and last.t-first.t or 0
+  local closing=span>0 and first.distance and last.distance and (first.distance-last.distance)/span or 0
+  local eta=distance and (mode=="DESTINATION REACHED" and 0 or (mode=="AUTOPILOT" and span>=2 and closing>.1 and distance/closing or nil)) or nil
   local etaText=eta and (math.floor(eta/60)..":"..("%02d"):format(math.floor(eta%60))) or "--"
   return speed,distance,etaText
 end
