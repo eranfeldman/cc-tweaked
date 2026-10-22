@@ -84,14 +84,14 @@ for _,scenario in ipairs(scenarios) do
   assert(completed,"Automatic calibration never completed")
   assert(A.validProfile(completed,names),"Calibration saved an invalid profile")
   assert(completed.verification.overshoot<=.5,"An overshooting calibration was accepted")
-  assert(#completed.channels==32,"Not all eight thrusters and four nozzle directions were surveyed")
+  assert(#completed.channels==#names*4,"Not all detected thrusters and four nozzle directions were surveyed")
   assert(completed.maxSpeed>.75,"Fast calibration retained the old crawl speed")
   assert(completed.maxThrottle and completed.maxThrottle<=1,"Calibrated power must stay normalized")
   if scenario[4] then
     assert(p.maxRock>.005,"Uneven plant must actually rock under thrust")
     assert(math.abs(completed.drag[1]-.18)<.08 and math.abs(completed.drag[2]-.18)<.08,"Steady imbalance must not be mistaken for drag")
-    assert(completed.maxThrottle<1 and completed.verification.passes>1,"Rocking must lower tested power instead of accepting full thrust")
-    print(("PASS: displaced COM, persistent force/torque, thrust-induced rocking %.3frad and GPS wobble"):format(p.maxRock))
+    assert(completed.maxThrottle==1,"Pitch/roll must not lower the calibrated power ceiling")
+    print(("PASS: displaced COM, persistent force/torque, rocking %.3frad does not lower calibrated power"):format(p.maxRock))
   end
   profiles[#profiles+1]=completed
   print(("PASS: full calibration mass %.1f, sample %.2fs, duration %.1fs, peak overshoot %.3f"):format(scenario[1],scenario[2],p.t,completed.verification.overshoot))

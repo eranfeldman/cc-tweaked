@@ -39,7 +39,7 @@ end
 do
   local env, run, call, counts = fixture()
   local names = {}
-  for i=1,8 do names[i] = "liquid_vector_thruster_" .. i end
+  for i=0,23 do names[#names+1] = "liquid_vector_thruster_" .. i end
   local hub = {
     getNamesRemote=function() call(); return names end,
     getTypeRemote=function() call(); return "liquid_vector_thruster" end,
@@ -53,7 +53,7 @@ do
   assert(ok, devices)
   local count = 0
   for _ in pairs(devices) do count = count + 1 end
-  assert(count == 8 and counts() > 8, "Hub thrusters were not discovered")
+  assert(count == 24 and counts() > 24, "All 24 hub thrusters were not discovered")
 end
 
 local helper = assert(source:match("(local yieldSequence = 0.-)\nyieldComputer%(%)"))
@@ -118,12 +118,12 @@ end
 do
   local env, run, call, counts = fixture()
   env.thrusters, env.redstone = {}, {setAnalogOutput=function() end}
-  for i=1,8 do env.thrusters[i] = {setVector=call, setThrustNormalized=call} end
+  for i=1,24 do env.thrusters[i] = {setVector=call, setThrustNormalized=call} end
   local outputs = assert(source:match("(local function outputs%b()%s*.-)\nlocal function stop"))
   local send = assert(load(helper .. "\n" .. outputs .. "\nreturn outputs", "@outputs", "t", env))()
   local ok, err = run(function() send(true) end)
   assert(ok, err)
-  assert(counts() == 16, "Every thruster must receive both commands")
+  assert(counts() == 48, "Every thruster must receive both commands")
 end
 do
   local env, run = fixture()

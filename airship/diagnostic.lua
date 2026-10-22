@@ -51,7 +51,6 @@ for _,name in ipairs(peripheral.getNames()) do
     if kind=="liquid_vector_thruster" then addThruster(name,peripheral.wrap(name)) end
   end
 end
-if #thrusters<8 then
 for _,name in ipairs(peripheral.getNames()) do
   local root=peripheral.wrap(name)
   if root and type(root.getNamesRemote)=="function" then
@@ -77,13 +76,12 @@ for _,name in ipairs(peripheral.getNames()) do
     scan(root,name,1)
   end
 end
-end
 table.sort(thrusters,function(a,b)
   local ai=tonumber(a.name:match("(%d+)$")) or math.huge
   local bi=tonumber(b.name:match("(%d+)$")) or math.huge
   return ai==bi and a.name<b.name or ai<bi
 end)
-if #thrusters==0 then error("No liquid_vector_thruster peripherals found") end
+if #thrusters~=24 then error("Expected 24 liquid_vector_thruster peripherals, found "..#thrusters.."; check the wired hub") end
 local x0,y0,z0=gps.locate(1,false)
 if not x0 then error("GPS fix required before starting") end
 local ok,startY,startVy,startPressure=pcall(function()
@@ -115,7 +113,7 @@ local burnerCount=askNumber("Burner count",4,1)
 local fillPerBurner=askNumber("Max fill per burner",210,1)
 local mass=ask("Ship mass/weight if known","unknown")
 local cargo=ask("Cargo/load during test","none")
-local heading="east (side with thrusters 0 and 6)"
+local heading="east"
 
 local gains={.035,.0005,.18}
 if fs.exists("airship-pid.cfg") then

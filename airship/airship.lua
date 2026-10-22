@@ -1,5 +1,5 @@
--- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.4.2"
+-- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
+local AIRSHIP_BUILD = "1.5.0"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -70,7 +70,7 @@ local Autopilot = (function()
     if type(p)~="table" or p.version~=1 or p.validated~=true or type(p.names)~="table" or #p.names~=#names or type(p.channels)~="table" or #p.channels~=#names*4 then return false end
     for i,name in ipairs(names) do if p.names[i]~=name then return false end end
     for _,key in ipairs({"pressure","yawWeight","maxAccel","maxSpeed","delay"}) do if not finite(p[key]) or p[key]<=0 then return false end end
-    if p.pressure>2 or p.yawWeight>30 or p.maxAccel>4 or p.maxSpeed>20 or p.delay>10 or type(p.drag)~="table" or type(p.gains)~="table" then return false end
+    if p.pressure>2 or p.yawWeight>30 or p.maxAccel>6 or p.maxSpeed>20 or p.delay>10 or type(p.drag)~="table" or type(p.gains)~="table" then return false end
     for i=1,3 do
       if not finite(p.drag[i]) or p.drag[i]<0 or p.drag[i]>3 or not finite(p.gains[i]) or p.gains[i]<0 then return false end
     end
@@ -229,9 +229,9 @@ local Autopilot = (function()
     end
     if yaw<1e-7 or force<1e-5 then return nil,"No usable translation or yaw response; check fuel, nozzles and gimbal." end
     p.yawWeight=clamp(math.sqrt(force/yaw)*.7,1,30)
-    p.maxAccel=math.min(3,math.min(table.unpack(extent))*.55)
+    p.maxAccel=math.min(6,math.min(table.unpack(extent))*.55)
     if p.maxAccel<.015 then return nil,"Insufficient measured thrust in all four directions." end
-    p.maxSpeed=math.min(12,math.sqrt(48*p.maxAccel),p.maxAccel*.75/math.max(.02,p.drag[1],p.drag[2]))
+    p.maxSpeed=math.min(20,math.sqrt(48*p.maxAccel),p.maxAccel*.75/math.max(.02,p.drag[1],p.drag[2]))
     local frequency=math.min(.3,1/(2*p.delay),math.sqrt(p.maxAccel/3))
     p.gains={frequency^2,frequency^2*.02,2.2*frequency}
     for _,goal in ipairs({{p.maxAccel,0,0},{-p.maxAccel,0,0},{0,p.maxAccel,0},{0,-p.maxAccel,0},{0,0,.03},{0,0,-.03}}) do
@@ -458,9 +458,6 @@ local function findThrusters()
     end
     yieldComputer()
   end
-  local count = 0
-  for _ in pairs(found) do count = count + 1 end
-  if count >= 8 then return found end
   for _, name in ipairs(peripheral.getNames()) do
     local hub = peripheral.wrap(name)
     yieldComputer()
@@ -495,8 +492,8 @@ print("Discovering thrusters...")
 local thrusters = findThrusters()
 local thrusterCount = 0
 for _ in pairs(thrusters) do thrusterCount = thrusterCount + 1 end
-if thrusterCount ~= 8 then
-  error("Expected 8 liquid_vector_thruster peripherals, found " .. thrusterCount .. "; check the wired hub")
+if thrusterCount ~= 24 then
+  error("Expected 24 liquid_vector_thruster peripherals, found " .. thrusterCount .. "; check the wired hub")
 end
 print("Discovering avionics...")
 local altitudeSensor = findAvionics("altitude_sensor")
@@ -511,7 +508,11 @@ if monitorFrame then monitorFrame.background = colors.black end
 local screenWidth, screenHeight
 screenWidth, screenHeight = term.getSize()
 local compact = screenWidth < 49 or screenHeight < 19
-local position, target, altitude, mode = nil, nil, nil, "STARTING"
+local position, target, altitude, mode, arrivalHeading = nil, nil, nil, "STARTING", nil
+local function nearestCardinalHeading(heading)
+  local quarterTurn = math.pi / 2
+  return (math.floor(heading / quarterTurn + .5) % 4) * quarterTurn
+end
 local burner = redstone.getAnalogOutput("front") or 0
 local burnerCommand, vectorX, vectorY, power = burner, 0, 0, 0
 local burnerSlewPerSecond = 6
@@ -873,8 +874,7 @@ local function updateFlight(gpsFresh)
     local commands,arrived=navController:navigate(sample,target)
     autopilotCommands=commands or {}
     if arrived and mode=="AUTOPILOT" then
-      local dx,dz=target.x-sample.x,target.z-sample.z
-      if dx*dx+dz*dz>.25 then navController:setHeadingTarget(math.atan(dx,dz)) end
+      navController:setHeadingTarget(arrivalHeading or nearestCardinalHeading(sample.heading))
       target={x=sample.x,z=sample.z}
       mode="FINAL TURN"
     elseif wasFinalTurn then mode=arrived and "DESTINATION REACHED" or "FINAL TURN"
@@ -1172,7 +1172,7 @@ end
 local function holdHere()
   if position then
     local canceledCalibration = calibrationRunning
-    altitude = math.floor(position.y + .5); target = nil; setFlightMode("HOLDING ALTITUDE")
+    altitude = math.floor(position.y + .5); target,arrivalHeading = nil,nil; setFlightMode("HOLDING ALTITUDE")
     if canceledCalibration then status.text = "Direction calibration canceled; holding altitude."; status.foreground = colors.orange end
   end
 end
@@ -1186,7 +1186,13 @@ local function engageAutopilot()
   if not Autopilot.validSample(sample) then refuse("AUTO needs fresh GPS, heading, yaw rate and air pressure."); return end
   if not navController.profile then refuse("Run FULL AUTO CAL in the calibration menu first.")
   elseif not position or not target then refuse("GPS fix and destination are required.")
-  else setFlightMode("AUTOPILOT"); navController:reset(sample.heading); autopilotNotice=nil; status.text = "Autopilot engaged"; status.foreground = colors.lime end
+  else
+    local dx,dz=target.x-position.x,target.z-position.z
+    local routeHeading=dx*dx+dz*dz>.25 and math.atan(dx,dz) or sample.heading
+    arrivalHeading=nearestCardinalHeading(routeHeading)
+    setFlightMode("AUTOPILOT"); navController:reset(sample.heading); autopilotNotice=nil
+    status.text = "Autopilot engaged; final heading is cardinal"; status.foreground = colors.lime
+  end
 end
 local function startFullCalibration()
   if calibrationRunning then status.text="Calibration is running; HOLD cancels it."; return end
@@ -1200,7 +1206,7 @@ local function startFullCalibration()
   local ok,err=navController:begin(sample)
   if not ok then autopilotNotice,autopilotNoticeColor=err,colors.red; status.text=err; status.foreground=colors.red; return end
   manualBurner,burnerCommand=burner,burner
-  vectorX,vectorY,power,target=0,0,0,nil
+  vectorX,vectorY,power,target=0,0,0,nil; arrivalHeading=nil
   autopilotCommands={}; fullCalibration,calibrationRunning=true,true
   mode="FULL AUTO CAL"; autopilotNotice="Measuring, then long cruise tests; HOLD cancels."
   autopilotNoticeColor=colors.orange
@@ -1350,7 +1356,7 @@ if compact then
     local xText, zText = xInput.text:match("^%s*(%S+)%s+(%S+)%s*$")
     local x, z = tonumber(xText), tonumber(zText)
     if not x or not z then status.text = "Enter X and Z coordinates"; status.foreground = colors.red; return end
-    target = {x=x, z=z}; setFlightMode("HOLDING ALTITUDE"); frame:setFocused(nil)
+    target = {x=x, z=z}; arrivalHeading=nil; setFlightMode("HOLDING ALTITUDE"); frame:setFocused(nil)
     status.text = ("Destination %.0f, %.0f set"):format(x, z)
   end
   frame:addButton({x=screenWidth-16, y=6, width=14, height=1, text="SET DEST", background=colors.blue}):onClick(setDestination)
@@ -1424,6 +1430,7 @@ local function setDestination()
   local x, z = tonumber(xText), tonumber(zText)
   if not x or not z then status.text = "Enter numeric X and Z coordinates first."; status.foreground = colors.red; return end
   target = {x=x, z=z}
+  arrivalHeading=nil
   setFlightMode("HOLDING ALTITUDE")
   status.text = ("Destination set: X %.0f, Z %.0f"):format(x, z)
   status.foreground = colors.lime
@@ -1543,7 +1550,7 @@ local function refresh()
   elseif mode == "WAITING FOR GPS" then status.text, status.foreground = "Waiting for GPS signal...", colors.orange
   elseif mode == "HOLDING ALTITUDE" then status.text, status.foreground = "ALTITUDE HOLD ACTIVE", colors.lightBlue
   elseif mode == "DESTINATION REACHED" then status.text, status.foreground = "DESTINATION REACHED  |  HOLDING POSITION + ALTITUDE", colors.lime
-  elseif mode == "FINAL TURN" then status.text, status.foreground = "AT DESTINATION  |  ALIGNING TO ROUTE", colors.orange
+  elseif mode == "FINAL TURN" then status.text, status.foreground = "AT DESTINATION  |  ALIGNING CARDINAL", colors.orange
   elseif mode == "SET ALTITUDE" then status.text, status.foreground = "GPS ready  |  set an altitude target", colors.orange
   elseif mode == "CALIBRATION CONFIRM" then status.text, status.foreground = "Confirm calibration within 8 seconds", colors.orange
   elseif mode == "BURNER SWEEP" and burnerSweep then status.text, status.foreground = ("SWEEP %d/15 | saved %d, skipped %d | press S to stop"):format(burnerSweep.level, burnerSweep.saved, burnerSweep.skipped), colors.orange
