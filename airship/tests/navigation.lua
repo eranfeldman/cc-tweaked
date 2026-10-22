@@ -103,7 +103,11 @@ do
   assert(controller:begin(s))
   local commands,message=controller:calibrate(nil)
   assert(commands and controller.job and message:match("Waiting for fresh"),"A missing live sample must pause, not cancel, calibration")
-  s.t=3
+  s.t=2.5
+  commands,message=controller:calibrate(s)
+  assert(commands and controller.job and controller.job.phase=="BASELINE" and message:match("BASELINE"),
+    "Normal slow hub polling must continue the active baseline")
+  s.t=11
   commands,message=controller:calibrate(s)
   assert(commands and controller.job and controller.job.phase=="BASELINE" and controller.job.index==1,
     "A long sensor gap must restart only the active thruster baseline")

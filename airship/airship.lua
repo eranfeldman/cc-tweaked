@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.5.6"
+local AIRSHIP_BUILD = "1.5.7"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -254,7 +254,7 @@ local Autopilot = (function()
     if not j then return nil,"Calibration is not running." end
     if not A.validSample(s) then return {},"Waiting for fresh GPS, heading, yaw rate and pressure readings." end
     if s.t<=j.previous.t then return {},"Waiting for a new navigation sample." end
-    if s.t-j.previous.t>2 then
+    if s.t-j.previous.t>8 then
       j.previous=copy(s)
       if j.phase=="VERIFY" then
         j.at=s.t; j.stable=nil; j.verifyWindow={copy(s)}; j.legStart={x=s.x,z=s.z}; self:reset(j.heading)
@@ -262,7 +262,7 @@ local Autopilot = (function()
       end
       while #j.coasts>(j.index-1)*2 do table.remove(j.coasts) end
       j.phase="BASELINE"; j.at=s.t; j.window={copy(s)}; j.before=nil; j.pulse=nil
-      return {},("Navigation gap; repeating thruster %d/%d baseline."):format(j.index,#self.names*4)
+    return {},("Navigation gap over 8s; repeating thruster %d/%d baseline."):format(j.index,#self.names*4)
     end
     local dt=s.t-j.previous.t
     j.dt=j.dt+dt; j.samples=j.samples+1; j.pressure=j.pressure+s.pressure
