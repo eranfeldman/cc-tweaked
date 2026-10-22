@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.3.7"
+local AIRSHIP_BUILD = "1.3.8"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -887,8 +887,10 @@ local function updateFlight(gpsFresh)
       autopilotNoticeColor=colors.red
       return
     end
+    local wasReached=mode=="DESTINATION REACHED"
     local commands,arrived=navController:navigate(sample,target)
     autopilotCommands=commands or {}
+    if arrived and not wasReached then target={x=sample.x,z=sample.z} end
     mode=arrived and "DESTINATION REACHED" or "AUTOPILOT"
   end
 end
@@ -1553,7 +1555,7 @@ local function refresh()
   elseif mode == "GPS LOST - RE-ENGAGE" then status.text, status.foreground = mode, colors.red
   elseif mode == "WAITING FOR GPS" then status.text, status.foreground = "Waiting for GPS signal...", colors.orange
   elseif mode == "HOLDING ALTITUDE" then status.text, status.foreground = "ALTITUDE HOLD ACTIVE", colors.lightBlue
-  elseif mode == "DESTINATION REACHED" then status.text, status.foreground = "DESTINATION REACHED  |  HOLDING ALTITUDE", colors.lime
+  elseif mode == "DESTINATION REACHED" then status.text, status.foreground = "DESTINATION REACHED  |  HOLDING POSITION + ALTITUDE", colors.lime
   elseif mode == "SET ALTITUDE" then status.text, status.foreground = "GPS ready  |  set an altitude target", colors.orange
   elseif mode == "CALIBRATION CONFIRM" then status.text, status.foreground = "Confirm calibration within 8 seconds", colors.orange
   elseif mode == "BURNER SWEEP" and burnerSweep then status.text, status.foreground = ("SWEEP %d/15 | saved %d, skipped %d | press S to stop"):format(burnerSweep.level, burnerSweep.saved, burnerSweep.skipped), colors.orange
