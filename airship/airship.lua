@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.5.3"
+local AIRSHIP_BUILD = "1.5.4"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -371,8 +371,15 @@ local function configureDirectGpu()
   local info, infoError = getInfo(display)
   local setupError
   if not info then
-    gpuSetupProgress("create display at resolution 1")
-    local created, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 1)
+    local nameOk, name = pcall(peripheral.getName, monitor)
+    yieldComputer()
+    if not nameOk or type(name) ~= "string" or name == "" then
+      directGpuError = "Monitor name unavailable; expose the CC monitor on the wired network"
+      return false
+    end
+    -- An unnamed create scans a 32-block radius inside Java and cannot be timed out by Lua.
+    gpuSetupProgress("create display " .. name .. " at resolution 1")
+    local created, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, name, 1)
     yieldComputer()
     if created then display = newDisplay; info, infoError = getInfo(display)
     else setupError = "create display: " .. tostring(newDisplay) end
@@ -392,17 +399,7 @@ local function configureDirectGpu()
     gpuSetupProgress("ready")
     return true
   else
-    gpuSetupProgress("autoDetectMonitor")
-    local scanOk, monitorInfo = pcall(gpuFound.autoDetectMonitor)
-    yieldComputer()
-    if not scanOk then
-      setupError = setupError or ("monitor scan: " .. tostring(monitorInfo))
-      directGpuError = "Setup failed: " .. setupError
-    elseif monitorInfo ~= nil then
-      directGpuError = "Display setup: " .. tostring(setupError or infoError)
-    else
-      directGpuError = "No monitor near DirectGPU block; move it beside monitor"
-    end
+    directGpuError = "Display setup: " .. tostring(setupError or infoError)
     directGpu = nil
     return false
   end

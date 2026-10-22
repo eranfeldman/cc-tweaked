@@ -63,13 +63,14 @@ for _, reused in ipairs({false, true}) do
   local gpu = {
     listDisplays=function() call(); return reused and {1} or {} end,
     getDisplayInfo=function() call(); return {pixelWidth=1024, pixelHeight=768} end,
-    autoDetectAndCreateDisplayWithResolution=function(resolution) call(); assert(resolution == 1); return 1 end,
+    autoDetectAndCreateDisplayWithResolution=function(name, resolution) call(); assert(name == "monitor_0" and resolution == 1); return 1 end,
     enableMouseEvents=function(id, value, hover)
       call(); assert(id == 1 and value == true and hover == false); enabled = value
     end,
   }
   env.require = function() return {} end
-  env.peripheral = {find=function() end, wrap=function() return gpu end}
+  env.peripheral = {find=function(kind) if kind == "monitor" then return {} end end,
+    getName=function() return "monitor_0" end, wrap=function() return gpu end}
   env.fs = {open=function() return {writeLine=function() end,close=function() end} end}
   local setup = assert(source:match("^(.-)%-%- Resolve devices"))
   local ok, ready = run(assert(load(setup .. "return configureDirectGpu()", "@display-setup", "t", env)))

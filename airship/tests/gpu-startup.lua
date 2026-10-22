@@ -31,28 +31,33 @@ local function check(scenario)
       event={coroutine.yield()}
     end
   end}
-  local created,mouse=0,false
+  local created,mouse,scanned=0,false,false
   local gpu={
     listDisplays=function()
       if scenario=="timeout" then coroutine.yield("never") end
-      return scenario=="new" and {} or {0}
+      return (scenario=="new" or scenario=="no-monitor" or scenario=="create-error") and {} or {0}
     end,
     getDisplayInfo=function(id)
       assert(id==0,"Display ID zero must be usable")
       if scenario=="bad-info" then return true end
       return {pixelWidth=656,pixelHeight=492}
     end,
-    autoDetectAndCreateDisplayWithResolution=function(scale)
-      assert(scale==1); created=created+1; return 0
+    autoDetectAndCreateDisplayWithResolution=function(name,scale)
+      assert(name=="monitor_7" and scale==1,"Creation must target the exact wired monitor without a broad scan")
+      created=created+1
+      if scenario=="create-error" then error("monitor unavailable") end
+      return 0
     end,
     enableMouseEvents=function(id,on,hover)
       assert(id==0 and on and hover==false)
       if scenario=="mouse-error" then error("mouse unavailable") end
       mouse=true
     end,
-    autoDetectMonitor=function() return {} end,
+    autoDetectMonitor=function() scanned=true; return {} end,
   }
-  env.peripheral={find=function() end,wrap=function() return gpu end}
+  env.peripheral={find=function(kind) if kind=="monitor" then return {} end end,
+    getName=function() if scenario=="no-monitor" then error("not wrapped") end; return "monitor_7" end,
+    wrap=function() return gpu end}
   local thread=coroutine.create(assert(load(startup..
     "\nreturn setupDirectGpu(), directGpuEnabled, directGpu, directGpuError", "@gpu-startup","t",env)))
   local event={}
@@ -60,6 +65,7 @@ local function check(scenario)
     local result=table.pack(coroutine.resume(thread,table.unpack(event)))
     assert(result[1],result[2])
     if coroutine.status(thread)=="dead" then
+      assert(not scanned,"Setup failure must not start a broad diagnostic scan")
       local ready,enabled,device,err=result[2],result[3],result[4],result[5]
       if scenario=="new" or scenario=="reused" then
         assert(ready and enabled and device==gpu and mouse and not err)
@@ -68,6 +74,7 @@ local function check(scenario)
       else
         assert(not ready and not enabled and device==nil and type(err)=="string")
         if scenario=="timeout" then assert(err=="Timed out at listDisplays") end
+        if scenario=="no-monitor" then assert(created==0 and err:find("Monitor name unavailable",1,true)) end
         assert(log[#log]:find("using CC monitor",1,true))
       end
       break
@@ -76,11 +83,11 @@ local function check(scenario)
     if not event then assert(timer,"Setup deadlocked without a deadline"); timer=false; event={"timer",1} end
   end
 end
-for _,scenario in ipairs({"new","reused","timeout","bad-info","mouse-error"}) do check(scenario) end
+for _,scenario in ipairs({"new","reused","timeout","bad-info","mouse-error","no-monitor","create-error"}) do check(scenario) end
 do
   local env=setmetatable({print=function() end,require=function() return {} end,
     peripheral={find=function() end},os={queueEvent=function() end,pullEvent=function() end}}, {__index=_G})
   local enabled=assert(load(startup.."\nreturn directGpuEnabled","@gpu-recovery","t",env))
   assert(enabled() and not enabled("--no-gpu"),"Recovery argument must skip GPU only for that invocation")
 end
-print("PASS: GPU new/reused display zero, resolution 1, yielding-call timeout, malformed info and mouse failure")
+print("PASS: exact monitor creation, display zero reuse, resolution 1, timeout and failure fallback without broad scans")
