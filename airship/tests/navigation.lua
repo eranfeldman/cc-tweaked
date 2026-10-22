@@ -104,7 +104,12 @@ do
   local resumed=A.new(names)
   local s={t=10,x=5,z=-3,vx=0,vz=0,heading=.4,yaw=.05,pressure=.85}
   assert(resumed:resumeVerification(s,candidate) and resumed.job.phase=="VERIFY","Saved thruster model must resume at auto tests")
-  assert(candidate.maxSpeed==8 and candidate.gains[1]==.0324,"Resumed validation must use a conservative speed/gain cap")
+  local recovered=math.min(math.sqrt(48*candidate.maxAccel),candidate.maxAccel*.75/math.max(.02,candidate.drag[1],candidate.drag[2]))
+  assert(candidate.maxSpeed==recovered and candidate.gains[1]==.0324,"Resume must use measured speed while bounding gains")
+  local legacy={}; for k,v in pairs(profiles[1]) do legacy[k]=v end
+  legacy.maxSpeed=8
+  local legacyResume=A.new(names)
+  assert(legacyResume:resumeVerification(s,legacy) and legacy.maxSpeed==recovered,"Resume must recover speed from the old 8 b/s cap using measured acceleration and drag")
   s.t=10.2; s.yaw=1
   local safeCommands,message=resumed:calibrate(s)
   assert(safeCommands and not next(safeCommands) and message:match("paused") and resumed.job.phase=="VERIFY",

@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.5.10"
+local AIRSHIP_BUILD = "1.5.11"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -233,7 +233,7 @@ local Autopilot = (function()
     p.yawWeight=clamp(math.sqrt(force/yaw)*.7,1,30)
     p.maxAccel=math.min(6,math.min(table.unpack(extent))*.55)
     if p.maxAccel<.015 then return nil,"Insufficient measured thrust in all four directions." end
-    p.maxSpeed=math.min(8,math.sqrt(48*p.maxAccel),p.maxAccel*.75/math.max(.02,p.drag[1],p.drag[2]))
+    p.maxSpeed=math.min(math.sqrt(48*p.maxAccel),p.maxAccel*.75/math.max(.02,p.drag[1],p.drag[2]))
     local frequency=math.min(.18,1/(2*p.delay),math.sqrt(p.maxAccel/3))
     p.gains={frequency^2,frequency^2*.02,2.2*frequency}
     for _,goal in ipairs({{p.maxAccel,0,0},{-p.maxAccel,0,0},{0,p.maxAccel,0},{0,-p.maxAccel,0},{0,0,.03},{0,0,-.03}}) do
@@ -246,7 +246,7 @@ local Autopilot = (function()
   end
   local function travelGoals(job)
     local p=job.candidate
-    local span=clamp(math.max(12,p.maxSpeed^2/p.maxAccel+p.maxSpeed*p.delay+4),12,32)
+    local span=math.max(24,p.maxSpeed^2/p.maxAccel+p.maxSpeed*p.delay+4)
     return {{x=job.origin.x+span,z=job.origin.z},{x=job.origin.x-span,z=job.origin.z},
       {x=job.origin.x,z=job.origin.z+span},{x=job.origin.x,z=job.origin.z-span},{x=job.origin.x,z=job.origin.z}}
   end
@@ -258,7 +258,7 @@ local Autopilot = (function()
   function A:resumeVerification(s,p)
     if not A.validSample(s) or not A.validCandidate(p,self.names) then return false,"Saved thruster model or navigation sample is invalid." end
     if s.pressure<=.001 then return false,"Air pressure reading is zero; check the Avionics altitude sensor." end
-    p.maxSpeed=math.min(p.maxSpeed,8)
+    if p.maxSpeed>=7.999 then p.maxSpeed=math.min(math.sqrt(48*p.maxAccel),p.maxAccel*.75/math.max(.02,p.drag[1],p.drag[2])) end
     p.gains={math.min(p.gains[1],.0324),math.min(p.gains[2],.00065),math.min(1,math.max(p.gains[3],.396))}
     self:reset(s.heading)
     self.job={phase="VERIFY",at=s.t,previous=copy(s),origin={x=s.x,z=s.z},heading=s.heading,
