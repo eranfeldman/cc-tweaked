@@ -24,6 +24,23 @@ table.remove(flat,5); flat[4]={x=80,y=0,z=80,distance=100}
 assert(not G.solve(flat),'Coplanar hosts must not return an arbitrary mirror position')
 print('PASS: GPS solves translated coordinates and rejects inconsistent ranges and flat host geometry')
 
+local recorded={
+  {x=0,y=0,z=0,distance=82.088344387723666},
+  {x=7,y=-3,z=-17,distance=88.604051784589927},
+  {x=-3,y=-3,z=-6,distance=87.072611118126034},
+  {x=-14,y=-3,z=10,distance=87.919300339155669},
+}
+for _,offset in ipairs({0,20000000}) do
+  local input={}
+  for _,f in ipairs(recorded) do input[#input+1]={x=f.x+offset,y=f.y,z=f.z+offset,distance=f.distance} end
+  local p=assert(G.solve(input),'The actual reported ranges must fit without raising the rejection threshold')
+  assert(G.residual<.005,'Refinement must bring the recorded worst range error below 0.005 blocks')
+  assert(math.abs(p.x-offset-19.91719066)<1e-5 and math.abs(p.y-77.81224016)<1e-5 and math.abs(p.z-offset-16.94960202)<1e-5)
+end
+local atHost=assert(G.solve(fixes(0,0,0,0)))
+assert(math.abs(atHost.x)+math.abs(atHost.y)+math.abs(atHost.z)<1e-6,'A receiver at a host must not divide by a zero range')
+print('PASS: actual v1.6.9 range-disagreement report fits within 0.005 blocks, including large coordinates and zero range')
+
 local state={}
 assert(G.accept(state,{t=0,x=0,y=20,z=0},12))
 assert(G.accept(state,{t=.6,x=.039738,y=20,z=.030128},12))
@@ -77,7 +94,7 @@ for _,diskFailure in ipairs({false,true}) do
 end
 print('PASS: controller saves a GPS failure report before auto tests; disk errors do not stop the controller')
 
-for _,scenario in ipairs({'success','timeout','bad_ranges','error'}) do
+for _,scenario in ipairs({'success','recorded_ranges','timeout','bad_ranges','error'}) do
   local opened,closed,canceled,events,query={}, {},false,{},nil
   local modem={isOpen=function(channel) return opened[channel] or false end,
     open=function(channel) opened[channel]=true end,close=function(channel) closed[channel]=true end}
@@ -89,6 +106,7 @@ for _,scenario in ipairs({'success','timeout','bad_ranges','error'}) do
     events={{'modem_message','top',65534,65534,{100,100,100},1},
       {'modem_message','top',reply-1,65534,{100,100,100},1}}
     local input=fixes(15,110,-35,0)
+    if scenario=='recorded_ranges' then input=recorded end
     if scenario=='bad_ranges' then input[4].distance=input[4].distance+20 end
     for i,f in ipairs(input) do
       if scenario~='timeout' or i<4 then events[#events+1]={'modem_message','top',reply,65534,{f.x,f.y,f.z},f.distance} end
@@ -105,6 +123,7 @@ for _,scenario in ipairs({'success','timeout','bad_ranges','error'}) do
     local x,y,z=gps.locate(.5)
     assert(closed[query] and canceled,'GPS must close its temporary channel and cancel its timer')
     if scenario=='success' then assert(math.abs(x-15)<1e-6 and math.abs(y-110)<1e-6 and math.abs(z+35)<1e-6)
+    elseif scenario=='recorded_ranges' then assert(math.abs(x-19.91719066)<1e-5 and gps.residual<.005 and not gps.error,'Fresh query must accept the actual refined ranges')
     else assert(x==nil and gps.error,'Failed query must not return a stale position') end
   end
 end

@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.6.9"
+local AIRSHIP_BUILD = "1.6.10"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -472,6 +472,29 @@ end)()
 local FreshGPS=(function()
   local G={channel=40000}
   local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
+  local function solveMatrix(matrix,tolerance)
+    for col=1,3 do
+      local pivot=col
+      for row=col+1,3 do if math.abs(matrix[row][col])>math.abs(matrix[pivot][col]) then pivot=row end end
+      matrix[col],matrix[pivot]=matrix[pivot],matrix[col]
+      local divisor=matrix[col][col]
+      if math.abs(divisor)<tolerance then return nil end
+      for j=col,4 do matrix[col][j]=matrix[col][j]/divisor end
+      for row=1,3 do if row~=col then
+        local factor=matrix[row][col]
+        for j=col,4 do matrix[row][j]=matrix[row][j]-factor*matrix[col][j] end
+      end end
+    end
+    return {matrix[1][4],matrix[2][4],matrix[3][4]}
+  end
+  local function rangeError(p,fixes)
+    local cost,worst=0,0
+    for _,f in ipairs(fixes) do
+      local error=math.sqrt((p[1]-f.x)^2+(p[2]-f.y)^2+(p[3]-f.z)^2)-f.distance
+      cost=cost+error^2; worst=math.max(worst,math.abs(error))
+    end
+    return cost,worst
+  end
   function G.solve(fixes)
     if #fixes<4 then return nil,"Need four fresh GPS hosts" end
     local first=fixes[1]
@@ -488,24 +511,42 @@ local FreshGPS=(function()
         matrix[j][4]=matrix[j][4]+row[j]*value
       end
     end
-    for col=1,3 do
-      local pivot=col
-      for row=col+1,3 do if math.abs(matrix[row][col])>math.abs(matrix[pivot][col]) then pivot=row end end
-      matrix[col],matrix[pivot]=matrix[pivot],matrix[col]
-      local divisor=matrix[col][col]
-      if math.abs(divisor)<1e-6 then return nil,"GPS host geometry is flat or too narrow" end
-      for j=col,4 do matrix[col][j]=matrix[col][j]/divisor end
-      for row=1,3 do if row~=col then
-        local factor=matrix[row][col]
-        for j=col,4 do matrix[row][j]=matrix[row][j]-factor*matrix[col][j] end
-      end end
+    local p=solveMatrix(matrix,1e-6)
+    if not p then return nil,"GPS host geometry is flat or too narrow" end
+    local localFixes={}
+    for _,f in ipairs(fixes) do localFixes[#localFixes+1]={x=f.x-first.x,y=f.y-first.y,z=f.z-first.z,distance=f.distance} end
+    local cost,worst=rangeError(p,localFixes)
+    -- Squared-range equations amplify small range errors; refine against the measured distances.
+    for _=1,8 do
+      if cost<1e-12 then break end
+      matrix={{0,0,0,0},{0,0,0,0},{0,0,0,0}}
+      for _,f in ipairs(localFixes) do
+        local row={p[1]-f.x,p[2]-f.y,p[3]-f.z}
+        local distance=math.sqrt(row[1]^2+row[2]^2+row[3]^2)
+        if distance>1e-9 then
+          for j=1,3 do row[j]=row[j]/distance end
+          for j=1,3 do
+            for k=1,3 do matrix[j][k]=matrix[j][k]+row[j]*row[k] end
+            matrix[j][4]=matrix[j][4]-row[j]*(distance-f.distance)
+          end
+        end
+      end
+      local step=solveMatrix(matrix,1e-12)
+      if not step then break end
+      local improved=false
+      for attempt=0,5 do
+        local scale=2^-attempt
+        local nextP={p[1]+step[1]*scale,p[2]+step[2]*scale,p[3]+step[3]*scale}
+        local nextCost,nextWorst=rangeError(nextP,localFixes)
+        if finite(nextCost) and nextCost<cost then
+          p,cost,worst=nextP,nextCost,nextWorst; improved=true; break
+        end
+      end
+      if not improved then break end
     end
-    local p={x=first.x+matrix[1][4],y=first.y+matrix[2][4],z=first.z+matrix[3][4]}
-    for _,f in ipairs(fixes) do
-      local distance=math.sqrt((p.x-f.x)^2+(p.y-f.y)^2+(p.z-f.z)^2)
-      if math.abs(distance-f.distance)>.75 then return nil,"GPS host ranges disagree" end
-    end
-    return p
+    G.residual=worst
+    if not finite(cost) or worst>.75 then return nil,"GPS host ranges disagree" end
+    return {x=first.x+p[1],y=first.y+p[2],z=first.z+p[3]}
   end
   function G.accept(state,fix,accel)
     if not finite(fix.x) or not finite(fix.y) or not finite(fix.z) or not finite(fix.t) then return false,"Invalid GPS coordinates" end
@@ -527,7 +568,7 @@ local FreshGPS=(function()
     return true
   end
   function G.locate(timeout)
-    G.fixes,G.check=nil,nil
+    G.fixes,G.check,G.residual=nil,nil,nil
     local side
     for _,name in ipairs(rs.getSides()) do
       if peripheral.getType(name)=="modem" and peripheral.call(name,"isWireless") then side=name; break end
@@ -568,7 +609,7 @@ local FreshGPS=(function()
     if result then return result.x,result.y,result.z end
   end
   function G.report()
-    local report={error=G.error,check=G.check,hosts={}}
+    local report={error=G.error,check=G.check,residual=G.residual,hosts={}}
     local first=G.fixes and G.fixes[1]
     for _,f in ipairs(G.fixes or {}) do
       report.hosts[#report.hosts+1]={x=f.x-first.x,y=f.y-first.y,z=f.z-first.z,distance=f.distance}
