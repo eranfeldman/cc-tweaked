@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.6.6"
+local AIRSHIP_BUILD = "1.6.7"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -7,7 +7,20 @@ if (...) == "--upload-report" then
     previous.write(value)
   end},{__index=previous})
   term.redirect(capture)
-  local ok,err=pcall(shell.run,"pastebin","put","/airship-flight.log")
+  local ok,err=pcall(function()
+    local path="/airship-flight.log"
+    if fs.exists("/airship-gps.log") then
+      local parts={}
+      for _,name in ipairs({"/airship-flight.log","/airship-gps.log"}) do
+        if fs.exists(name) then
+          local file=assert(fs.open(name,"r")); parts[#parts+1]=file.readAll(); file.close()
+        end
+      end
+      path="/airship-report.log"
+      local file=assert(fs.open(path,"w")); file.write(table.concat(parts,"\n")); file.close()
+    end
+    return shell.run("pastebin","put",path)
+  end)
   term.redirect(previous)
   if not ok then printError(tostring(err)) end
   local link=table.concat(output):match("https?://pastebin%.com/[%w]+")
@@ -485,16 +498,19 @@ local FreshGPS=(function()
       if dt<=0 then return false,"Repeated GPS timestamp" end
       local dx=fix.x-last.x-(state.vx or 0)*dt
       local dz=fix.z-last.z-(state.vz or 0)*dt
-      local allowance=1.5+.5*accel*math.min(dt,2)^2+(state.vx and 0 or 40*dt)
+      -- A velocity from two fixes includes their position error and acceleration during that interval.
+      local uncertainty=state.dt and (1.5/state.dt+.5*accel*state.dt) or 40
+      local allowance=1.5+uncertainty*dt+.5*accel*dt^2
+      G.check={dt=dt,previous_dt=state.dt,dx=dx,dz=dz,vx=state.vx,vz=state.vz,allowance=allowance}
       if math.sqrt(dx^2+dz^2)>allowance then return false,"GPS jump rejected" end
       local vx,vz=(fix.x-last.x)/dt,(fix.z-last.z)/dt
-      state.vx=state.vx and state.vx*.5+vx*.5 or vx
-      state.vz=state.vz and state.vz*.5+vz*.5 or vz
+      state.vx,state.vz,state.dt=vx,vz,dt
     end
     state.last=fix
     return true
   end
   function G.locate(timeout)
+    G.fixes,G.check=nil,nil
     local side
     for _,name in ipairs(rs.getSides()) do
       if peripheral.getType(name)=="modem" and peripheral.call(name,"isWireless") then side=name; break end
@@ -512,6 +528,7 @@ local FreshGPS=(function()
     local ok,result,reason=pcall(function()
       modem.transmit(65534,reply,"PING")
       local fixes,seen={},{}
+      G.fixes=fixes
       local failure="Need four fresh GPS hosts"
       while true do
         local event,from,channel,sender,message,distance=os.pullEvent()
@@ -532,6 +549,14 @@ local FreshGPS=(function()
     if not ok then G.error=tostring(result); return nil end
     G.error=reason
     if result then return result.x,result.y,result.z end
+  end
+  function G.report()
+    local report={error=G.error,check=G.check,hosts={}}
+    local first=G.fixes and G.fixes[1]
+    for _,f in ipairs(G.fixes or {}) do
+      report.hosts[#report.hosts+1]={x=f.x-first.x,y=f.y-first.y,z=f.z-first.z,distance=f.distance}
+    end
+    return report
   end
   return G
 end)()
@@ -1031,8 +1056,8 @@ local function outputs(cooperative)
 end
 local function uploadFlightReport()
   if fullCalibration or mode=="AUTOPILOT" or mode=="FINAL TURN" then status.text="Press H to hold before uploading the report."; return end
-  if not fs.exists("airship-flight.log") then status.text="No flight report yet; run an auto test first."; return end
-  if not shell or type(shell.openTab)~="function" then status.text="In another shell: pastebin put /airship-flight.log"; return end
+  if not fs.exists("airship-flight.log") and not fs.exists("airship-gps.log") then status.text="No flight or GPS failure report yet."; return end
+  if not shell or type(shell.openTab)~="function" then status.text="In another shell: pastebin put /airship-gps.log or /airship-flight.log"; return end
   local ok,tab=pcall(shell.openTab,shell.getRunningProgram(),"--upload-report")
   if ok and tab then
     status.text="Public report upload opened in another tab."
@@ -1072,6 +1097,7 @@ local function setFlightMode(nextMode)
   vectorX, vectorY, power, mode = 0, 0, 0, nextMode
   pid.horizontalX.integral, pid.horizontalZ.integral = 0, 0
 end
+local gpsReportAt
 local function locate()
   local now = os.clock()
   if altitudeSensor then
@@ -1112,6 +1138,15 @@ local function locate()
     local profile=navController.job and navController.job.candidate or navController.profile
     local accepted,reason=FreshGPS.accept(gpsFilter,{t=now,x=x,y=y,z=z},math.max(12,profile and profile.maxAccel*2 or 12))
     if not accepted then x=nil; FreshGPS.error=reason end
+  end
+  if not x and FreshGPS.error and (not gpsReportAt or now-gpsReportAt>=1) then
+    gpsReportAt=now
+    local file
+    pcall(function()
+      file=assert(fs.open("airship-gps.log","w"))
+      file.write("# Airship v"..AIRSHIP_BUILD.." GPS failure; host positions relative to first host\n"..textutils.serialize(FreshGPS.report()))
+    end)
+    if file then pcall(file.close) end
   end
   if x then
     local centerX,centerZ=x,z

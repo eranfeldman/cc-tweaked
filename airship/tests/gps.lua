@@ -38,6 +38,45 @@ moving={}
 for i=0,100 do assert(G.accept(moving,{t=i*.6,x=i*14.4,y=20,z=0},12),'GPS startup must accept legitimate 24 b/s cruise') end
 print('PASS: rejects actual recorded excursions while allowing continuous 10 b/s flight')
 
+local stationary={}
+for i=0,120 do
+  assert(G.accept(stationary,{t=i*.05,x=i==1 and 1 or 0,y=20,z=0},12),
+    'A one-block GPS wobble must not trap a stationary ship in jump rejection')
+end
+local gap={}
+assert(G.accept(gap,{t=0,x=0,y=20,z=0},12))
+assert(G.accept(gap,{t=.5,x=0,y=20,z=0},12))
+assert(G.accept(gap,{t=4.5,x=32,y=20,z=0},12),'Acceleration allowance must cover the entire gap, not just two seconds')
+assert(not G.accept(gap,{t=4.6,x=200,y=20,z=0},12),'Gap recovery must still reject a subsequent impossible jump')
+local check=G.check
+assert(check and check.allowance and check.dx>check.allowance,'Rejected fixes must retain relative jump evidence')
+G.fixes=fixes(123456,20,-654321,20000000); G.error='GPS jump rejected'
+local report=G.report()
+assert(report.error==G.error and report.check==check and #report.hosts==5)
+for i,host in ipairs(report.hosts) do
+  assert(host.x==hosts[i][1]-hosts[1][1] and host.z==hosts[i][3]-hosts[1][3], 'GPS report must not expose absolute host X/Z')
+end
+print('PASS: stationary jitter and long gaps recover without accepting impossible jumps; failure report uses relative positions')
+
+for _,diskFailure in ipairs({false,true}) do
+  local written,closed
+  local env=setmetatable({AIRSHIP_BUILD='test',navController={},colors={orange=1},mode='WAITING FOR GPS',
+    gpsFilter={last={t=.5,x=0,y=20,z=0},vx=0,vz=0,dt=.5}}, {__index=_G})
+  env.os={clock=function() return 1 end}
+  env.FreshGPS={locate=function() return 100,20,0 end,accept=G.accept,report=function() return G.report() end}
+  env.textutils={serialize=function(value) assert(value.check.dx>value.check.allowance); return 'relative rejection evidence' end}
+  env.fs={open=function(path,mode)
+    assert(path=='airship-gps.log' and mode=='w')
+    if diskFailure then error('disk full') end
+    return {write=function(value) written=value end,close=function() closed=true end}
+  end}
+  local code=assert(source:match('(local function locate%b()%s*.-)\nlocal function updateFlight'))
+  local locate=assert(load('local gpsReportAt\n'..code..'\nreturn locate','@gps-failure-log','t',env))()
+  assert(locate()==false and env.FreshGPS.error=='GPS jump rejected')
+  assert(diskFailure or written:find('relative rejection evidence',1,true) and closed,'GPS failure report must be written and closed')
+end
+print('PASS: controller saves a GPS failure report before auto tests; disk errors do not stop the controller')
+
 for _,scenario in ipairs({'success','timeout','bad_ranges','error'}) do
   local opened,closed,canceled,events,query={}, {},false,{},nil
   local modem={isOpen=function(channel) return opened[channel] or false end,
