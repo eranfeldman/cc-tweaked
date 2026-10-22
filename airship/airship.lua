@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.5.7"
+local AIRSHIP_BUILD = "1.5.8"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -830,7 +830,7 @@ local function locate()
     if ok then headingRate=Autopilot.headingRate(rates,gravityOk and gravity or nil) end
     if headingRate then yawRate=headingRate; yawAt=os.clock() end
   end
-  local x, y, z = gps.locate(1, false)
+  local x, y, z = gps.locate(2, false)
   now=os.clock()
   if x then
     local centerX,centerZ=x,z
@@ -847,7 +847,7 @@ local function locate()
     if not altitude then altitude = math.floor(position.y + .5) end
     if mode == "WAITING FOR GPS" then mode = "HOLDING ALTITUDE" end
     return true
-  elseif lastGpsAt and os.clock() - lastGpsAt > 2 then
+  elseif lastGpsAt and os.clock() - lastGpsAt > 6 then
     position = nil
     previousPosition, previousSample = nil, nil
     velocity = {x=0, y=0, z=0}
