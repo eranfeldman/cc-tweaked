@@ -271,12 +271,18 @@ do
   profile.maxAccel,profile.maxSpeed,profile.delay,profile.responseScale=6,13,2,1
   local controller=A.new(names,profile); controller:reset(0)
   controller:navigate({t=0,x=0,z=0,vx=13,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=60,z=0})
-  assert(controller.trace.targetAlong>13,"A stable ship with 6 b/s^2 braking authority must not brake 13 b/s at 60 blocks remaining")
+  local oldTarget=math.sqrt((6*.6*2)^2+2*6*.6*(60-4))-6*.6*2
+  assert(controller.trace.targetAlong<13 and controller.trace.targetAlong>oldTarget*.85,
+    "Braking must start earlier without replacing fast arrival with a crawl")
+  controller:reset(0)
+  controller:navigate({t=0,x=0,z=0,vx=13,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=10000,z=0})
+  assert(controller.trace.targetAlong>13 and controller.trace.desired[1]>=profile.maxAccel,
+    "Long routes must still request full acceleration beyond the stored cruise estimate")
   profile.cruiseVersion=2
   controller=A.new(names,profile); controller:reset(0)
   controller:navigate({t=0,x=0,z=0,vx=13,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=60,z=0})
   assert(controller.trace.targetAlong<=13,"Working legacy profile must retain its speed and braking limits until new validation passes")
-  print("PASS: available-speed cruise does not cap at stored estimate and braking begins later on stable craft")
+  print("PASS: modestly earlier braking retains full long-route acceleration without a fixed cruise cap")
 end
 
 do
@@ -342,6 +348,39 @@ for i,profile in ipairs(profiles) do
   for _=1,100 do p:advance(controller:navigate(p:sample(),goal)) end
   assert(math.sqrt((p.x-goal.x)^2+(p.z-goal.z)^2)<.4,"Destination station keeping drifted")
   print("PASS: reduced pressure, rotated ship, yaw correction, arrival and station keeping")
+end
+
+do
+  local function turn(fast,start,target)
+    local p=plant(1,.2); p.heading=math.rad(start)
+    local controller=A.new(names,profiles[1]); controller:reset(p.heading)
+    if fast then controller:setHeadingTarget(math.rad(target)) else controller.headingTarget=math.rad(target) end
+    local excursion=0
+    for _=1,1000 do
+      local commands,arrived=controller:navigate(p:sample(),{x=0,z=0})
+      if arrived then
+        local duration=p.t
+        for _=1,50 do
+          p:advance(controller:navigate(p:sample(),{x=0,z=0}))
+          excursion=math.max(excursion,math.sqrt(p.x^2+p.z^2))
+        end
+        assert(not fast or math.abs((p.heading-math.rad(target)+math.pi)%(2*math.pi)-math.pi)<.03,
+          "Final alignment must remain settled after reaching its heading")
+        controller:reset(p.heading)
+        assert(not controller.finalTurn,"Fast final-turn control must reset before the next flight")
+        return duration,excursion
+      end
+      p:advance(commands); excursion=math.max(excursion,math.sqrt(p.x^2+p.z^2))
+    end
+    error('Final cardinal turn did not settle')
+  end
+  for _,angles in ipairs({{44,0},{46,90},{350,0}}) do
+    local slow=turn(false,table.unpack(angles))
+    local fast,excursion=turn(true,table.unpack(angles))
+    assert(fast<slow*.65,"Final turn must settle substantially faster than travel heading control")
+    assert(excursion<.75,"Faster final turn must keep the destination in place")
+    print(("PASS: final turn %d to %d degrees, %.1fs vs %.1fs; %.3fm drift"):format(angles[1],angles[2],fast,slow,excursion))
+  end
 end
 
 for i,profile in ipairs(profiles) do

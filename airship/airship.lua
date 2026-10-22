@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.6.7"
+local AIRSHIP_BUILD = "1.6.8"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -139,9 +139,9 @@ local Autopilot = (function()
   end
   function A:reset(heading)
     self.integral={0,0}; self.headingTarget=heading; self.previous=nil; self.mix=nil; self.goalKey=nil
-    self.trim={0,0,0}; self.motion=nil; self.applied=nil; self.track={}; self.route=nil
+    self.trim={0,0,0}; self.motion=nil; self.applied=nil; self.track={}; self.route=nil; self.finalTurn=nil
   end
-  function A:setHeadingTarget(heading) self.headingTarget=heading end
+  function A:setHeadingTarget(heading) self.headingTarget=heading; self.finalTurn=true end
   function A:cancel()
     self.job=nil; self:reset(nil)
   end
@@ -189,9 +189,9 @@ local Autopilot = (function()
     self.headingTarget=self.headingTarget or s.heading
     local dt=self.previous and clamp(s.t-self.previous.t,.01,2) or .2
     local ratio=clamp(s.pressure/math.max(.001,p.pressure),0,2)
-    -- Learn persistent drift/torque instead of asking a tiny position integral to balance the ship.
+    -- Learn balance during travel; final alignment keeps it instead of learning turning transients.
     self.trim=self.trim or {0,0,0}
-    if self.previous and self.applied then
+    if self.previous and self.applied and not self.finalTurn then
       local a,v=observation(self.previous,s)
       local alpha=1-math.exp(-dt/8)
       for i=1,3 do
@@ -222,15 +222,15 @@ local Autopilot = (function()
     local response=math.max(1.2,p.delay*.65)*(p.responseScale or 1)
     local modern=p.cruiseVersion==3
     local caution=modern and clamp((p.responseScale or 1)-1,0,1) or 1
-    local brakeAccel=maxAccel*(.6-.25*caution)
+    local brakeAccel=maxAccel*(.55-.2*caution)
     local function plannedSpeed(error,limit,margin)
       local gap=math.max(0,math.abs(error)-(margin or .04))
-      local delay=modern and p.delay+math.max(0,response-math.max(1.2,p.delay*.65)) or p.delay+response
+      local delay=modern and p.delay+.35*response+math.max(0,response-math.max(1.2,p.delay*.65)) or p.delay+response
       local braking=math.sqrt((brakeAccel*delay)^2+2*brakeAccel*gap)-brakeAccel*delay
       return (error<0 and -1 or 1)*math.min(limit,braking,gap*.7/response)
     end
     local cruiseLimit=modern and (caution>0 and p.maxSpeed/caution or math.huge) or p.maxSpeed
-    local targetAlong=plannedSpeed(remaining,cruiseLimit,4+8*caution)
+    local targetAlong=plannedSpeed(remaining,cruiseLimit,3+9*caution)
     local targetCross=plannedSpeed(-cross,math.max(1,p.maxSpeed*.35))
     local ax=(targetAlong-alongSpeed)/response
     local az=(targetCross-crossSpeed)/response
@@ -238,7 +238,7 @@ local Autopilot = (function()
     az=clamp(az,-maxAccel*.7,maxAccel*.7)
     ax=clamp(ax,-math.sqrt(maxAccel^2-az^2),math.sqrt(maxAccel^2-az^2))
     local bx,bz=body(ax*r.tx-az*r.tz,ax*r.tz+az*r.tx,s.heading)
-    local blend=clamp((distance-3-caution)/(9+11*caution),0,1)
+    local blend=clamp((distance-3-caution)/(6+14*caution),0,1)
     local ex,ez=body(dx,dz,s.heading)
     local bandwidth=math.sqrt(clamp(ratio,.16,1))
     local hold={}
@@ -249,7 +249,8 @@ local Autopilot = (function()
     bx,bz=blend*bx+(1-blend)*hold[1],blend*bz+(1-blend)*hold[2]
     local acceleration={bx+p.drag[1]*ratio*vx,bz+p.drag[2]*ratio*vz}
     local yawDamping=math.max(1.5,2.8-math.min(1.3,p.drag[3]*ratio))
-    local yaw=clamp(.12*wrap(self.headingTarget-s.heading)-yawDamping*s.yaw,-.12,.12)
+    local turnLimit=self.finalTurn and .24 or .12
+    local yaw=clamp((self.finalTurn and .45 or .12)*wrap(self.headingTarget-s.heading)-yawDamping*s.yaw,-turnLimit,turnLimit)
     local desired={acceleration[1]-self.trim[1],acceleration[2]-self.trim[2],yaw-self.trim[3]}
     local commands,residual=self:allocate(p,desired)
     self.applied={desired[1]-(residual and residual[1] or 0),desired[2]-(residual and residual[2] or 0),desired[3]-(residual and residual[3]/p.yawWeight or 0)}
