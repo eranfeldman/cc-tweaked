@@ -100,11 +100,15 @@ end
 do
   local candidate={}; for k,v in pairs(profiles[1]) do candidate[k]=v end
   candidate.validated=nil
+  candidate.maxSpeed=17; candidate.gains={.09,.001,.66}
   local resumed=A.new(names)
   local s={t=10,x=5,z=-3,vx=0,vz=0,heading=.4,yaw=.05,pressure=.85}
   assert(resumed:resumeVerification(s,candidate) and resumed.job.phase=="VERIFY","Saved thruster model must resume at auto tests")
-  s.t=10.2
-  assert(resumed:calibrate(s) and resumed.job.phase=="VERIFY","Resumed model must bypass all thruster pulses")
+  assert(candidate.maxSpeed==8 and candidate.gains[1]==.0324,"Resumed validation must use a conservative speed/gain cap")
+  s.t=10.2; s.yaw=1
+  local safeCommands,message=resumed:calibrate(s)
+  assert(safeCommands and not next(safeCommands) and message:match("paused") and resumed.job.phase=="VERIFY",
+    "Runaway yaw must cut thrusters and retain the validation checkpoint")
   local yawController=A.new(names,profiles[1]); yawController:reset(0)
   local yawSample={t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=.05,pressure=.85}
   local highDrag={}; for k,v in pairs(profiles[1]) do highDrag[k]=v end

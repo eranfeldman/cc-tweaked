@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.5.9"
+local AIRSHIP_BUILD = "1.5.10"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -179,8 +179,8 @@ local Autopilot = (function()
       local a=drive*along-derivative*values[2]+p.gains[2]*bandwidth^2*self.integral[i]
       acceleration[i]=clamp(a,-maxAccel,maxAccel)+p.drag[i]*ratio*values[2]
     end
-    local yawDamping=math.max(.6,1.8-p.drag[3]*ratio)
-    local yaw=clamp(.22*wrap(self.headingTarget-s.heading)-yawDamping*s.yaw,-.12,.12)
+    local yawDamping=math.max(1.5,2.8-math.min(1.3,p.drag[3]*ratio))
+    local yaw=clamp(.12*wrap(self.headingTarget-s.heading)-yawDamping*s.yaw,-.12,.12)
     local desired={acceleration[1]-self.trim[1],acceleration[2]-self.trim[2],yaw-self.trim[3]}
     local commands,residual=self:allocate(p,desired)
     self.applied={desired[1]-(residual and residual[1] or 0),desired[2]-(residual and residual[2] or 0),desired[3]-(residual and residual[3]/p.yawWeight or 0)}
@@ -233,8 +233,8 @@ local Autopilot = (function()
     p.yawWeight=clamp(math.sqrt(force/yaw)*.7,1,30)
     p.maxAccel=math.min(6,math.min(table.unpack(extent))*.55)
     if p.maxAccel<.015 then return nil,"Insufficient measured thrust in all four directions." end
-    p.maxSpeed=math.min(20,math.sqrt(48*p.maxAccel),p.maxAccel*.75/math.max(.02,p.drag[1],p.drag[2]))
-    local frequency=math.min(.3,1/(2*p.delay),math.sqrt(p.maxAccel/3))
+    p.maxSpeed=math.min(8,math.sqrt(48*p.maxAccel),p.maxAccel*.75/math.max(.02,p.drag[1],p.drag[2]))
+    local frequency=math.min(.18,1/(2*p.delay),math.sqrt(p.maxAccel/3))
     p.gains={frequency^2,frequency^2*.02,2.2*frequency}
     for _,goal in ipairs({{p.maxAccel,0,0},{-p.maxAccel,0,0},{0,p.maxAccel,0},{0,-p.maxAccel,0},{0,0,.03},{0,0,-.03}}) do
       local _,residual=self:allocate(p,goal)
@@ -246,7 +246,7 @@ local Autopilot = (function()
   end
   local function travelGoals(job)
     local p=job.candidate
-    local span=math.max(24,2*p.maxSpeed*p.gains[3]/p.gains[1],p.maxSpeed^2/p.maxAccel+p.maxSpeed*p.delay+4)
+    local span=clamp(math.max(12,p.maxSpeed^2/p.maxAccel+p.maxSpeed*p.delay+4),12,32)
     return {{x=job.origin.x+span,z=job.origin.z},{x=job.origin.x-span,z=job.origin.z},
       {x=job.origin.x,z=job.origin.z+span},{x=job.origin.x,z=job.origin.z-span},{x=job.origin.x,z=job.origin.z}}
   end
@@ -258,9 +258,11 @@ local Autopilot = (function()
   function A:resumeVerification(s,p)
     if not A.validSample(s) or not A.validCandidate(p,self.names) then return false,"Saved thruster model or navigation sample is invalid." end
     if s.pressure<=.001 then return false,"Air pressure reading is zero; check the Avionics altitude sensor." end
+    p.maxSpeed=math.min(p.maxSpeed,8)
+    p.gains={math.min(p.gains[1],.0324),math.min(p.gains[2],.00065),math.min(1,math.max(p.gains[3],.396))}
     self:reset(s.heading)
     self.job={phase="VERIFY",at=s.t,previous=copy(s),origin={x=s.x,z=s.z},heading=s.heading,
-      candidate=p,leg=1,stable=nil,verifyWindow={copy(s)},legStart={x=s.x,z=s.z},overshoot=0,retry=0,dt=0,samples=0,pressure=0}
+      candidate=p,leg=1,stable=nil,verifyWindow={copy(s)},legStart={x=s.x,z=s.z},overshoot=0,retry=0,persistRevision=0,dt=0,samples=0,pressure=0}
     self.job.goals=travelGoals(self.job)
     return true
   end
@@ -304,6 +306,9 @@ local Autopilot = (function()
       else j.phase="WARMUP"; j.at=s.t end
     end
     if j.phase=="VERIFY" then
+      if math.abs(s.yaw)>.8 then
+        return {},("Auto tests paused at yaw %.2f rad/s; thrusters are off, model saved. Press HOLD before resuming."):format(s.yaw)
+      end
       local goal=j.goals[j.leg]
       local gx,gz=goal.x-j.legStart.x,goal.z-j.legStart.z
       local length=math.sqrt(gx*gx+gz*gz)
