@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.3.3"
+local AIRSHIP_BUILD = "1.3.4"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -572,7 +572,7 @@ local shipHeading
 local yawRate
 local shipTilt
 local measuredThrust = 0
-local status, pidSummary, posText, altText, sysText, xInput, heightInput, pidInput, calibrateButton
+local status, pidSummary, posText, altText, sysText, navText, xInput, heightInput, pidInput, calibrateButton
 -- Conservative starting gains; GPS velocity feedback compensates for variable sample timing.
 local pid = {
   horizontalX = {p=.035, i=.0005, d=.18, limit=.25, integral=0},
@@ -700,6 +700,14 @@ local function navigationSample()
   local now=os.clock()
   if not position or not lastGpsAt or now-lastGpsAt>2 or not pressureAt or now-pressureAt>2 or not headingAt or now-headingAt>2 or not yawAt or now-yawAt>2 then return nil end
   return {t=now,x=position.x,z=position.z,vx=velocity.x,vz=velocity.z,heading=shipHeading,yaw=yawRate,pressure=altitudeSensorPressure,tilt=shipTilt}
+end
+local function navigationReadout()
+  local speed=math.sqrt(velocity.x^2+velocity.z^2)
+  local distance=position and target and math.sqrt((target.x-position.x)^2+(target.z-position.z)^2) or nil
+  local closing=distance and distance>.01 and ((target.x-position.x)*velocity.x+(target.z-position.z)*velocity.z)/distance or 0
+  local eta=distance and (mode=="DESTINATION REACHED" and 0 or (mode=="AUTOPILOT" and closing>.1 and distance/closing or nil)) or nil
+  local etaText=eta and (math.floor(eta/60)..":"..("%02d"):format(math.floor(eta%60))) or "--"
+  return speed,distance,etaText
 end
 
 local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
@@ -1083,8 +1091,10 @@ local function renderDirectMonitor()
     local detailFont=math.max(11,math.min(small,math.floor(detailH*.19)))
     txt("FLIGHT STATUS",l.margin+14,detailY+8,detailFont,muted,"bold")
     txt(position and ("GPS  X %.1f     Y %.1f     Z %.1f"):format(position.x,position.y,position.z) or "GPS SIGNAL LOST",l.margin+14,detailY+math.floor(detailH*.34),detailFont,position and ink or {255,110,110})
-    txt(("MODE  %s     AV %s     HDG %s°     YAW %s rad/s"):format(mode,altitudeSensorReady and "READY" or "MISSING",shipHeading and ("%.0f"):format(math.deg(shipHeading)) or "--",yawRate and ("%.2f"):format(yawRate) or "--"),l.margin+14,detailY+math.floor(detailH*.62),detailFont,ink)
-    txt(target and ("DESTINATION  X %.0f   Z %.0f"):format(target.x,target.z) or "NO DESTINATION SET",l.margin+14,detailY+math.floor(detailH*.82),detailFont,muted)
+    local speed,distance,eta=navigationReadout()
+    txt(("MODE  %s     AV %s     HDG %s°     YAW %s rad/s"):format(mode,altitudeSensorReady and "READY" or "MISSING",shipHeading and ("%.0f"):format(math.deg(shipHeading)) or "--",yawRate and ("%.2f"):format(yawRate) or "--"),l.margin+14,detailY+math.floor(detailH*.52),detailFont,ink)
+    txt(("SPEED  %.1f b/s     DISTANCE  %s     ETA  %s"):format(speed,distance and ("%.1f"):format(distance) or "--",eta),l.margin+14,detailY+math.floor(detailH*.70),detailFont,ink)
+    txt(target and ("DESTINATION  X %.0f   Z %.0f"):format(target.x,target.z) or "NO DESTINATION SET",l.margin+14,detailY+math.floor(detailH*.87),detailFont,muted)
   elseif gpuTab == "CALIBRATION" then
     local titleSize=math.max(18,math.floor(h*.032))
     txt("AUTOPILOT / BURNER CALIBRATION",l.margin,contentY,titleSize,ink,"bold")
@@ -1400,6 +1410,7 @@ local systemCard = card(flightPage, 35, 15, "FLIGHT SYSTEM")
 posText = gpsCard:addLabel({x=2, y=2, width=13, height=3, text="X --\nY --\nZ --", foreground=colors.white, background=colors.gray})
 altText = altitudeCard:addLabel({x=2, y=2, width=12, height=2, text="Now --\nTarget --", foreground=colors.white, background=colors.gray})
 sysText = systemCard:addLabel({x=2, y=2, width=12, height=2, text="Burner 0/15\nThrust 0/15", foreground=colors.white, background=colors.gray})
+navText = flightPage:addLabel({x=2, y=17, width=47, height=1, text="SPEED --  DISTANCE --  ETA --", foreground=colors.lightBlue})
 
 flightPage:addLabel({x=2, y=6, width=22, height=1, text="DESTINATION  (X Z)", foreground=colors.lightBlue})
 xInput = flightPage:addInput({x=2, y=7, width=22, height=1, placeholder="Example: 200 -700", background=colors.white, foreground=colors.black})
@@ -1508,6 +1519,8 @@ local function refresh()
     altText.text = ("Now %s\nTarget %s"):format(position and ("%.1f"):format(position.y) or "--", altitude and ("%.0f"):format(altitude) or "--")
     sysText.text = ("Burner %d/15\nThrust %.1f/15\nHeading %s°"):format(burner, measuredThrust, shipHeading and ("%.0f"):format(math.deg(shipHeading)) or "--")
   end
+  local speed,distance,eta=navigationReadout()
+  navText.text=("SPEED %.1f b/s   DISTANCE %s   ETA %s"):format(speed,distance and ("%.1f"):format(distance) or "--",eta)
   if not isFocused(heightInput) then heightInput.text = altitude and tostring(math.floor(altitude + .5)) or "" end
   if not isFocused(pidInput) then showGainValues() end
   if #savedAltitudeButtons > 0 then
@@ -1537,10 +1550,10 @@ local function refresh()
   elseif sweepSummary then sweepSummary = nil end
   if monitorFrame then
     monitorPos.text = position and ("X %.1f Y %.1f Z %.1f"):format(position.x, position.y, position.z) or "GPS not found"
-    monitorAlt.text = ("ALT %.1f / TARGET %.0f"):format(position and position.y or 0, altitude or 0)
+    monitorAlt.text = ("ALT %.1f / T %.0f   D %s   ETA %s"):format(position and position.y or 0, altitude or 0,distance and ("%.0f"):format(distance) or "--",eta)
     local savedCount = 0
     for _ in pairs(learnedHover) do savedCount = savedCount + 1 end
-    monitorSystem.text = ("B%d/15 T%.1f GPS %s AV %s H:%d"):format(burner, measuredThrust, position and "OK" or "LOST", altitudeSensorReady and "OK" or "--", savedCount)
+    monitorSystem.text = ("B%d/15 T%.1f SPD %.1f GPS %s"):format(burner, measuredThrust,speed,position and "OK" or "LOST")
     monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
   end
   if directGpu and (gpuRedrawPending or os.clock() - lastGpuRender >= .05) then
