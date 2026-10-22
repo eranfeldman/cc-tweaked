@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.3.4"
+local AIRSHIP_BUILD = "1.3.5"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1422,7 +1422,7 @@ local function setDestination()
   setFlightMode("HOLDING ALTITUDE")
   status.text = ("Destination set: X %.0f, Z %.0f"):format(x, z)
   status.foreground = colors.lime
-  flightPage:setFocused(nil)
+  frame:setFocused(nil)
 end
 flightPage:addButton({x=26, y=7, width=12, height=1, text="SET DEST", background=colors.blue}):onClick(setDestination)
 xInput:onEnter(setDestination)
@@ -1436,7 +1436,7 @@ local function setHeight()
   setFlightMode("HOLDING ALTITUDE")
   status.text = hoverBias(value) and ("Height Y %.0f uses calibrated burner output."):format(value) or "No saved burner calibration; output stays at its current amount."
   status.foreground = hoverBias(value) and colors.lime or colors.orange
-  flightPage:setFocused(nil)
+  frame:setFocused(nil)
 end
 flightPage:addButton({x=16, y=10, width=12, height=1, text="SET HEIGHT", background=colors.blue}):onClick(setHeight)
 heightInput:onEnter(setHeight)
@@ -1476,7 +1476,7 @@ local function setGains()
   local saved,err=pcall(saveGainFile,values)
   if not saved then status.text="Could not save gains: "..tostring(err); status.foreground=colors.red; return end
   showGainValues()
-  calibrationPage:setFocused(nil)
+  frame:setFocused(nil)
   status.text = "PID gains applied and saved."; status.foreground = colors.lime
 end
 calibrationPage:addButton({x=39, y=4, width=10, height=1, text="SET PID", background=colors.blue}):onClick(setGains)
@@ -1694,8 +1694,6 @@ local ok, err = pcall(function()
       if typing then
         if key == keys.escape then
           frame:setFocused(nil)
-          if flightPage then flightPage:setFocused(nil) end
-          if calibrationPage then calibrationPage:setFocused(nil) end
         end
       else
         if key == keys.up then if not adjustManualBurner(1) then adjustAltitude(1) end
