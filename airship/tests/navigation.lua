@@ -1,0 +1,219 @@
+-- Run from the repository root with Lua 5.2 or newer.
+local file=assert(io.open("airship/airship.lua","r"))
+local source=file:read("*a"):gsub("\r\n","\n"); file:close()
+local core=assert(source:match("%-%- BEGIN AUTOPILOT CORE\n(.-)\n%-%- END AUTOPILOT CORE"))
+local A=assert(load(core.."\nreturn Autopilot","@autopilot-core"))()
+local names={"t0","t1","t2","t3","t4","t5","t6","t7"}
+local mounts={
+  {-6,-6,0,-1},{-6,-6,-1,0},{6,-6,0,-1},{6,-6,1,0},
+  {-6,6,0,1},{-6,6,-1,0},{6,6,0,1},{6,6,1,0},
+}
+local function plant(mass,period,noise)
+  local p={t=0,x=0,z=0,vx=0,vz=0,heading=.4,yaw=0,pressure=.85,period=period,noise=noise or 0,filteredX=0,filteredZ=0,actuators={}}
+  for _,name in ipairs(names) do p.actuators[name]={x=0,y=0,power=0} end
+  function p:sample()
+    return {t=self.t,x=self.x+self.noise*math.sin(self.t*3.7),z=self.z+self.noise*math.sin(self.t*4.1),vx=self.filteredX,vz=self.filteredZ,
+      heading=self.heading,yaw=self.yaw+self.noise*.1*math.sin(self.t*.6),pressure=self.pressure}
+  end
+  function p:advance(commands)
+    local oldX,oldZ=self.x+self.noise*math.sin(self.t*3.7),self.z+self.noise*math.sin(self.t*4.1)
+    local count=math.ceil(self.period/.025)
+    local dt=self.period/count
+    for _=1,count do
+      local ax,az,ayaw=0,0,0
+      for i,name in ipairs(names) do
+        local command=commands and commands[name] or {x=0,y=0,power=0}
+        assert(command.power>=0 and command.power<=.350001,"Throttle exceeds calibrated range")
+        assert(math.abs(command.x)<=1 and math.abs(command.y)<=1,"Invalid nozzle command")
+        local a=self.actuators[name]
+        local alpha=1-math.exp(-dt/.25)
+        a.x=a.x+(command.x-a.x)*alpha; a.y=a.y+(command.y-a.y)*alpha
+        a.power=a.power+(command.power-a.power)*alpha
+        local r=mounts[i]
+        local normalization=math.sqrt(1+(.57735*a.x)^2+(.57735*a.y)^2)
+        local fx=(r[3]-r[4]*a.x*.57735)*a.power*1.5/mass/normalization
+        local fz=(r[4]+r[3]*a.x*.57735)*a.power*1.5/mass/normalization
+        ax,az=ax+fx,az+fz
+        ayaw=ayaw+(r[2]*fx-r[1]*fz)/40
+      end
+      local c,s=math.cos(self.heading),math.sin(self.heading)
+      self.vx=self.vx+(c*ax+s*az-.18*self.pressure/.85*self.vx)*dt
+      self.vz=self.vz+(-s*ax+c*az-.18*self.pressure/.85*self.vz)*dt
+      self.yaw=self.yaw+(ayaw-.25*self.pressure/.85*self.yaw)*dt
+      self.heading=self.heading+self.yaw*dt
+      self.x,self.z=self.x+self.vx*dt,self.z+self.vz*dt
+      self.t=self.t+dt
+    end
+    self.filteredX=.5*self.filteredX+.5*(self.x+self.noise*math.sin(self.t*3.7)-oldX)/self.period
+    self.filteredZ=.5*self.filteredZ+.5*(self.z+self.noise*math.sin(self.t*4.1)-oldZ)/self.period
+  end
+  return p
+end
+
+local profiles={}
+local scenarios={{1,.2,0},{1.8,.35,0},{1.4,.3,.01}}
+for _,scenario in ipairs(scenarios) do
+  local p=plant(scenario[1],scenario[2],scenario[3])
+  local controller=A.new(names)
+  assert(controller:begin(p:sample()))
+  local commands={}
+  local completed
+  for _=1,5000 do
+    p:advance(commands)
+    local message
+    commands,message,completed=controller:calibrate(p:sample())
+    assert(commands,message)
+    if completed then break end
+  end
+  assert(completed,"Automatic calibration never completed")
+  assert(A.validProfile(completed,names),"Calibration saved an invalid profile")
+  assert(completed.verification.overshoot<=.5,"An overshooting calibration was accepted")
+  assert(#completed.channels==32,"Not all eight thrusters and four nozzle directions were surveyed")
+  profiles[#profiles+1]=completed
+  print(("PASS: full calibration mass %.1f, sample %.2fs, duration %.1fs, peak overshoot %.3f"):format(scenario[1],scenario[2],p.t,completed.verification.overshoot))
+end
+
+do
+  local controller=A.new(names,profiles[1])
+  local captured
+  controller.allocate=function(_,_,desired) captured=desired; return {} end
+  local s={t=0,x=0,z=0,vx=.5,vz=0,heading=0,yaw=0,pressure=profiles[1].pressure}
+  controller:navigate(s,{x=10,z=0})
+  local dense=captured[1]
+  controller:reset(0); s.pressure=s.pressure*.3
+  controller:navigate(s,{x=10,z=0})
+  assert(dense>captured[1],"Thin air must reduce learned drag compensation")
+  print("PASS: measured air pressure changes drag feedforward")
+end
+
+do
+  local old=profiles[1]
+  local candidate={}; for key,value in pairs(old) do candidate[key]=value end
+  candidate.gains={table.unpack(old.gains)}; candidate.validated=false
+  local controller=A.new(names,old)
+  local s={t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
+  assert(controller:begin(s))
+  local j=controller.job
+  j.phase,j.candidate,j.leg,j.stable,j.overshoot="VERIFY",candidate,5,0,1
+  j.goals={{x=4,z=0},{x=-4,z=0},{x=0,z=4},{x=0,z=-4},{x=0,z=0}}
+  j.legStart={x=0,z=-4}
+  controller.navigate=function() return {},true end
+  local p=candidate.gains[1]
+  s.t=2
+  local commands,message=controller:calibrate(s)
+  assert(commands and message:match("Retuning") and candidate.gains[1]<p and not candidate.validated)
+  j.retry,j.leg,j.stable,j.overshoot=2,5,2,1
+  s.t=4
+  commands,message=controller:calibrate(s)
+  assert(not commands and message:match("overshoots") and controller.profile==old,"Excessive overshoot must never replace the working profile")
+  print("PASS: overshoot triggers automatic retuning and rejects failed validation")
+end
+
+for i,profile in ipairs(profiles) do
+  local p=plant(table.unpack(scenarios[i]))
+  p.pressure=.3; p.heading=2.9; p.yaw=.08
+  local controller=A.new(names,profile)
+  controller:reset(p.heading)
+  local goal={x=7,z=-5}
+  local arrived=false
+  for _=1,1500 do
+    local commands
+    commands,arrived=controller:navigate(p:sample(),goal)
+    assert(commands)
+    p:advance(commands)
+    if arrived then break end
+  end
+  assert(arrived,"Navigation failed after changing heading and air pressure")
+  assert(math.abs(p.yaw)<.035,"Yaw was not controlled")
+  for _=1,100 do p:advance(controller:navigate(p:sample(),goal)) end
+  assert(math.sqrt((p.x-goal.x)^2+(p.z-goal.z)^2)<.4,"Destination station keeping drifted")
+  print("PASS: reduced pressure, rotated ship, yaw correction, arrival and station keeping")
+end
+
+do
+  local files={["airship-autopilot.cfg"]="old profile"}
+  local fail=false
+  local env=setmetatable({Autopilot=A,navNames=names}, {__index=_G})
+  env.textutils={serialize=function() return "new profile" end}
+  env.fs={
+    exists=function(path) return files[path]~=nil end,
+    delete=function(path) files[path]=nil end,
+    open=function(path) return {write=function(value) files[path]=value end,close=function() end} end,
+    move=function(from,to)
+      if fail and from:match("%.tmp$") then error("disk full") end
+      assert(files[from] and not files[to]); files[to],files[from]=files[from],nil
+    end,
+  }
+  local saving=assert(source:match("(local function saveAutopilotProfile%b()%s*.-)\nif fs.exists%(\"airship%-autopilot.cfg\"%)"))
+  local save=assert(load(saving.."\nreturn saveAutopilotProfile","@profile-save","t",env))()
+  save(profiles[1])
+  assert(files['airship-autopilot.cfg']=="new profile" and files['airship-autopilot.cfg.bak']=="old profile")
+  fail=true
+  assert(not pcall(save,profiles[1]))
+  assert(files['airship-autopilot.cfg']=="new profile","Failed installation must restore the existing calibration")
+  local corrupt={version=1,validated=true}
+  assert(not A.validProfile(corrupt,names),"Incomplete profiles must be rejected")
+  print("PASS: atomic profile save, backup restoration and corrupt profile rejection")
+end
+
+do
+  local p=plant(1,.2)
+  local old=profiles[1]
+  local controller=A.new(names,old)
+  assert(controller:begin(p:sample()))
+  for _=1,100 do
+    p.t=p.t+.2
+    local commands,message=controller:calibrate(p:sample())
+    if not commands then
+      assert(message:match("response too small"))
+      break
+    end
+  end
+  assert(controller.job==nil and controller.profile==old,"Failed calibration replaced the previous profile")
+  assert(controller:begin(p:sample()))
+  local invalid=p:sample(); invalid.heading=0/0
+  local commands=controller:calibrate(invalid)
+  assert(commands==nil and controller.profile==old,"Invalid sensors did not abort calibration")
+  assert(controller:begin(p:sample()))
+  controller:cancel()
+  assert(controller.job==nil and controller.profile==old,"Cancel must preserve existing calibration")
+  local changed={table.unpack(names)}; changed[1]="remapped"
+  assert(A.new(changed,old).profile==nil,"Changed thrusters must require recalibration")
+  print("PASS: missing response, invalid sensors, cancellation and changed thrusters retain or reject profiles correctly")
+end
+
+do
+  local profile=profiles[1]
+  local env=setmetatable({Autopilot=A}, {__index=_G})
+  env.colors={red=1,orange=2,lime=3}
+  env.position,env.altitude,env.mode={x=0,y=73,z=0},73,"HOLDING ALTITUDE"
+  env.burner,env.burnerCommand,env.sampleDt,env.burnerSlewPerSecond=6,6,.2,6
+  env.status={}; env.shipHeading=.4
+  env.navController=A.new(names,profile)
+  local sample={t=0,x=0,z=0,vx=0,vz=0,heading=.4,yaw=0,pressure=.85}
+  env.navigationSample=function() return sample end
+  env.clamp=function(v,a,b) return math.max(a,math.min(b,v)) end
+  env.hoverBias=function() error("Full calibration must keep the burner fixed") end
+  env.saveAutopilotProfile=function(p) assert(p.validated); env.saved=p end
+  env.applyGainValues=function(g) env.applied=g end
+  local start=assert(source:match("(local function startFullCalibration%(%)%s*.-)\nlocal function testVector"))
+  local update=assert(source:match("(local function updateFlight%b()%s*.-)\nlocal function savedHoverPoints"))
+  local startFn,updateFn=assert(load(start.."\n"..update.."\nreturn startFullCalibration,updateFlight","@integration","t",env))()
+  startFn()
+  assert(env.fullCalibration and env.calibrationRunning and env.manualBurner==6 and env.navController.job)
+  sample.t=.2
+  updateFn(true)
+  assert(env.burner==6 and env.burnerCommand==6,"Calibration changed burner output")
+  env.navController.calibrate=function() return {},nil,profile end
+  updateFn(true)
+  assert(env.saved==profile and env.navController.profile==profile and env.applied==profile.gains)
+  assert(not env.fullCalibration and not env.calibrationRunning and env.burner==6,"Completion must leave height control alone")
+  startFn()
+  env.saveAutopilotProfile=function() error("disk full") end
+  local previous=env.navController.profile
+  local failedCandidate={gains={.01,0,.3},validated=true}
+  env.navController.calibrate=function() return {},nil,failedCandidate end
+  updateFn(true)
+  assert(env.navController.profile==previous and env.autopilotNotice:match("could not save"),"Save failure replaced the working profile")
+  print("PASS: controller button, fixed burner output, calibration completion and failed-save rollback")
+end

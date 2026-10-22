@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.2.21"
+local AIRSHIP_BUILD = "1.3.0"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -12,6 +12,251 @@ local function yieldComputer()
   os.pullEvent(event)
 end
 yieldComputer()
+-- BEGIN AUTOPILOT CORE
+local Autopilot = (function()
+  local A = {}
+  A.__index = A
+  local directions = {{.35,0},{-.35,0},{0,.35},{0,-.35}}
+  local throttleLimit, testThrottle = .35, .2
+  local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
+  local function clamp(v,a,b) return math.max(a,math.min(b,v)) end
+  local function wrap(v) return (v+math.pi)%(2*math.pi)-math.pi end
+  local function body(x,z,h) local c,s=math.cos(h),math.sin(h); return c*x-s*z,s*x+c*z end
+  local function copy(s)
+    return {t=s.t,x=s.x,z=s.z,vx=s.vx,vz=s.vz,heading=s.heading,yaw=s.yaw,pressure=s.pressure}
+  end
+  local function observation(a,b)
+    local dt=b.t-a.t
+    local h=a.heading+wrap(b.heading-a.heading)/2
+    local ax,az=body((b.vx-a.vx)/dt,(b.vz-a.vz)/dt,h)
+    local vx,vz=body((a.vx+b.vx)/2,(a.vz+b.vz)/2,h)
+    return {ax,az,(b.yaw-a.yaw)/dt},{vx,vz,(a.yaw+b.yaw)/2}
+  end
+  function A.validSample(s)
+    if type(s)~="table" then return false end
+    for _,key in ipairs({"t","x","z","vx","vz","heading","yaw","pressure"}) do if not finite(s[key]) then return false end end
+    return s.pressure>=0
+  end
+  function A.validProfile(p,names)
+    if type(p)~="table" or p.version~=1 or p.validated~=true or type(p.names)~="table" or #p.names~=#names or type(p.channels)~="table" or #p.channels~=#names*4 then return false end
+    for i,name in ipairs(names) do if p.names[i]~=name then return false end end
+    for _,key in ipairs({"pressure","yawWeight","maxAccel","maxSpeed","delay"}) do if not finite(p[key]) or p[key]<=0 then return false end end
+    if p.pressure>2 or p.yawWeight>30 or p.maxAccel>1 or p.maxSpeed>1 or p.delay>10 or type(p.drag)~="table" or type(p.gains)~="table" then return false end
+    for i=1,3 do
+      if not finite(p.drag[i]) or p.drag[i]<0 or p.drag[i]>3 or not finite(p.gains[i]) or p.gains[i]<0 then return false end
+    end
+    if p.gains[1]<.0001 or p.gains[1]>1 or p.gains[2]>.05 or p.gains[3]>4 then return false end
+    local gram={{0,0,0},{0,0,0},{0,0,0}}
+    for i,ch in ipairs(p.channels) do
+      if type(ch)~="table" or ch.name~=names[math.floor((i-1)/4)+1] or type(ch.b)~="table" then return false end
+      local d=directions[(i-1)%4+1]
+      if ch.x~=d[1] or ch.y~=d[2] then return false end
+      for j=1,3 do if not finite(ch.b[j]) or math.abs(ch.b[j])>10000 then return false end end
+      for r=1,3 do for c=1,3 do gram[r][c]=gram[r][c]+ch.b[r]*ch.b[c] end end
+    end
+    local a,b,c=gram[1],gram[2],gram[3]
+    local determinant=a[1]*(b[2]*c[3]-b[3]*c[2])-a[2]*(b[1]*c[3]-b[3]*c[1])+a[3]*(b[1]*c[2]-b[2]*c[1])
+    return a[1]>1e-7 and b[2]>1e-7 and c[3]>1e-7 and determinant/(a[1]*b[2]*c[3])>.0001
+  end
+  function A.new(names,profile)
+    local sorted={}; for _,name in ipairs(names) do sorted[#sorted+1]=name end; table.sort(sorted)
+    return setmetatable({names=sorted,profile=A.validProfile(profile,sorted) and profile or nil,integral={0,0}},A)
+  end
+  function A:reset(heading)
+    self.integral={0,0}; self.headingTarget=heading; self.previous=nil; self.mix=nil; self.goalKey=nil
+  end
+  function A:cancel()
+    self.job=nil; self:reset(nil)
+  end
+  function A:allocate(p,desired)
+    local u,group={},{}
+    local residual={desired[1],desired[2],desired[3]*p.yawWeight}
+    local columns={}
+    local scale=0
+    for i,ch in ipairs(p.channels) do
+      local b={ch.b[1],ch.b[2],ch.b[3]*p.yawWeight}
+      columns[i]=b; u[i]=0; group[ch.name]=0
+      scale=scale+b[1]^2+b[2]^2+b[3]^2
+    end
+    local ridge=math.max(1e-8,scale/#columns*.005)
+    for _=1,16 do
+      for i,ch in ipairs(p.channels) do
+        local b=columns[i]
+        local norm=b[1]^2+b[2]^2+b[3]^2+ridge
+        local gradient=b[1]*residual[1]+b[2]*residual[2]+b[3]*residual[3]-ridge*u[i]
+        local value=clamp(u[i]+gradient/norm,0,throttleLimit-group[ch.name]+u[i])
+        local change=value-u[i]
+        u[i]=value; group[ch.name]=group[ch.name]+change
+        for j=1,3 do residual[j]=residual[j]-b[j]*change end
+      end
+    end
+    local commands={}
+    for _,name in ipairs(self.names) do commands[name]={x=0,y=0,power=0} end
+    for i,ch in ipairs(p.channels) do
+      local out=commands[ch.name]
+      out.x=out.x+ch.x*u[i]; out.y=out.y+ch.y*u[i]; out.power=out.power+u[i]
+    end
+    for _,out in pairs(commands) do if out.power>1e-6 then out.x=out.x/out.power; out.y=out.y/out.power else out.x,out.y,out.power=0,0,0 end end
+    return commands,residual
+  end
+  function A:navigate(s,goal,p)
+    p=p or self.profile
+    if not p or not A.validSample(s) then return nil,false end
+    local key=goal.x..":"..goal.z
+    if self.goalKey~=key then self.integral={0,0}; self.goalKey=key end
+    self.headingTarget=self.headingTarget or s.heading
+    local dx,dz=goal.x-s.x,goal.z-s.z
+    local distance=math.sqrt(dx*dx+dz*dz)
+    local speed=math.sqrt(s.vx*s.vx+s.vz*s.vz)
+    local ex,ez=body(dx,dz,s.heading)
+    local vx,vz=body(s.vx,s.vz,s.heading)
+    local dt=self.previous and clamp(s.t-self.previous.t,.01,2) or .2
+    local ratio=clamp(s.pressure/math.max(.001,p.pressure),0,2)
+    local braking=math.sqrt(2*p.maxAccel*math.max(0,distance-.2-speed*p.delay))
+    local speedLimit=math.min(p.maxSpeed,braking)
+    local acceleration={}
+    for i,values in ipairs({{ex,vx},{ez,vz}}) do
+      if distance<2 and speed<.25 then self.integral[i]=clamp(self.integral[i]+values[1]*dt,-2,2) else self.integral[i]=0 end
+      local along=distance>.001 and values[1]/distance or 0
+      local a=p.gains[1]*values[1]-p.gains[3]*values[2]+p.gains[2]*self.integral[i]
+      if values[2]*along>speedLimit*math.abs(along) then
+        local limited=p.gains[3]*(speedLimit*along-values[2])
+        if along>=0 then a=math.min(a,limited) else a=math.max(a,limited) end
+      end
+      acceleration[i]=clamp(a,-p.maxAccel,p.maxAccel)+p.drag[i]*ratio*values[2]
+    end
+    local yaw=clamp(.3*wrap(self.headingTarget-s.heading)-1.2*s.yaw,-.12,.12)+p.drag[3]*ratio*s.yaw
+    local commands=self:allocate(p,{acceleration[1],acceleration[2],yaw})
+    self.previous=copy(s)
+    return commands,distance<.35 and speed<.08 and math.abs(s.yaw)<.03
+  end
+  function A:begin(s)
+    if not A.validSample(s) or s.pressure<=.001 then return false,"Fresh GPS, heading, yaw rate and air pressure are required." end
+    self:reset(s.heading)
+    self.job={phase="BASELINE",at=s.t,start=copy(s),previous=copy(s),origin={x=s.x,z=s.z},heading=s.heading,
+      index=1,channels={},dragNumerator={0,0,0},dragDenominator={0,0,0},pressure=0,samples=0,dt=0,retry=0}
+    return true
+  end
+  local function coast(job,a,b)
+    local acceleration,velocity=observation(a,b)
+    for i=1,3 do
+      if math.abs(velocity[i])>.08 then
+        job.dragNumerator[i]=job.dragNumerator[i]-acceleration[i]*velocity[i]
+        job.dragDenominator[i]=job.dragDenominator[i]+velocity[i]^2
+      end
+    end
+  end
+  local function drag(job)
+    local result={}
+    for i=1,3 do result[i]=job.dragDenominator[i]>.001 and clamp(job.dragNumerator[i]/job.dragDenominator[i],0,3) or 0 end
+    return result
+  end
+  function A:fit(job)
+    local p={version=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+.6}
+    local force,yaw=0,0
+    local extent={0,0,0,0}
+    for _,name in ipairs(self.names) do
+      local best={0,0,0,0}
+      for _,ch in ipairs(p.channels) do if ch.name==name then
+        force=force+ch.b[1]^2+ch.b[2]^2; yaw=yaw+ch.b[3]^2
+        best[1]=math.max(best[1],ch.b[1]); best[2]=math.max(best[2],-ch.b[1])
+        best[3]=math.max(best[3],ch.b[2]); best[4]=math.max(best[4],-ch.b[2])
+      end end
+      for i=1,4 do extent[i]=extent[i]+best[i]*throttleLimit end
+    end
+    if yaw<1e-7 or force<1e-5 then return nil,"No usable translation or yaw response; check fuel, nozzles and gimbal." end
+    p.yawWeight=clamp(math.sqrt(force/yaw)*.7,1,30)
+    p.maxAccel=math.min(.45,math.min(table.unpack(extent))*.35)
+    if p.maxAccel<.015 then return nil,"Insufficient measured thrust in all four directions." end
+    p.maxSpeed=math.min(.75,math.sqrt(4*p.maxAccel))
+    local frequency=math.min(.28,1/(6*p.delay),math.sqrt(p.maxAccel/3))
+    p.gains={frequency^2,frequency^2*.02,2.4*frequency}
+    for _,goal in ipairs({{p.maxAccel,0,0},{-p.maxAccel,0,0},{0,p.maxAccel,0},{0,-p.maxAccel,0},{0,0,.03},{0,0,-.03}}) do
+      local _,residual=self:allocate(p,goal)
+      local error=residual[1]^2+residual[2]^2+residual[3]^2
+      local magnitude=goal[1]^2+goal[2]^2+(goal[3]*p.yawWeight)^2
+      if error>magnitude*.2 then return nil,"Thruster layout cannot independently steer and counter yaw." end
+    end
+    return p
+  end
+  function A:calibrate(s)
+    local j=self.job
+    if not j then return nil,"Calibration is not running." end
+    if not A.validSample(s) or s.t<=j.previous.t or s.t-j.previous.t>2 then self.job=nil; return nil,"Calibration stopped: stale or invalid navigation readings." end
+    local dt=s.t-j.previous.t
+    j.dt=j.dt+dt; j.samples=j.samples+1; j.pressure=j.pressure+s.pressure
+    if (j.phase=="BASELINE" or j.phase=="COAST") and s.t-j.at>.6 then coast(j,j.previous,s) end
+    j.previous=copy(s)
+    if j.phase=="BASELINE" and s.t-j.at>=2 then j.phase="WARMUP"; j.at=s.t end
+    if j.phase=="WARMUP" and s.t-j.at>=.8 then j.phase="PULSE"; j.at=s.t; j.start=copy(s) end
+    if j.phase=="PULSE" and s.t-j.at>=2.4 then
+      local acceleration,velocity=observation(j.start,s)
+      local friction=drag(j)
+      local response={}
+      for i=1,3 do response[i]=(acceleration[i]+friction[i]*velocity[i])/testThrottle end
+      if response[1]^2+response[2]^2+response[3]^2<1e-6 then self.job=nil; return nil,"Thruster response too small; check fuel and obstruction, then retry." end
+      local direction=directions[(j.index-1)%4+1]
+      j.channels[j.index]={name=self.names[math.floor((j.index-1)/4)+1],x=direction[1],y=direction[2],b=response}
+      j.phase="COAST"; j.at=s.t
+    end
+    if j.phase=="COAST" and s.t-j.at>=1.8 then
+      j.index=j.index+1
+      if j.index>#self.names*4 then
+        local p,err=self:fit(j)
+        if not p then self.job=nil; return nil,err end
+        j.candidate=p; j.phase="VERIFY"; j.leg=1; j.at=s.t; j.stable=nil; j.legStart={x=s.x,z=s.z}; j.overshoot=0
+        j.goals={{x=j.origin.x+4,z=j.origin.z},{x=j.origin.x-4,z=j.origin.z},
+          {x=j.origin.x,z=j.origin.z+4},{x=j.origin.x,z=j.origin.z-4},{x=j.origin.x,z=j.origin.z}}
+        self:reset(j.heading)
+      else j.phase="WARMUP"; j.at=s.t end
+    end
+    if j.phase=="VERIFY" then
+      local goal=j.goals[j.leg]
+      local gx,gz=goal.x-j.legStart.x,goal.z-j.legStart.z
+      local length=math.sqrt(gx*gx+gz*gz)
+      if length>.01 then j.overshoot=math.max(j.overshoot,((s.x-goal.x)*gx+(s.z-goal.z)*gz)/length) end
+      local commands,arrived=self:navigate(s,goal,j.candidate)
+      j.stable=arrived and (j.stable or s.t) or nil
+      if j.stable and s.t-j.stable>=1.5 then
+        j.leg=j.leg+1; j.at=s.t; j.stable=nil; j.legStart={x=s.x,z=s.z}
+        if j.leg>#j.goals then
+          if j.overshoot>.5 then
+            if j.retry>=2 then self.job=nil; return nil,"Braking validation still overshoots; previous calibration kept." end
+            j.retry=j.retry+1; j.candidate.gains[1]=j.candidate.gains[1]*.7
+            j.candidate.gains[2]=j.candidate.gains[1]*.02
+            j.candidate.gains[3]=math.min(4,j.candidate.gains[3]*1.2)
+            j.candidate.maxSpeed=j.candidate.maxSpeed*.8
+            j.leg=1; j.overshoot=0; self:reset(j.heading)
+            return {},"Retuning braking; repeating all four direction tests."
+          end
+          j.candidate.validated=true
+          j.candidate.verification={overshoot=j.overshoot,passes=j.retry+1}
+          self.job=nil
+          return {},nil,j.candidate
+        end
+      elseif s.t-j.at>60 then
+        if j.retry>=2 then self.job=nil; return nil,"Automatic tuning did not converge; previous calibration kept." end
+        j.retry=j.retry+1
+        local speed=math.sqrt(s.vx*s.vx+s.vz*s.vz)
+        j.candidate.gains[1]=clamp(j.candidate.gains[1]*(speed>.12 and .7 or 1.25),.0001,.25)
+        j.candidate.gains[2]=j.candidate.gains[1]*.02
+        j.candidate.gains[3]=math.min(4,2.8*math.sqrt(j.candidate.gains[1]))
+        j.candidate.maxSpeed=j.candidate.maxSpeed*.85
+        j.leg=1; j.at=s.t; j.stable=nil; j.legStart={x=s.x,z=s.z}; j.overshoot=0; self:reset(j.heading)
+      end
+      return commands,("AUTO TEST %d/5  |  tune pass %d/3"):format(math.min(j.leg,5),j.retry+1)
+    end
+    local commands={}
+    if j.phase=="WARMUP" or j.phase=="PULSE" then
+      local direction=directions[(j.index-1)%4+1]
+      commands[self.names[math.floor((j.index-1)/4)+1]]={x=direction[1],y=direction[2],power=testThrottle}
+    end
+    return commands,("AUTO CAL %d/%d  %s"):format(math.min(j.index,#self.names*4),#self.names*4,j.phase)
+  end
+  return A
+end)()
+-- END AUTOPILOT CORE
+
 print("Discovering peripherals...")
 local monitor = peripheral.find("monitor")
 local directGpu, directDisplay, directWidth, directHeight, directGpuError
@@ -194,6 +439,29 @@ local burnerCommand, vectorX, vectorY, power = burner, 0, 0, 0
 local burnerSlewPerSecond = 6
 local calibrated = fs.exists("airship-calibrated")
 local running, manualBurner, burnerSweep, calibrationRunning = true, nil, nil, false
+local navNames={}; for name in pairs(thrusters) do navNames[#navNames+1]=name end; table.sort(navNames)
+local navController=Autopilot.new(navNames)
+local autopilotCommands, fullCalibration, autopilotNotice
+local autopilotNoticeColor=colors.orange
+local function saveAutopilotProfile(profile)
+  assert(Autopilot.validProfile(profile,navNames),"Invalid autopilot calibration")
+  local path="airship-autopilot.cfg"
+  local encoded=textutils.serialize(profile)
+  local file=assert(fs.open(path..".tmp","w"),"Cannot write autopilot calibration")
+  file.write(encoded); file.close()
+  if fs.exists(path..".bak") then fs.delete(path..".bak") end
+  local previous=fs.exists(path)
+  if previous then fs.move(path,path..".bak") end
+  local ok,err=pcall(fs.move,path..".tmp",path)
+  if not ok then if previous then fs.move(path..".bak",path) end; error(err) end
+end
+if fs.exists("airship-autopilot.cfg") then
+  local ok,profile=pcall(function()
+    local file=assert(fs.open("airship-autopilot.cfg","r")); local value=textutils.unserialize(file.readAll()); file.close(); return value
+  end)
+  if ok and Autopilot.validProfile(profile,navNames) then navController.profile=profile
+  else autopilotNotice="Saved autopilot profile is invalid or thrusters changed; run FULL AUTO CAL." end
+end
 local sweepConfirmAt
 local sweepSummary
 local sweepSummaryUntil
@@ -211,14 +479,18 @@ local pid = {
   horizontalX = {p=.035, i=.0005, d=.18, limit=.25, integral=0},
   horizontalZ = {p=.035, i=.0005, d=.18, limit=.25, integral=0}
 }
-local gainLimits = {{.005,.15}, {0,.01}, {0,.8}}
+local gainLimits = {{.0001,1}, {0,.05}, {0,4}}
 local function applyGainValues(values)
   for i, bounds in ipairs(gainLimits) do
-    if type(values[i]) ~= "number" or values[i] < bounds[1] or values[i] > bounds[2] then return false end
+    if type(values[i]) ~= "number" or values[i] ~= values[i] or values[i] < bounds[1] or values[i] > bounds[2] then return false end
   end
   pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d = values[1], values[2], values[3]
   pid.horizontalZ.p, pid.horizontalZ.i, pid.horizontalZ.d = values[1], values[2], values[3]
   pid.horizontalX.integral, pid.horizontalZ.integral = 0, 0
+  if navController.profile then
+    navController.profile.gains={values[1],values[2],values[3]}
+    navController:reset(shipHeading)
+  end
   return true
 end
 local function readGainFile()
@@ -235,6 +507,11 @@ local function readGainFile()
 end
 local function gainValues()
   return {pid.horizontalX.p, pid.horizontalX.i, pid.horizontalX.d}
+end
+local function saveGainFile(values)
+  if navController.profile then saveAutopilotProfile(navController.profile) end
+  local file=assert(fs.open("airship-pid.cfg","w"),"Cannot write PID settings")
+  file.write(table.concat(values," ")); file.close()
 end
 if fs.exists("airship-hover.cfg") then
   local file = fs.open("airship-hover.cfg", "r")
@@ -307,26 +584,44 @@ local function clearHoverMap()
     status.foreground = colors.red
   end
 end
-readGainFile()
+if not navController.profile then readGainFile() end
+if navController.profile then
+  applyGainValues(navController.profile.gains)
+  autopilotNotice="Full autopilot calibration loaded."
+  autopilotNoticeColor=colors.lime
+end
 local velocity = {x=0, y=0, z=0}
 local previousPosition, previousSample
 local sampleDt = .5
 local altitudeSensorHeight
 local altitudeSensorReady = false
 local lastGpsAt
+local pressureAt, headingAt, yawAt
+local function navigationSample()
+  local now=os.clock()
+  if not position or not lastGpsAt or now-lastGpsAt>2 or not pressureAt or now-pressureAt>2 or not headingAt or now-headingAt>2 or not yawAt or now-yawAt>2 then return nil end
+  return {t=now,x=position.x,z=position.z,vx=velocity.x,vz=velocity.z,heading=shipHeading,yaw=yawRate,pressure=altitudeSensorPressure}
+end
 
 local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 local function outputs(cooperative)
-  for _, thruster in pairs(thrusters) do
-    thruster.setVector(vectorX, vectorY)
+  for name, thruster in pairs(thrusters) do
+    local command=autopilotCommands and autopilotCommands[name]
+    local x,y,thrust=vectorX,vectorY,power
+    if autopilotCommands then x,y,thrust=command and command.x or 0,command and command.y or 0,command and command.power or 0 end
+    thruster.setVector(x, y)
     if cooperative then yieldComputer() end
-    thruster.setThrustNormalized(power)
+    command=autopilotCommands and autopilotCommands[name]
+    thrust=autopilotCommands and (command and command.power or 0) or power
+    thruster.setThrustNormalized(thrust)
     if cooperative then yieldComputer() end
   end
   redstone.setAnalogOutput("front", burner)
 end
 local function stop()
   calibrationRunning = false
+  autopilotNotice=nil
+  navController:cancel(); autopilotCommands,fullCalibration=nil,nil
   if burnerSweep then
     sweepSummary = ("Sweep canceled. Saved %d/11; skipped %d."):format(burnerSweep.saved, burnerSweep.skipped)
     sweepSummaryUntil = os.clock() + 15
@@ -349,6 +644,8 @@ local function requestProgramUpdate()
 end
 local function setFlightMode(nextMode)
   calibrationRunning = false
+  autopilotNotice=nil
+  navController:cancel(); autopilotCommands,fullCalibration=nil,nil
   manualBurner = nil
   burnerSweep = nil
   vectorX, vectorY, power, mode = 0, 0, 0, nextMode
@@ -368,7 +665,7 @@ local function locate()
     end)
     if ok and type(height) == "number" and height == height and math.abs(height) < math.huge then
       altitudeSensorHeight, altitudeSensorReady = height, true
-      if type(pressure) == "number" and pressure == pressure and math.abs(pressure) < math.huge then altitudeSensorPressure = pressure end
+      if type(pressure) == "number" and pressure == pressure and pressure >= 0 and math.abs(pressure) < math.huge then altitudeSensorPressure = pressure; pressureAt=os.clock() end
       if position then position.y = height end
       if type(verticalSpeed) == "number" and verticalSpeed == verticalSpeed and math.abs(verticalSpeed) < math.huge then velocity.y = verticalSpeed end
     end
@@ -376,14 +673,15 @@ local function locate()
   if navigationTable then
     local ok, heading = pcall(navigationTable.getHeadingRad)
     yieldComputer()
-    if ok and type(heading) == "number" and heading == heading and math.abs(heading) < math.huge then shipHeading = heading end
+    if ok and type(heading) == "number" and heading == heading and math.abs(heading) < math.huge then shipHeading = heading; headingAt=os.clock() end
   end
   if gimbalSensor then
     local ok, rates = pcall(gimbalSensor.getAngularRatesRad)
     yieldComputer()
-    if ok and type(rates) == "table" and type(rates[2]) == "number" then yawRate = rates[2] end
+    if ok and type(rates) == "table" and type(rates[2]) == "number" and rates[2]==rates[2] and math.abs(rates[2])<math.huge then yawRate = rates[2]; yawAt=os.clock() end
   end
   local x, y, z = gps.locate(.5, false)
+  now=os.clock()
   if x then
     if previousPosition and previousSample then
       sampleDt = clamp(now - previousSample, .01, 1.5)
@@ -409,18 +707,13 @@ local function locate()
         sweepSummaryUntil = os.clock() + 15
       end
       burnerSweep, manualBurner = nil, nil
+      if fullCalibration then autopilotNotice="GPS lost; full calibration stopped. Previous profile kept."; autopilotNoticeColor=colors.red
+      else autopilotNotice=nil end
+      navController:cancel(); autopilotCommands,fullCalibration=nil,nil; calibrationRunning=false
       mode = mode == "AUTOPILOT" and "GPS LOST - RE-ENGAGE" or "WAITING FOR GPS"
     end
   end
   return false
-end
-local function pidStep(controller, error, measuredVelocity, dt)
-  local integralLimit = controller.integralLimit or 20
-  local candidate = clamp(controller.integral + error * dt, -integralLimit, integralLimit)
-  local raw = controller.p * error + controller.i * candidate - controller.d * measuredVelocity
-  local output = clamp(raw, -controller.limit, controller.limit)
-  if raw == output or raw * error < 0 then controller.integral = candidate end
-  return output
 end
 local function updateFlight(gpsFresh)
   if not position then
@@ -442,24 +735,35 @@ local function updateFlight(gpsFresh)
       burner = math.floor(burnerCommand + .5)
     end
   end
-  if gpsFresh and mode == "AUTOPILOT" and target then
-    local dx, dz = target.x - position.x, target.z - position.z
-    if not shipHeading then
-      vectorX, vectorY, power = 0, 0, 0
-      mode = "HEADING SENSOR MISSING"
+  if fullCalibration then
+    vectorX,vectorY,power=0,0,0
+    if not gpsFresh then autopilotCommands={}; return end
+    local commands,message,completed=navController:calibrate(navigationSample())
+    autopilotCommands=commands or {}
+    if completed then
+      local saved,err=pcall(saveAutopilotProfile,completed)
+      if saved then navController.profile=completed; applyGainValues(completed.gains); autopilotNotice="FULL AUTO CAL saved; all four directions and return verified."; autopilotNoticeColor=colors.lime
+      else autopilotNotice="Calibration passed but could not save: "..tostring(err); autopilotNoticeColor=colors.red end
+    elseif not commands then autopilotNotice=message; autopilotNoticeColor=colors.red
+    else autopilotNotice=message; autopilotNoticeColor=colors.orange end
+    if completed or not commands then
+      fullCalibration,calibrationRunning=false,false
+      mode="HOLDING ALTITUDE"; autopilotCommands={}; navController:reset(shipHeading)
+    end
+    return
+  end
+  if (mode == "AUTOPILOT" or mode == "DESTINATION REACHED") and target then
+    vectorX,vectorY,power=0,0,0
+    if not gpsFresh then autopilotCommands={}; return end
+    local sample=navigationSample()
+    if not Autopilot.validSample(sample) then
+      autopilotCommands={}; mode="NAV LOST - RE-ENGAGE"; autopilotNotice="Fresh heading, yaw and pressure readings required; re-engage AUTO."
+      autopilotNoticeColor=colors.red
       return
     end
-    if math.abs(dx) < .5 and math.abs(dz) < .5 and math.abs(velocity.x) < .12 and math.abs(velocity.z) < .12 then
-      vectorX, vectorY, power, mode = 0, 0, 0, "DESTINATION REACHED"
-    else
-      -- Nozzle-vector direction is opposite the craft's thrust direction.
-      local c, s = math.cos(shipHeading), math.sin(shipHeading)
-      local localX, localZ = c * dx - s * dz, s * dx + c * dz
-      local localVX, localVZ = c * velocity.x - s * velocity.z, s * velocity.x + c * velocity.z
-      vectorX = -pidStep(pid.horizontalZ, localZ, localVZ, sampleDt)
-      vectorY = -pidStep(pid.horizontalX, localX, localVX, sampleDt)
-      power = clamp(math.sqrt(vectorX * vectorX + vectorY * vectorY) / .25 * .35, 0, .35)
-    end
+    local commands,arrived=navController:navigate(sample,target)
+    autopilotCommands=commands or {}
+    mode=arrived and "DESTINATION REACHED" or "AUTOPILOT"
   end
 end
 
@@ -532,6 +836,8 @@ local function finishBurnerSweep(message)
   status.foreground = message and colors.red or colors.lime
 end
 local function startBurnerSweep()
+  if calibrationRunning then status.text="Finish or cancel autopilot calibration first."; return end
+  autopilotNotice=nil
   if type(burnerSweep) == "table" then status.text = "Burner sweep is already running."; return end
   if mode == "STOPPED" then status.text = "Resume flight control before starting the sweep."; status.foreground = colors.red; return end
   if not position or not altitudeSensorReady or not altitudeSensorPressure then
@@ -678,8 +984,8 @@ local function renderDirectMonitor()
     txt(target and ("DESTINATION  X %.0f   Z %.0f"):format(target.x,target.z) or "NO DESTINATION SET",l.margin+14,detailY+math.floor(detailH*.82),detailFont,muted)
   elseif gpuTab == "CALIBRATION" then
     local titleSize=math.max(18,math.floor(h*.032))
-    txt("HOVER CALIBRATION BY BURNER LEVEL",l.margin,contentY,titleSize,ink,"bold")
-    txt("15  →  5",l.margin,contentY+titleSize+10,math.max(14,math.floor(h*.023)),muted)
+    txt("AUTOPILOT / BURNER CALIBRATION",l.margin,contentY,titleSize,ink,"bold")
+    if not fullCalibration then txt("15  →  5",l.margin,contentY+titleSize+10,math.max(14,math.floor(h*.023)),muted) end
     local barY=contentY+titleSize+math.max(34,math.floor(h*.07))
     local barGap=math.max(6,math.floor(w*.008)); local barW=math.floor((w-2*l.margin-10*barGap)/11)
     for i=0,10 do
@@ -691,7 +997,8 @@ local function renderDirectMonitor()
     end
     local saved=0; for _ in pairs(learnedHover) do saved=saved+1 end
     txt(("Saved points: %d     Burner: %d / 15     Vertical speed: %.2f"):format(saved,burner,velocity.y),l.margin,barY+math.floor(h*.11),math.max(15,math.floor(h*.025)),ink)
-    if burnerSweep then txt(("SWEEP LEVEL %d   SAVED %d/11   SKIPPED %d"):format(burnerSweep.level,burnerSweep.saved,burnerSweep.skipped),l.margin,barY+math.floor(h*.17),math.max(15,math.floor(h*.025)),{255,190,90},"bold")
+    if autopilotNotice then txt(autopilotNotice,l.margin,barY+math.floor(h*.17),math.max(12,math.floor(h*.019)),{255,190,90},"bold")
+    elseif burnerSweep then txt(("SWEEP LEVEL %d   SAVED %d/11   SKIPPED %d"):format(burnerSweep.level,burnerSweep.saved,burnerSweep.skipped),l.margin,barY+math.floor(h*.17),math.max(15,math.floor(h*.025)),{255,190,90},"bold")
     elseif sweepSummary then txt(sweepSummary,l.margin,barY+math.floor(h*.17),math.max(14,math.floor(h*.022)),{255,190,90})
     else txt("SWEEP requires two taps to confirm. Each settled level saves automatically.",l.margin,barY+math.floor(h*.17),math.max(14,math.floor(h*.022)),muted) end
     local detailY=barY+math.floor(h*.25); local detailH=l.buttonY-detailY-l.margin
@@ -752,14 +1059,39 @@ local function holdHere()
   end
 end
 local function engageAutopilot()
-  if calibrationRunning then status.text = "Wait for direction calibration to finish."; status.foreground = colors.orange; return end
-  if not navigationTable or not shipHeading then status.text = "Navigation table heading unavailable; autopilot cannot steer while ship rotates."; status.foreground = colors.red; return end
-  if not calibrated then status.text = "Run low-power direction calibration first."; status.foreground = colors.orange
-  elseif not position or not target then status.text = "GPS fix and destination are required."; status.foreground = colors.red
-  else setFlightMode("AUTOPILOT"); status.text = "Autopilot engaged"; status.foreground = colors.lime end
+  local function refuse(message)
+    autopilotNotice,autopilotNoticeColor=message,colors.orange
+    status.text,status.foreground=message,colors.orange
+  end
+  if calibrationRunning then refuse("Wait for calibration to finish, or cancel it first."); return end
+  local sample=navigationSample()
+  if not Autopilot.validSample(sample) then refuse("AUTO needs fresh GPS, heading, yaw rate and air pressure."); return end
+  if not navController.profile then refuse("Run FULL AUTO CAL in the calibration menu first.")
+  elseif not position or not target then refuse("GPS fix and destination are required.")
+  else setFlightMode("AUTOPILOT"); navController:reset(sample.heading); autopilotNotice=nil; status.text = "Autopilot engaged"; status.foreground = colors.lime end
+end
+local function startFullCalibration()
+  if calibrationRunning then status.text="Calibration is running; HOLD cancels it."; return end
+  if burnerSweep then status.text="Finish or stop the burner sweep first."; return end
+  if mode=="STOPPED" then
+    autopilotNotice,autopilotNoticeColor="Set a stable burner level before FULL AUTO CAL.",colors.orange
+    status.text,status.foreground=autopilotNotice,autopilotNoticeColor
+    return
+  end
+  local sample=navigationSample()
+  local ok,err=navController:begin(sample)
+  if not ok then autopilotNotice,autopilotNoticeColor=err,colors.red; status.text=err; status.foreground=colors.red; return end
+  manualBurner,burnerCommand=burner,burner
+  vectorX,vectorY,power,target=0,0,0,nil
+  autopilotCommands={}; fullCalibration,calibrationRunning=true,true
+  mode="FULL AUTO CAL"; autopilotNotice="Measuring thrusters, yaw and braking; HOLD cancels."
+  autopilotNoticeColor=colors.orange
+  status.text=autopilotNotice; status.foreground=colors.orange
 end
 local function testVector(x, y, label)
   calibrationRunning = false
+  autopilotNotice=nil
+  navController:cancel(); autopilotCommands,fullCalibration=nil,nil
   vectorX, vectorY, power, mode = -x, -y, .33, label
   status.text = "Low-power test: " .. label .. "  |  Press HOLD to stop"
   status.foreground = colors.orange
@@ -768,6 +1100,8 @@ local function confirmCalibration()
   if calibrationRunning then status.text = "Direction calibration is already running."; return end
   if mode == "STOPPED" then status.text = "Resume flight control before calibrating."; status.foreground = colors.red; return end
   if not position then status.text = "Wait for GPS before calibrating."; status.foreground = colors.red; return end
+  autopilotNotice=nil
+  navController:cancel(); autopilotCommands=nil
   calibrationRunning = true
   local tests = {{.2,0,"X-"},{-.2,0,"X+"},{0,-.2,"Y+"},{0,.2,"Y-"}}
   basalt.schedule(function()
@@ -792,8 +1126,8 @@ local function confirmCalibration()
     file.close()
     calibrationRunning, calibrated = false, true
     vectorX, vectorY, power, mode = 0, 0, 0, "HOLDING ALTITUDE"
-    if calibrateButton then calibrateButton.text, calibrateButton.background = "RECALIBRATE", colors.green end
-    if monitorCalibrateButton then monitorCalibrateButton.text, monitorCalibrateButton.background = "RECALIBRATE", colors.green end
+    if calibrateButton then calibrateButton.text, calibrateButton.background = "DIR CHECK", colors.green end
+    if monitorCalibrateButton then monitorCalibrateButton.text, monitorCalibrateButton.background = "DIR CHECK", colors.green end
     status.text = "Four low-power direction checks finished. Calibration saved."; status.foreground = colors.lime
   end)
 end
@@ -822,10 +1156,14 @@ local function createGpuButtons()
       {"STOP",nil,{125,48,56},stop},
     },l.buttonY)
   elseif gpuTab=="CALIBRATION" then
+    addGpuButton(math.floor(l.w*.5),l.contentY+math.max(18,math.floor(l.h*.032))+4,
+      math.floor(l.w*.5)-l.margin,math.max(24,math.floor(l.h*.045)),"FULL AUTO CAL",{46,107,130},startFullCalibration)
+    if fullCalibration then addGpuButton(l.margin,l.contentY+math.max(18,math.floor(l.h*.032))+4,
+      math.floor(l.w*.45)-l.margin,math.max(24,math.floor(l.h*.045)),"CANCEL AUTO CAL",{100,75,35},holdHere) end
     buttonRow({
       {"FWD",nil,{70,82,96},function() testVector(0,.2,"TEST Y+") end},
       {"BACK",nil,{70,82,96},function() testVector(0,-.2,"TEST Y-") end},
-      {calibrated and "RECAL" or "CAL",nil,calibrated and {55,130,90} or {130,78,31},confirmCalibration},
+      {"CHECK",nil,calibrated and {55,130,90} or {130,78,31},confirmCalibration},
       {"MANUAL",nil,{100,75,35},toggleManualBurner},
       {"LOCK",nil,{100,75,35},lockHoverLevel},
       {"SWEEP 15-5",nil,{130,78,31},startBurnerSweep},
@@ -868,8 +1206,8 @@ local function createMonitorUi()
   monitorFrame:addButton({x=25, y=7, width=8, height=1, text="STOP", background=colors.red}):onClick(stop)
   monitorFrame:addButton({x=2, y=8, width=12, height=1, text="TEST FWD", background=colors.gray}):onClick(function() testVector(0, .2, "TEST Y+") end)
   monitorFrame:addButton({x=15, y=8, width=12, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
-  monitorCalibrateButton = monitorFrame:addButton({x=2, y=9, width=14, height=1, text=calibrated and "RECALIBRATE" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
-  monitorFrame:addLabel({x=17, y=9, width=width-17, height=1, text="type on PC", foreground=colors.lightGray})
+  monitorCalibrateButton = monitorFrame:addButton({x=2, y=9, width=14, height=1, text="DIR CHECK", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
+  monitorFrame:addButton({x=18, y=9, width=20, height=1, text="FULL AUTO CAL", background=colors.blue}):onClick(startFullCalibration)
   monitorFrame:addButton({x=2, y=10, width=14, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
   monitorFrame:addButton({x=18, y=10, width=12, height=1, text="SAVED ALT", background=colors.blue}):onClick(selectAltitudePreset)
   monitorFrame:addButton({x=32, y=10, width=12, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
@@ -916,7 +1254,7 @@ if compact then
   frame:addButton({x=24, y=9, width=8, height=1, text="STOP", background=colors.red}):onClick(stop)
   frame:addButton({x=2, y=10, width=12, height=1, text="TEST FWD", background=colors.gray}):onClick(function() testVector(0, .2, "TEST Y+") end)
   frame:addButton({x=15, y=10, width=12, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
-  calibrateButton = frame:addButton({x=2, y=11, width=13, height=1, text=calibrated and "RECALIBRATE" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
+  calibrateButton = frame:addButton({x=2, y=11, width=13, height=1, text="DIR CHECK", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
   frame:addButton({x=16, y=11, width=10, height=1, text="SWEEP V", background=colors.orange}):onClick(startBurnerSweep)
   frame:addButton({x=27, y=11, width=12, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
   frame:addButton({x=40, y=11, width=10, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
@@ -926,16 +1264,19 @@ if compact then
   end
   showGainValues()
   local function setGains()
+    if calibrationRunning then status.text="Wait for calibration before changing gains."; return end
     local values = {}
     for token in pidInput.text:gmatch("%S+") do values[#values + 1] = tonumber(token) end
     if #values ~= #gainLimits or not applyGainValues(values) then status.text = "Invalid PID values"; status.foreground = colors.red; return end
-    local file = fs.open("airship-pid.cfg", "w"); file.write(table.concat(values, " ")); file.close()
+    local saved,err=pcall(saveGainFile,values)
+    if not saved then status.text="Could not save gains: "..tostring(err); status.foreground=colors.red; return end
     showGainValues(); frame:setFocused(nil); status.text = "PID gains saved"
   end
   pidInput:onEnter(setGains)
   frame:addButton({x=screenWidth-10, y=12, width=8, height=1, text="SET PID", background=colors.blue}):onClick(setGains)
   if directGpuError then compactGpuNotice = frame:addLabel({x=2, y=13, width=screenWidth-3, height=2, text="DirectGPU: " .. directGpuError, foreground=colors.orange}) end
   frame:addButton({x=screenWidth-12, y=15, width=10, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
+  frame:addButton({x=2, y=15, width=20, height=1, text="FULL AUTO CAL  R", background=colors.blue}):onClick(startFullCalibration)
 else
 frame:addLabel({x=2, y=1, width=30, height=1, text="AIRSHIP v" .. AIRSHIP_BUILD, foreground=colors.white, background=colors.blue})
 status = frame:addLabel({x=2, y=2, width=screenWidth-3, height=1, text="Starting controller...", foreground=colors.yellow})
@@ -1007,6 +1348,7 @@ showGainValues = function()
 end
 showGainValues()
 local function setGains()
+  if calibrationRunning then status.text="Wait for calibration before changing gains."; return end
   local values = {}
   for token in pidInput.text:gmatch("%S+") do
     local value = tonumber(token)
@@ -1016,8 +1358,8 @@ local function setGains()
   if #values ~= #gainLimits or not applyGainValues(values) then
     status.text = "Invalid gains. Check ranges in the setup guide."; status.foreground = colors.red; return
   end
-  local file = fs.open("airship-pid.cfg", "w")
-  file.write(table.concat(values, " ")); file.close()
+  local saved,err=pcall(saveGainFile,values)
+  if not saved then status.text="Could not save gains: "..tostring(err); status.foreground=colors.red; return end
   showGainValues()
   calibrationPage:setFocused(nil)
   status.text = "PID gains applied and saved."; status.foreground = colors.lime
@@ -1030,12 +1372,14 @@ local function calibrationButton(x, y, width, label, color, action)
 end
 calibrationButton(2, 6, 22, "Y+ / FWD", colors.gray, function() testVector(0, .2, "TEST Y+") end)
 calibrationButton(26, 6, 22, "Y- / BACK", colors.gray, function() testVector(0, -.2, "TEST Y-") end)
-calibrateButton = calibrationPage:addButton({x=2, y=9, width=14, height=1, text=calibrated and "RECALIBRATE" or "CALIBRATE", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
+calibrateButton = calibrationPage:addButton({x=2, y=9, width=14, height=1, text="DIR CHECK", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
 calibrationPage:addButton({x=18, y=9, width=12, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
 calibrationPage:addButton({x=32, y=9, width=15, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
 calibrationButton(2, 12, 16, "SWEEP 15-5", colors.orange, startBurnerSweep)
 calibrationPage:addLabel({x=20, y=12, width=13, height=1, text="Sweep saves stable heights", foreground=colors.lightGray})
 calibrationPage:addButton({x=35, y=12, width=14, height=1, text="CLEAR HEIGHTS", background=colors.red}):onClick(clearHoverMap)
+calibrationPage:addButton({x=2, y=15, width=20, height=1, text="FULL AUTO CAL  R", background=colors.blue}):onClick(startFullCalibration)
+calibrationPage:addButton({x=24, y=15, width=20, height=1, text="CANCEL AUTO CAL  H", background=colors.gray}):onClick(holdHere)
 end
 
 local function isFocused(input)
@@ -1084,6 +1428,7 @@ local function refresh()
   if mode == "MANUAL BURNER" then status.text, status.foreground = ("MANUAL BURNER %d/15 | UP/DOWN adjust, K locks"):format(manualBurner or 0), colors.orange
   elseif mode:match("^TEST ") then status.text, status.foreground = mode .. "  |  press HOLD to stop", colors.orange
   elseif mode == "STOPPED" then status.text, status.foreground = "OUTPUTS STOPPED", colors.red end
+  if autopilotNotice and mode~="STOPPED" then status.text,status.foreground=autopilotNotice,autopilotNoticeColor end
   if sweepSummary and os.clock() < sweepSummaryUntil then status.text, status.foreground = sweepSummary, colors.orange
   elseif sweepSummary then sweepSummary = nil end
   if monitorFrame then
@@ -1254,6 +1599,7 @@ local ok, err = pcall(function()
         elseif key == keys.a then engageAutopilot()
         elseif key == keys.s then stop()
         elseif key == keys.c then confirmCalibration()
+        elseif key == keys.r then startFullCalibration()
         end
       end
     end

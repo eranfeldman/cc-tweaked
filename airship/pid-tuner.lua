@@ -1,4 +1,10 @@
 -- Analyze relative autopilot runs and propose a small horizontal PID adjustment.
+if fs.exists("/airship-autopilot.cfg") then
+  print("The measured autopilot profile is active.")
+  print("Use CALIBRATION > FULL AUTO CAL (R) in airship.lua to retune and validate it.")
+  print("Manual overrides belong in the controller's SET PID field.")
+  return
+end
 local latest, latestTime
 for _, name in ipairs(fs.list("/")) do
   if name:match("^airship%-pid%-diagnostic.*%.csv$") then

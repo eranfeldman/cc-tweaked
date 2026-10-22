@@ -1,12 +1,10 @@
 # Airship Control
 
-CC:Tweaked controller for eight Create Propulsion liquid vector thrusters. It uses GPS for X/Z navigation, prefers Create: Avionics altitude-sensor readings for altitude hold, and controls burner power through the adjacent Create Redstone Link.
+CC:Tweaked controller for eight Create Propulsion liquid vector thrusters. GPS, Avionics heading, yaw rate, and air pressure drive the measured horizontal autopilot. Height uses saved burner amounts through the adjacent Create Redstone Link; there is no altitude PID.
 
 ## Install
 
-Controller v1.2.19 adds cooperative checkpoints during hub discovery, sensor reads, thruster commands, and each DirectGPU draw. These use queued events instead of adding a timer delay to every operation. Scheduled workers defer their first pass until Basalt's event loop starts. Startup prints its current phase so a remaining stall can be located. The external display retains its 20 Hz refresh target and has no click highlight.
-
-Controller v1.2.21 enables mouse input for new and reused DirectGPU displays and accepts normal CC monitor touches, native GPU mouse events, and the GPU polling queue. Monitor cell coordinates are mapped to the GPU panel, and duplicate reports from different input routes run the button action once. Each polling pass processes up to 32 queued events, yielding between calls.
+Controller v1.3.0 includes FULL AUTO CAL. The existing updater installs it without extra dependencies. GPU rendering retains cooperative yields, a 20 Hz refresh target, and native monitor/GPU click support.
 
 In the computer terminal, install Basalt 2.5, download the updated controller beside it, and run it:
 
@@ -20,7 +18,7 @@ airship.lua
 
 Or copy `airship.lua` into a file on the computer and run `airship.lua`. The computer needs wireless GPS access and all eight `liquid_vector_thruster` peripherals. They can be connected directly or exposed by the wired peripheral hub; their peripheral names and number suffixes can vary. The controller finds them by peripheral type and stops with a clear count error unless it sees all eight. For accurate altitude readout and burner calibration, connect a Create: Avionics **Altitude Sensor** to the computer through the peripheral network. Height control still comes from burner amounts. Its peripheral type is `altitude_sensor`; the app detects it automatically and falls back to GPS altitude if it is absent.
 
-Install `airship-updater.lua` beside the controller. It validates and installs the controller, both diagnostics, the PID tuner, and itself from one GitHub commit. It keeps each previous copy as a `.bak`, leaves calibration and PID files in place, then launches the controller. To bootstrap the rollback updater from an older install, run `wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship-updater.lua?bootstrap=1.3.1 airship-updater-new.lua` then `airship-updater-new.lua`. The temporary bootstrap file can be deleted afterward. To clean accumulated temporary airship files, run `wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/1b87c54b2a44dc96e6803c6bbb1b36deea6634ed/airship/airship-cleanup.lua airship-cleanup.lua` then `airship-cleanup.lua`; it preserves calibration, PID settings, hover map, CSV logs, and rollback backups. Height is controlled only by burner amounts from the saved calibration map.
+Install `airship-updater.lua` beside the controller. It validates and installs the controller, both diagnostics, the PID tuner, and itself from one GitHub commit. It keeps each previous copy as a `.bak`, leaves calibration and PID files in place, then launches the controller. To bootstrap the rollback updater from an older install, run `wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship-updater.lua?bootstrap=1.3.1 airship-updater-new.lua` then `airship-updater-new.lua`. The temporary bootstrap file can be deleted afterward. Height is controlled only by burner amounts from the saved calibration map.
 
 To check that CC:Tweaked sees it, run `lua` and enter:
 
@@ -36,18 +34,26 @@ On the full-size computer UI, use **FLIGHT** for navigation and **CALIBRATION** 
 
 Put a Create Redstone Link transmitter against the computer's **front** (monitor side). Put `create:analog_lever` in both frequency slots on this transmitter and the burner receiver, in the same order. The app sends analog power 0–15 out the computer's front face to control the burners.
 
-## Using the UI
+## Full autopilot calibration
 
-1. Type **G**, enter destination `X Z` (for example `200 -700`), and press Enter. Type **Y**, enter target altitude, and press Enter. Up/Down changes the altitude target by one block; **H** captures current height, **A** engages autopilot, and **S** cuts outputs.
-2. In a clear area, press **CALIBRATE** once, or **RECALIBRATE** if a calibration is already saved. It automatically pulses X−, X+, Y+, and Y− at low power, with short pauses, then saves calibration. Press **HOLD** to cancel. Watch the ship during the sequence: it sends the four commands but does not verify the resulting movement. The ship front is configured as **east**; X+ should move south and Y+ should move east. The individual **Left/Right/F/B** keys and forward/back buttons remain available for manual checks.
-3. **T** focuses the PID tuning field. Enter three space-separated values: horizontal `P I D`, then press Enter. These gains affect X/Z steering only.
-4. Choose a saved calibrated height and destination, then press **A**. The horizontal PID steers toward the X/Z destination and uses GPS movement to brake. Thruster throttle is capped at 35% for slower travel and stops when position and speed are close to the target. Height selection sends the burner amount recorded for that height; there is no altitude PID.
+Connect all eight `liquid_vector_thruster` devices, working wireless GPS, an Avionics `altitude_sensor`, `navigation_table`, and `gimbal_sensor`. The sensor and thrusters may be exposed through the supported wired/hub routes. Calibration measures the current ship and load; weight and thruster number positions do not need to be entered.
 
-## Initial PID values and tuning
+1. Get the ship airborne and level in an open area. Use a saved height or manual burner level to let it settle at your normal cruising height. Keep enough fuel for several minutes of automatic movement.
+2. Open **CALIBRATION** and press **FULL AUTO CAL**, or press **R** on the computer with no text box focused. It starts even if an old calibration already exists. No sweep is started. The current burner level is held throughout the procedure.
+3. Let it finish: 32 individual thruster/nozzle tests measure movement and turning, coasting samples estimate drag, and five automatic moves test X+, X-, Z+, Z-, then return. It chooses P/I/D gains from measured response and sample delay. Excessive overshoot or a failed arrival triggers retuning and a complete repeat of the direction tests, with up to three validation passes. The simulated test ships took about six minutes; actual time depends on the ship and server. Watch the displayed stage. **CANCEL AUTO CAL**, **HOLD**, or **H** cancels; **STOP/S** also cuts burner output.
+4. After **FULL AUTO CAL saved**, select a saved altitude, enter destination `X Z` on the computer, and press **AUTO/A**. The controller brakes using measured response, counters yaw through individual thruster commands, and keeps correcting position after arrival. The calibration finish leaves the burner at its starting level until you choose another height or flight mode.
 
-Starting horizontal values: `0.035 0.0005 0.18`. These are starting values, not empirically tuned for your ship. The calibration field and `airship-pid.cfg` use only horizontal P `0.005–0.15`, I `0–0.01`, D `0–0.8`. Older seven-number config files remain readable using their first three values.
+The measured model, tuned gains, pressure reference, and verification results are saved in `airship-autopilot.cfg` and loaded after restart. A failed or canceled run keeps the last working profile. Changed peripheral names invalidate the profile. Recalibrate after changing mass/cargo, fuel type, thruster placement, or propulsion settings. Calibration currently models horizontal movement and yaw; the ship should remain level. The optional **DIR CHECK/C** button only sends the old four wiring-check pulses and does not replace FULL AUTO CAL.
 
-Test in a clear area with short moves. Burner output ramps at no more than 6 redstone levels per second. For horizontal overshoot, run `pid-tuner.lua` after the diagnostic and confirm or reject its suggested P/D change. Height tuning is done by recording stable burner amounts, not PID gains.
+### Air pressure
+
+Calibration measures drag at its current pressure. Autopilot scales that learned drag estimate with the live pressure reading and actively brakes instead of relying on coasting to stop. Both checked pack configs have `useAtmosphericPressure = false`, so this controller does not apply an invented inverse-pressure thrust boost. If the server changes that setting, or you fly under substantially different conditions, recalibrate at the intended cruise height. Pressure compensation is a learned approximation, not a guarantee across every altitude.
+
+### Controls and manual gains
+
+**G** focuses destination entry, **Y** focuses height entry, **P** cycles saved heights, **A** engages autopilot, **H** holds/cancels calibration, and **S** cuts outputs. **Esc** clears text focus. Height remains controlled by the burner map; FULL AUTO CAL does not generate or change that map. Run the separate sweep only when you need new saved heights.
+
+FULL AUTO CAL chooses P, I, and D automatically. Manual **SET PID** overrides are saved into the active profile; use the displayed measured gains as the starting point. Accepted ranges are P `0.0001–1`, I `0–0.05`, D `0–4`. Re-running full calibration replaces manual overrides with newly measured and tested gains. The older `airship-pid.cfg` applies only before a measured profile exists; the standalone PID tuner is for the legacy controller and directs measured-profile users back to FULL AUTO CAL.
 
 ## Manual burner calibration
 
@@ -55,9 +61,11 @@ Press **M** or **MANUAL M** to hold a fixed burner signal. **Up/Down** changes t
 
 Press **M** again to leave manual mode; burner output follows the selected saved height. **P** or **SAVED ALT** cycles through calibrated altitudes, sorted low to high. If no calibration points are saved, automatic height selection has no mapping; use manual burner control until you calibrate. The sweep covers signals 15 through 5; it does not test 0–4.
 
-The local UI refreshes at 20 Hz. Avionics and wired hub control calls run at 5 Hz to keep the computer responsive; height, pressure, heading, and gimbal yaw rate are used for display and burner calibration, and height does not feed a PID. GPS calls use a 0.1-second timeout, horizontal navigation updates on fresh GPS fixes, and outputs are cut after 0.5 seconds without GPS. Basalt 2.5 requires HTTP access if you download it with `wget`; the app and `basalt.lua` must be in the same folder. GPS and navigation-table heading are required for X/Z autopilot navigation. If GPS is lost during autopilot, outputs are cut and you must re-engage after the fix returns. The controller does not check obstacles or handle landing. Horizontal PID defaults are not yet flight-tested.
+The local UI targets 20 Hz. Avionics and wired control run in a separate cooperative loop with a 0.2-second delay between passes; actual sample timing includes GPS and peripheral latency. GPS uses a 0.5-second timeout and loss for over two seconds stops navigation. Autopilot also requires fresh heading, yaw, and pressure readings and must be re-engaged after navigation data is lost. The controller does not detect obstacles or land the ship. Successful simulated checks do not replace testing the actual craft.
 
-## Collect altitude tuning data
+## Legacy diagnostic script
+
+FULL AUTO CAL above is the current calibration and tuning path. The standalone diagnostic below runs the older uniform-thruster steering model, not the measured mixer, so its results do not validate the new autopilot. Keep it for inspecting legacy behavior and producing logs.
 
 In a large, obstacle-free area, stop the controller with **Ctrl+T**, then install and start the diagnostic:
 

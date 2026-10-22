@@ -125,6 +125,18 @@ do
   assert(ok, err)
   assert(counts() == 16, "Every thruster must receive both commands")
 end
+do
+  local env, run = fixture()
+  local powers={}
+  env.thrusters={t0={setVector=function() end,setThrustNormalized=function(value) powers[#powers+1]=value end}}
+  env.redstone={setAnalogOutput=function() end}
+  env.autopilotCommands={t0={x=.2,y=0,power=.3}}
+  env.power=.3
+  local outputs=assert(source:match("(local function outputs%b()%s*.-)\nlocal function stop"))
+  local send=assert(load(helper.."\n"..outputs.."\nreturn outputs","@cancel-output","t",env))()
+  assert(run(function() send(true) end,function() env.autopilotCommands=nil; env.power=0 end))
+  assert(#powers==1 and powers[1]==0,"A canceled output pass must not restore stale thruster power")
+end
 local layout = assert(source:match("(local function gpuLayout%(%)%s*.-)\nlocal function addGpuButton"))
 local renderer = assert(source:match("(local function renderDirectMonitor%(%)%s*.-)\nlocal monitorStatus"))
 local function renderFixture(tab)
@@ -146,6 +158,26 @@ for _, tab in ipairs({"FLIGHT", "CALIBRATION", "HEIGHTS"}) do
   assert(ok, err)
   local calls, presented = counts()
   assert(calls > 5 and presented == 1, "Only a complete frame should be presented")
+end
+
+do
+  local env=fixture()
+  local started,canceled=false,false
+  env.directWidth,env.directHeight,env.gpuTab=656,492,"CALIBRATION"
+  env.startFullCalibration=function() started=true end
+  env.holdHere=function() canceled=true end
+  local add=assert(source:match("(local function addGpuButton%b()%s*.-)\nlocal function renderDirectMonitor"))
+  local menu=assert(source:match("(local function createGpuButtons%(%)%s*.-)\ncreateGpuButtons%(%)"))
+  local build=assert(load(layout.."\n"..add.."\n"..menu.."\nreturn createGpuButtons","@calibration-menu","t",env))()
+  build()
+  for _,button in ipairs(env.gpuButtons) do
+    assert(button.x>=0 and button.y>=0 and button.x+button.w<=656 and button.y+button.h<=492,"Calibration control does not fit 4x3 monitor")
+    if button.label=="FULL AUTO CAL" then button.action() end
+  end
+  assert(started,"Full calibration button is missing from the monitor menu")
+  env.fullCalibration=true; build()
+  for _,button in ipairs(env.gpuButtons) do if button.label=="CANCEL AUTO CAL" then button.action() end end
+  assert(canceled,"Running calibration must have a monitor cancel control")
 end
 
 do
