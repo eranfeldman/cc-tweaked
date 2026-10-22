@@ -4,19 +4,30 @@ local source=file:read("*a"):gsub("\r\n","\n"); file:close()
 local core=assert(source:match("%-%- BEGIN AUTOPILOT CORE\n(.-)\n%-%- END AUTOPILOT CORE"))
 local A=assert(load(core.."\nreturn Autopilot","@autopilot-core"))()
 local names={"t0","t1","t2","t3","t4","t5","t6","t7"}
+do
+  local up={.3,math.sqrt(1-.3^2-.2^2),.2}
+  local rates,gravity={},{}
+  for i=1,3 do rates[i]=up[i]*.1; gravity[i]=-up[i]*9.81 end
+  assert(math.abs(A.headingRate(rates,gravity)-.1)<1e-9,"Tilt must not contaminate measured heading rate")
+  assert(A.headingRate({0,.12,0},nil)==.12,"Older sensors must retain body-rate fallback")
+  assert(A.headingRate({0,.1,0},{0,0,-9.81})==nil,"A vertical bow has no usable horizontal heading")
+  print("PASS: gravity-corrected gimbal heading rate and unavailable-gravity fallback")
+end
 local mounts={
   {-6,-6,0,-1},{-6,-6,-1,0},{6,-6,0,-1},{6,-6,1,0},
   {-6,6,0,1},{-6,6,-1,0},{6,6,0,1},{6,6,1,0},
 }
-local function plant(mass,period,noise)
-  local p={t=0,x=0,z=0,vx=0,vz=0,heading=.4,yaw=0,pressure=.85,period=period,noise=noise or 0,filteredX=0,filteredZ=0,actuators={}}
+local function plant(mass,period,noise,uneven)
+  local p={t=0,x=0,z=0,vx=0,vz=0,heading=.4,yaw=0,pressure=.85,period=period,noise=noise or 0,uneven=uneven,filteredX=0,filteredZ=0,rock=0,rockRate=0,maxRock=0,actuators={}}
+  function p:gpsX() return self.x+2*math.sin(self.rock)+self.noise*math.sin(self.t*3.7) end
+  function p:gpsZ() return self.z-self.rock+self.noise*math.sin(self.t*4.1) end
   for _,name in ipairs(names) do p.actuators[name]={x=0,y=0,power=0} end
   function p:sample()
-    return {t=self.t,x=self.x+self.noise*math.sin(self.t*3.7),z=self.z+self.noise*math.sin(self.t*4.1),vx=self.filteredX,vz=self.filteredZ,
+    return {t=self.t,x=self:gpsX(),z=self:gpsZ(),vx=self.filteredX,vz=self.filteredZ,
       heading=self.heading,yaw=self.yaw+self.noise*.1*math.sin(self.t*.6),pressure=self.pressure}
   end
   function p:advance(commands)
-    local oldX,oldZ=self.x+self.noise*math.sin(self.t*3.7),self.z+self.noise*math.sin(self.t*4.1)
+    local oldX,oldZ=self:gpsX(),self:gpsZ()
     local count=math.ceil(self.period/.025)
     local dt=self.period/count
     for _=1,count do
@@ -34,26 +45,31 @@ local function plant(mass,period,noise)
         local fx=(r[3]-r[4]*a.x*.57735)*a.power*1.5/mass/normalization
         local fz=(r[4]+r[3]*a.x*.57735)*a.power*1.5/mass/normalization
         ax,az=ax+fx,az+fz
-        ayaw=ayaw+(r[2]*fx-r[1]*fz)/40
+        ayaw=ayaw+((r[2]-(uneven and 1.4 or 0))*fx-(r[1]-(uneven and -.9 or 0))*fz)/40
       end
       local c,s=math.cos(self.heading),math.sin(self.heading)
-      self.vx=self.vx+(c*ax+s*az-.18*self.pressure/.85*self.vx)*dt
-      self.vz=self.vz+(-s*ax+c*az-.18*self.pressure/.85*self.vz)*dt
-      self.yaw=self.yaw+(ayaw-.25*self.pressure/.85*self.yaw)*dt
+      if uneven then
+        self.rockRate=self.rockRate+(.4*(ax-az)-2*self.rock-.45*self.rockRate)*dt
+        self.rock=self.rock+self.rockRate*dt; self.maxRock=math.max(self.maxRock,math.abs(self.rock))
+        ax,az=ax*math.cos(self.rock),az*math.cos(self.rock)
+      end
+      self.vx=self.vx+(c*ax+s*az-.18*self.pressure/.85*self.vx+(uneven and .012 or 0))*dt
+      self.vz=self.vz+(-s*ax+c*az-.18*self.pressure/.85*self.vz+(uneven and -.008 or 0))*dt
+      self.yaw=self.yaw+(ayaw-.25*self.pressure/.85*self.yaw+(uneven and .0015 or 0))*dt
       self.heading=self.heading+self.yaw*dt
       self.x,self.z=self.x+self.vx*dt,self.z+self.vz*dt
       self.t=self.t+dt
     end
-    self.filteredX=.5*self.filteredX+.5*(self.x+self.noise*math.sin(self.t*3.7)-oldX)/self.period
-    self.filteredZ=.5*self.filteredZ+.5*(self.z+self.noise*math.sin(self.t*4.1)-oldZ)/self.period
+    self.filteredX=.5*self.filteredX+.5*(self:gpsX()-oldX)/self.period
+    self.filteredZ=.5*self.filteredZ+.5*(self:gpsZ()-oldZ)/self.period
   end
   return p
 end
 
 local profiles={}
-local scenarios={{1,.2,0},{1.8,.35,0},{1.4,.3,.01}}
+local scenarios={{1,.2,0},{1.8,.35,0},{1.4,.3,.01},{1.4,.3,.18,true}}
 for _,scenario in ipairs(scenarios) do
-  local p=plant(scenario[1],scenario[2],scenario[3])
+  local p=plant(table.unpack(scenario))
   local controller=A.new(names)
   assert(controller:begin(p:sample()))
   local commands={}
@@ -69,6 +85,11 @@ for _,scenario in ipairs(scenarios) do
   assert(A.validProfile(completed,names),"Calibration saved an invalid profile")
   assert(completed.verification.overshoot<=.5,"An overshooting calibration was accepted")
   assert(#completed.channels==32,"Not all eight thrusters and four nozzle directions were surveyed")
+  if scenario[4] then
+    assert(p.maxRock>.005,"Uneven plant must actually rock under thrust")
+    assert(math.abs(completed.drag[1]-.18)<.08 and math.abs(completed.drag[2]-.18)<.08,"Steady imbalance must not be mistaken for drag")
+    print(("PASS: displaced COM, persistent force/torque, thrust-induced rocking %.3frad and GPS wobble"):format(p.maxRock))
+  end
   profiles[#profiles+1]=completed
   print(("PASS: full calibration mass %.1f, sample %.2fs, duration %.1fs, peak overshoot %.3f"):format(scenario[1],scenario[2],p.t,completed.verification.overshoot))
 end
@@ -85,7 +106,7 @@ do
   j.legStart={x=0,z=-4}
   controller.navigate=function() return {},false end
   local completed
-  for i=1,20 do
+  for i=1,35 do
     s.t=i*.2; s.x=(i%2==0) and .45 or -.45; s.z=0; s.vx=.05
     local commands,message
     commands,message,completed=controller:calibrate(s)
@@ -106,6 +127,18 @@ do
     moving:calibrate(s)
   end
   assert(moving.job and moving.job.stable==nil,"Large raw motion must never pass filtered settling")
+  moving=A.new(names,profiles[1])
+  s={t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
+  assert(moving:begin(s))
+  j=moving.job
+  j.phase,j.candidate,j.leg,j.overshoot="VERIFY",candidate,1,0
+  j.goals={{x=0,z=0}}; j.legStart={x=-4,z=0}
+  moving.navigate=function() return {},false end
+  for i=1,15 do
+    s.t=i*.2; s.x=-.6+s.t*.2; s.vx=.2
+    local _,_,saved=moving:calibrate(s)
+    assert(not saved,"Sustained drift through the destination must not pass calibration")
+  end
   print("PASS: calibration validation tolerates bounded rocking while rejecting large movement")
 end
 
@@ -131,6 +164,7 @@ do
   assert(controller:begin(s))
   local j=controller.job
   j.phase,j.candidate,j.leg,j.stable,j.overshoot="VERIFY",candidate,5,0,1
+  j.verifyWindow={{t=-2,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}}
   j.goals={{x=4,z=0},{x=-4,z=0},{x=0,z=4},{x=0,z=-4},{x=0,z=0}}
   j.legStart={x=0,z=-4}
   controller.navigate=function() return {},true end
@@ -139,6 +173,7 @@ do
   local commands,message=controller:calibrate(s)
   assert(commands and message:match("Retuning") and candidate.gains[1]<p and not candidate.validated)
   j.retry,j.leg,j.stable,j.overshoot=2,5,2,1
+  j.verifyWindow={{t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}}
   s.t=4
   commands,message=controller:calibrate(s)
   assert(not commands and message:match("overshoots") and controller.profile==old,"Excessive overshoot must never replace the working profile")
@@ -197,7 +232,7 @@ do
   local old=profiles[1]
   local controller=A.new(names,old)
   assert(controller:begin(p:sample()))
-  for _=1,100 do
+  for _=1,2500 do
     p.t=p.t+.2
     local commands,message=controller:calibrate(p:sample())
     if not commands then

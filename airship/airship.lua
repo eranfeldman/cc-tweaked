@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.3.1"
+local AIRSHIP_BUILD = "1.3.2"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -32,10 +32,39 @@ local Autopilot = (function()
     local vx,vz=body((a.vx+b.vx)/2,(a.vz+b.vz)/2,h)
     return {ax,az,(b.yaw-a.yaw)/dt},{vx,vz,(a.yaw+b.yaw)/2}
   end
+  local function window(samples)
+    local n,t,tt,h=0,0,0,0
+    local v,tv={0,0,0},{0,0,0}
+    local x,z,tx,tz=0,0,0,0
+    local first=samples[1]
+    for _,s in ipairs(samples) do
+      local elapsed=s.t-first.t
+      n=n+1; t=t+elapsed; tt=tt+elapsed^2; h=h+wrap(s.heading-first.heading)
+      x=x+s.x; z=z+s.z; tx=tx+elapsed*s.x; tz=tz+elapsed*s.z
+      for i,value in ipairs({s.vx,s.vz,s.yaw}) do v[i]=v[i]+value; tv[i]=tv[i]+elapsed*value end
+    end
+    local a={}
+    for i=1,3 do a[i]=(tv[i]-t*v[i]/n)/math.max(.0001,tt-t*t/n); v[i]=v[i]/n end
+    local heading=first.heading+h/n
+    a[1],a[2]=body(a[1],a[2],heading); v[1],v[2]=body(v[1],v[2],heading)
+    local variance=math.max(.0001,tt-t*t/n)
+    return {a=a,v=v,x=x/n,z=z/n,vx=(tx-t*x/n)/variance,vz=(tz-t*z/n)/variance,yaw=v[3],span=samples[n].t-first.t}
+  end
   function A.validSample(s)
     if type(s)~="table" then return false end
     for _,key in ipairs({"t","x","z","vx","vz","heading","yaw","pressure"}) do if not finite(s[key]) then return false end end
     return s.pressure>=0
+  end
+  function A.headingRate(rates,gravity)
+    if type(rates)~="table" or not finite(rates[2]) then return nil end
+    if type(gravity)~="table" or not finite(rates[1]) then return rates[2] end
+    for i=1,3 do if not finite(gravity[i]) then return rates[2] end end
+    local length=math.sqrt(gravity[1]^2+gravity[2]^2+gravity[3]^2)
+    if length<.001 then return rates[2] end
+    local ux,uy,uz=-gravity[1]/length,-gravity[2]/length,-gravity[3]/length
+    -- Heading is the projected local +Z direction; body Y rate alone mixes tilt into yaw.
+    if 1-uz*uz<.1 then return nil end
+    return (rates[1]*ux+rates[2]*uy)/(1-uz*uz)
   end
   function A.validProfile(p,names)
     if type(p)~="table" or p.version~=1 or p.validated~=true or type(p.names)~="table" or #p.names~=#names or type(p.channels)~="table" or #p.channels~=#names*4 then return false end
@@ -64,6 +93,7 @@ local Autopilot = (function()
   end
   function A:reset(heading)
     self.integral={0,0}; self.headingTarget=heading; self.previous=nil; self.mix=nil; self.goalKey=nil
+    self.trim={0,0,0}; self.motion=nil; self.applied=nil; self.track={}
   end
   function A:cancel()
     self.job=nil; self:reset(nil)
@@ -105,13 +135,33 @@ local Autopilot = (function()
     local key=goal.x..":"..goal.z
     if self.goalKey~=key then self.integral={0,0}; self.goalKey=key end
     self.headingTarget=self.headingTarget or s.heading
-    local dx,dz=goal.x-s.x,goal.z-s.z
-    local distance=math.sqrt(dx*dx+dz*dz)
-    local speed=math.sqrt(s.vx*s.vx+s.vz*s.vz)
-    local ex,ez=body(dx,dz,s.heading)
-    local vx,vz=body(s.vx,s.vz,s.heading)
     local dt=self.previous and clamp(s.t-self.previous.t,.01,2) or .2
     local ratio=clamp(s.pressure/math.max(.001,p.pressure),0,2)
+    -- Learn persistent drift/torque instead of asking a tiny position integral to balance the ship.
+    self.trim=self.trim or {0,0,0}
+    if self.previous and self.applied then
+      local a,v=observation(self.previous,s)
+      local alpha=1-math.exp(-dt/8)
+      for i=1,3 do
+        local limit=i==3 and .05 or p.maxAccel*.6
+        self.trim[i]=clamp(self.trim[i]+alpha*(a[i]+p.drag[i]*ratio*v[i]-self.applied[i]-self.trim[i]),-limit,limit)
+      end
+    end
+    local f=self.motion or copy(s)
+    local alpha=1-math.exp(-dt/.6)
+    for _,k in ipairs({"x","z","vx","vz","yaw"}) do f[k]=f[k]+alpha*(s[k]-f[k]) end
+    self.track=self.track or {}
+    self.track[#self.track+1]=copy(s)
+    while #self.track>2 and s.t-self.track[1].t>2.4 do table.remove(self.track,1) end
+    if #self.track>2 then
+      local trend=window(self.track)
+      f.vx,f.vz=trend.vx,trend.vz
+    end
+    self.motion=f
+    local dx,dz=goal.x-f.x,goal.z-f.z
+    local distance,speed=math.sqrt(dx*dx+dz*dz),math.sqrt(f.vx^2+f.vz^2)
+    local ex,ez=body(dx,dz,s.heading)
+    local vx,vz=body(f.vx,f.vz,s.heading)
     local braking=math.sqrt(2*p.maxAccel*math.max(0,distance-.2-speed*p.delay))
     local speedLimit=math.min(p.maxSpeed,braking)
     local acceleration={}
@@ -126,33 +176,42 @@ local Autopilot = (function()
       acceleration[i]=clamp(a,-p.maxAccel,p.maxAccel)+p.drag[i]*ratio*values[2]
     end
     local yaw=clamp(.3*wrap(self.headingTarget-s.heading)-1.2*s.yaw,-.12,.12)+p.drag[3]*ratio*s.yaw
-    local commands=self:allocate(p,{acceleration[1],acceleration[2],yaw})
+    local desired={acceleration[1]-self.trim[1],acceleration[2]-self.trim[2],yaw-self.trim[3]}
+    local commands,residual=self:allocate(p,desired)
+    self.applied={desired[1]-(residual and residual[1] or 0),desired[2]-(residual and residual[2] or 0),desired[3]-(residual and residual[3]/p.yawWeight or 0)}
     self.previous=copy(s)
     return commands,distance<.35 and speed<.08 and math.abs(s.yaw)<.03
   end
   function A:begin(s)
     if not A.validSample(s) or s.pressure<=.001 then return false,"Fresh GPS, heading, yaw rate and air pressure are required." end
     self:reset(s.heading)
-    self.job={phase="BASELINE",at=s.t,start=copy(s),previous=copy(s),origin={x=s.x,z=s.z},heading=s.heading,
-      index=1,channels={},dragNumerator={0,0,0},dragDenominator={0,0,0},pressure=0,samples=0,dt=0,retry=0}
+    self.job={phase="BASELINE",at=s.t,previous=copy(s),origin={x=s.x,z=s.z},heading=s.heading,
+      index=1,channels={},measurements={},window={copy(s)},coasts={},pressure=0,samples=0,dt=0,retry=0}
     return true
-  end
-  local function coast(job,a,b)
-    local acceleration,velocity=observation(a,b)
-    for i=1,3 do
-      if math.abs(velocity[i])>.08 then
-        job.dragNumerator[i]=job.dragNumerator[i]-acceleration[i]*velocity[i]
-        job.dragDenominator[i]=job.dragDenominator[i]+velocity[i]^2
-      end
-    end
   end
   local function drag(job)
     local result={}
-    for i=1,3 do result[i]=job.dragDenominator[i]>.001 and clamp(job.dragNumerator[i]/job.dragDenominator[i],0,3) or 0 end
+    for i=1,3 do
+      local v,a,vv,av,n=0,0,0,0,#job.coasts
+      for _,c in ipairs(job.coasts) do v=v+c.v[i]; a=a+c.a[i]; vv=vv+c.v[i]^2; av=av+c.v[i]*c.a[i] end
+      local variance=vv-v*v/math.max(1,n)
+      result[i]=variance>.001 and clamp(-(av-a*v/n)/variance,0,3) or 0
+    end
     return result
   end
   function A:fit(job)
-    local p={version=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+.6}
+    local p={version=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8}
+    for index,m in ipairs(job.measurements) do
+      local response={}
+      for i=1,3 do
+        local before=m.before.a[i]+p.drag[i]*m.before.v[i]
+        local after=m.after.a[i]+p.drag[i]*m.after.v[i]
+        response[i]=(m.pulse.a[i]+p.drag[i]*m.pulse.v[i]-(before+after)/2)/testThrottle
+      end
+      if response[1]^2+response[2]^2+response[3]^2<1e-6 then return nil,"Thruster response too small; check fuel and obstruction, then retry." end
+      local d=directions[(index-1)%4+1]
+      p.channels[index]={name=self.names[math.floor((index-1)/4)+1],x=d[1],y=d[2],b=response}
+    end
     local force,yaw=0,0
     local extent={0,0,0,0}
     for _,name in ipairs(self.names) do
@@ -185,26 +244,24 @@ local Autopilot = (function()
     if not A.validSample(s) or s.t<=j.previous.t or s.t-j.previous.t>2 then self.job=nil; return nil,"Calibration stopped: stale or invalid navigation readings." end
     local dt=s.t-j.previous.t
     j.dt=j.dt+dt; j.samples=j.samples+1; j.pressure=j.pressure+s.pressure
-    if (j.phase=="BASELINE" or j.phase=="COAST") and s.t-j.at>.6 then coast(j,j.previous,s) end
     j.previous=copy(s)
-    if j.phase=="BASELINE" and s.t-j.at>=2 then j.phase="WARMUP"; j.at=s.t end
-    if j.phase=="WARMUP" and s.t-j.at>=.8 then j.phase="PULSE"; j.at=s.t; j.start=copy(s) end
-    if j.phase=="PULSE" and s.t-j.at>=2.4 then
-      local acceleration,velocity=observation(j.start,s)
-      local friction=drag(j)
-      local response={}
-      for i=1,3 do response[i]=(acceleration[i]+friction[i]*velocity[i])/testThrottle end
-      if response[1]^2+response[2]^2+response[3]^2<1e-6 then self.job=nil; return nil,"Thruster response too small; check fuel and obstruction, then retry." end
-      local direction=directions[(j.index-1)%4+1]
-      j.channels[j.index]={name=self.names[math.floor((j.index-1)/4)+1],x=direction[1],y=direction[2],b=response}
-      j.phase="COAST"; j.at=s.t
+    if j.phase=="BASELINE" or j.phase=="PULSE" or (j.phase=="COAST" and s.t-j.at>=1) then j.window[#j.window+1]=copy(s) end
+    if j.phase=="BASELINE" and s.t-j.at>=4 then
+      j.before=window(j.window); j.coasts[#j.coasts+1]=j.before; j.phase="WARMUP"; j.at=s.t
     end
-    if j.phase=="COAST" and s.t-j.at>=1.8 then
+    if j.phase=="WARMUP" and s.t-j.at>=1 then j.phase="PULSE"; j.at=s.t; j.window={copy(s)} end
+    if j.phase=="PULSE" and s.t-j.at>=6 then
+      j.pulse=window(j.window); j.window={}; j.phase="COAST"; j.at=s.t
+    end
+    if j.phase=="COAST" and s.t-j.at>=5 then
+      local after=window(j.window)
+      j.coasts[#j.coasts+1]=after
+      j.measurements[j.index]={pulse=j.pulse,before=j.before,after=after}; j.before=after
       j.index=j.index+1
       if j.index>#self.names*4 then
         local p,err=self:fit(j)
         if not p then self.job=nil; return nil,err end
-        j.candidate=p; j.phase="VERIFY"; j.leg=1; j.at=s.t; j.stable=nil; j.verifySample=nil; j.legStart={x=s.x,z=s.z}; j.overshoot=0
+        j.candidate=p; j.phase="VERIFY"; j.leg=1; j.at=s.t; j.stable=nil; j.verifyWindow=nil; j.legStart={x=s.x,z=s.z}; j.overshoot=0
         j.goals={{x=j.origin.x+4,z=j.origin.z},{x=j.origin.x-4,z=j.origin.z},
           {x=j.origin.x,z=j.origin.z+4},{x=j.origin.x,z=j.origin.z-4},{x=j.origin.x,z=j.origin.z}}
         self:reset(j.heading)
@@ -216,22 +273,18 @@ local Autopilot = (function()
       local length=math.sqrt(gx*gx+gz*gz)
       if length>.01 then j.overshoot=math.max(j.overshoot,((s.x-goal.x)*gx+(s.z-goal.z)*gz)/length) end
       local commands=self:navigate(s,goal,j.candidate)
-      -- Smooth brief GPS/physics wobble, but keep raw limits so a moving ship cannot pass validation.
-      local f=j.verifySample
-      if not f then f=copy(s); j.verifySample=f
-      else
-        local alpha=1-math.exp(-clamp(s.t-f.t,.01,.5)/.8)
-        for _,key in ipairs({"x","z","vx","vz","yaw"}) do f[key]=f[key]+(s[key]-f[key])*alpha end
-        f.t=s.t
-      end
+      -- Measure net drift over several rocking cycles; bound each position so real excursions cannot pass.
+      j.verifyWindow=j.verifyWindow or {}
+      j.verifyWindow[#j.verifyWindow+1]=copy(s)
+      while #j.verifyWindow>2 and s.t-j.verifyWindow[1].t>4 do table.remove(j.verifyWindow,1) end
+      local f=window(j.verifyWindow)
       local dx,dz=goal.x-f.x,goal.z-f.z
       local settled=math.sqrt(dx*dx+dz*dz)<.35 and math.sqrt(f.vx*f.vx+f.vz*f.vz)<.08 and math.abs(f.yaw)<.03
       local rawDistance=math.sqrt((goal.x-s.x)^2+(goal.z-s.z)^2)
-      local rawSpeed=math.sqrt(s.vx*s.vx+s.vz*s.vz)
-      local bounded=rawDistance<.7 and rawSpeed<.18 and math.abs(s.yaw)<.1
+      local bounded=rawDistance<.7 and math.abs(s.yaw)<.1
       j.stable=settled and bounded and (j.stable or s.t) or nil
-      if j.stable and s.t-j.stable>=1.5 then
-        j.leg=j.leg+1; j.at=s.t; j.stable=nil; j.verifySample=copy(s); j.legStart={x=s.x,z=s.z}
+      if j.stable and s.t-j.stable>=1.5 and f.span>=3 then
+        j.leg=j.leg+1; j.at=s.t; j.stable=nil; j.verifyWindow=nil; j.legStart={x=s.x,z=s.z}
         if j.leg>#j.goals then
           if j.overshoot>.5 then
             if j.retry>=2 then self.job=nil; return nil,"Braking validation still overshoots; previous calibration kept." end
@@ -247,17 +300,20 @@ local Autopilot = (function()
           self.job=nil
           return {},nil,j.candidate
         end
-      elseif s.t-j.at>60 then
-        if j.retry>=2 then self.job=nil; return nil,"Automatic tuning did not converge; previous calibration kept." end
+      elseif s.t-j.at>math.max(60,6/math.sqrt(j.candidate.gains[1]))+length/math.max(.1,j.candidate.maxSpeed)*2 then
+        if j.retry>=2 then
+          self.job=nil
+          return nil,("Auto test %d stalled: error %.2fm, drift %.2fm/s, yaw %.3f. Previous calibration kept."):format(j.leg,math.sqrt(dx*dx+dz*dz),math.sqrt(f.vx^2+f.vz^2),math.abs(f.yaw))
+        end
         j.retry=j.retry+1
-        local speed=math.sqrt(s.vx*s.vx+s.vz*s.vz)
+        local speed=math.sqrt(f.vx*f.vx+f.vz*f.vz)
         j.candidate.gains[1]=clamp(j.candidate.gains[1]*(speed>.12 and .7 or 1.25),.0001,.25)
         j.candidate.gains[2]=j.candidate.gains[1]*.02
         j.candidate.gains[3]=math.min(4,2.8*math.sqrt(j.candidate.gains[1]))
         j.candidate.maxSpeed=j.candidate.maxSpeed*.85
-        j.leg=1; j.at=s.t; j.stable=nil; j.verifySample=nil; j.legStart={x=s.x,z=s.z}; j.overshoot=0; self:reset(j.heading)
+        j.leg=1; j.at=s.t; j.stable=nil; j.verifyWindow=nil; j.legStart={x=s.x,z=s.z}; j.overshoot=0; self:reset(j.heading)
       end
-      return commands,("AUTO TEST %d/5  |  tune pass %d/3"):format(math.min(j.leg,5),j.retry+1)
+      return commands,("AUTO TEST %d/5 | %.2fm %.2fm/s | pass %d/3"):format(math.min(j.leg,5),math.sqrt(dx*dx+dz*dz),math.sqrt(f.vx^2+f.vz^2),j.retry+1)
     end
     local commands={}
     if j.phase=="WARMUP" or j.phase=="PULSE" then
@@ -691,7 +747,10 @@ local function locate()
   if gimbalSensor then
     local ok, rates = pcall(gimbalSensor.getAngularRatesRad)
     yieldComputer()
-    if ok and type(rates) == "table" and type(rates[2]) == "number" and rates[2]==rates[2] and math.abs(rates[2])<math.huge then yawRate = rates[2]; yawAt=os.clock() end
+    local gravityOk,gravity=pcall(gimbalSensor.getGravity)
+    yieldComputer()
+    local headingRate=ok and Autopilot.headingRate(rates,gravityOk and gravity or nil)
+    if headingRate then yawRate=headingRate; yawAt=os.clock() end
   end
   local x, y, z = gps.locate(.5, false)
   now=os.clock()
