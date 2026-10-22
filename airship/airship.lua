@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.6.4"
+local AIRSHIP_BUILD = "1.6.5"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -101,7 +101,7 @@ local Autopilot = (function()
     if type(p)~="table" or p.version~=1 or p.validated~=true or type(p.names)~="table" or #p.names~=#names or type(p.channels)~="table" or #p.channels~=#names*4 then return false end
     for i,name in ipairs(names) do if p.names[i]~=name then return false end end
     for _,key in ipairs({"pressure","yawWeight","maxAccel","maxSpeed","delay"}) do if not finite(p[key]) or p[key]<=0 then return false end end
-    if p.pressure>2 or p.yawWeight>30 or p.maxAccel>6 or p.maxSpeed>20 or p.delay>10 or type(p.drag)~="table" or type(p.gains)~="table" then return false end
+    if p.pressure>2 or p.yawWeight>30 or p.maxAccel>6 or p.maxSpeed>32 or p.delay>10 or type(p.drag)~="table" or type(p.gains)~="table" then return false end
     for i=1,3 do
       if not finite(p.drag[i]) or p.drag[i]<0 or p.drag[i]>3 or not finite(p.gains[i]) or p.gains[i]<0 then return false end
     end
@@ -207,14 +207,17 @@ local Autopilot = (function()
     local alongSpeed=f.vx*r.tx+f.vz*r.tz
     local crossSpeed=-f.vx*r.tz+f.vz*r.tx
     local response=math.max(1.2,p.delay*.65)*(p.responseScale or 1)
-    local brakeAccel=maxAccel*.35
+    local modern=p.cruiseVersion==3
+    local caution=modern and clamp((p.responseScale or 1)-1,0,1) or 1
+    local brakeAccel=maxAccel*(.6-.25*caution)
     local function plannedSpeed(error,limit,margin)
       local gap=math.max(0,math.abs(error)-(margin or .04))
-      local delay=p.delay+response
+      local delay=modern and p.delay+math.max(0,response-math.max(1.2,p.delay*.65)) or p.delay+response
       local braking=math.sqrt((brakeAccel*delay)^2+2*brakeAccel*gap)-brakeAccel*delay
       return (error<0 and -1 or 1)*math.min(limit,braking,gap*.7/response)
     end
-    local targetAlong=plannedSpeed(remaining,p.maxSpeed,12)
+    local cruiseLimit=modern and (caution>0 and p.maxSpeed/caution or math.huge) or p.maxSpeed
+    local targetAlong=plannedSpeed(remaining,cruiseLimit,4+8*caution)
     local targetCross=plannedSpeed(-cross,math.max(1,p.maxSpeed*.35))
     local ax=(targetAlong-alongSpeed)/response
     local az=(targetCross-crossSpeed)/response
@@ -222,7 +225,7 @@ local Autopilot = (function()
     az=clamp(az,-maxAccel*.7,maxAccel*.7)
     ax=clamp(ax,-math.sqrt(maxAccel^2-az^2),math.sqrt(maxAccel^2-az^2))
     local bx,bz=body(ax*r.tx-az*r.tz,ax*r.tz+az*r.tx,s.heading)
-    local blend=clamp((distance-4)/20,0,1)
+    local blend=clamp((distance-3-caution)/(9+11*caution),0,1)
     local ex,ez=body(dx,dz,s.heading)
     local bandwidth=math.sqrt(clamp(ratio,.16,1))
     local hold={}
@@ -259,8 +262,12 @@ local Autopilot = (function()
     end
     return result
   end
+  function A.cruiseSpeed(p)
+    -- Estimate validation-leg length; cruise itself is limited by stopping distance and available thrust.
+    return math.min(math.sqrt(96*p.maxAccel),p.maxAccel*.9/math.max(.02,p.drag[1],p.drag[2]))
+  end
   function A:fit(job)
-    local p={version=1,gpsVersion=2,cruiseVersion=2,responseScale=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8,maxThrottle=throttleLimit}
+    local p={version=1,gpsVersion=2,cruiseVersion=3,responseScale=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8,maxThrottle=throttleLimit}
     for index,m in ipairs(job.measurements) do
       local response={}
       for i=1,3 do
@@ -287,7 +294,7 @@ local Autopilot = (function()
     p.yawWeight=clamp(math.sqrt(force/yaw)*.7,1,30)
     p.maxAccel=math.min(6,math.min(table.unpack(extent))*.55)
     if p.maxAccel<.015 then return nil,"Insufficient measured thrust in all four directions." end
-    p.maxSpeed=math.min(math.sqrt(48*p.maxAccel),p.maxAccel*.75/math.max(.02,p.drag[1],p.drag[2]))
+    p.maxSpeed=A.cruiseSpeed(p)
     local frequency=math.min(.18,1/(2*p.delay),math.sqrt(p.maxAccel/3))
     p.gains={frequency^2,frequency^2*.02,2.2*frequency}
     for _,goal in ipairs({{p.maxAccel,0,0},{-p.maxAccel,0,0},{0,p.maxAccel,0},{0,-p.maxAccel,0},{0,0,.03},{0,0,-.03}}) do
@@ -313,9 +320,9 @@ local Autopilot = (function()
     if not A.validSample(s) or not A.validCandidate(p,self.names) then return false,"Saved thruster model or navigation sample is invalid." end
     if p.gpsVersion~=2 then return false,"Old survey used unchecked GPS; a fresh thruster survey is required." end
     if s.pressure<=.001 then return false,"Air pressure reading is zero; check the Avionics altitude sensor." end
-    if p.cruiseVersion~=2 then
-      p.maxSpeed=math.min(math.sqrt(48*p.maxAccel),p.maxAccel*.75/math.max(.02,p.drag[1],p.drag[2]))
-      p.cruiseVersion,p.responseScale=2,1
+    if p.cruiseVersion~=3 then
+      p.maxSpeed=A.cruiseSpeed(p)
+      p.cruiseVersion,p.responseScale=3,1
     end
     p.gains={math.min(p.gains[1],.0324),math.min(p.gains[2],.00065),math.min(1,math.max(p.gains[3],.396))}
     self:reset(s.heading)
@@ -378,6 +385,7 @@ local Autopilot = (function()
       j.verifyWindow[#j.verifyWindow+1]=copy(s)
       while #j.verifyWindow>2 and s.t-j.verifyWindow[1].t>4 do table.remove(j.verifyWindow,1) end
       local f=window(j.verifyWindow)
+      j.peakSpeed=math.max(j.peakSpeed or 0,math.sqrt(f.vx^2+f.vz^2))
       local dx,dz=goal.x-f.x,goal.z-f.z
       local settled=math.sqrt(dx*dx+dz*dz)<.35 and math.sqrt(f.vx*f.vx+f.vz*f.vz)<.08 and math.abs(f.yaw)<.03
       local rawDistance=math.sqrt((goal.x-s.x)^2+(goal.z-s.z)^2)
@@ -388,16 +396,14 @@ local Autopilot = (function()
         if j.leg>#j.goals then
           if j.overshoot>.5 then
             if j.retry>=4 then self.job=nil; return nil,"Braking validation still overshoots; previous calibration kept." end
-            j.retry=j.retry+1; j.persistRevision=(j.persistRevision or 0)+1; j.candidate.gains[1]=j.candidate.gains[1]*.7
-            j.candidate.gains[2]=j.candidate.gains[1]*.02
-            j.candidate.gains[3]=math.min(4,j.candidate.gains[3]*1.2)
+            j.retry=j.retry+1; j.persistRevision=(j.persistRevision or 0)+1
             j.candidate.maxSpeed=j.candidate.maxSpeed*.8
             j.candidate.responseScale=math.min(4,(j.candidate.responseScale or 1)*1.25)
             j.leg=1; j.overshoot=0; self:reset(j.heading)
             return {},"Retuning braking; repeating all four direction tests."
           end
           j.candidate.validated=true
-          j.candidate.verification={overshoot=j.overshoot,passes=j.retry+1}
+          j.candidate.verification={overshoot=j.overshoot,passes=j.retry+1,peakSpeed=j.peakSpeed}
           self.job=nil
           return {},nil,j.candidate
         end
@@ -408,9 +414,11 @@ local Autopilot = (function()
         end
         j.retry=j.retry+1; j.persistRevision=(j.persistRevision or 0)+1
         local speed=math.sqrt(f.vx*f.vx+f.vz*f.vz)
-        j.candidate.gains[1]=clamp(j.candidate.gains[1]*(speed>.12 and .7 or 1.25),.0001,.25)
-        j.candidate.gains[2]=j.candidate.gains[1]*.02
-        j.candidate.gains[3]=math.min(4,2.8*math.sqrt(j.candidate.gains[1]))
+        if math.sqrt(dx*dx+dz*dz)<=2 then
+          j.candidate.gains[1]=clamp(j.candidate.gains[1]*(speed>.12 and .7 or 1.25),.0001,.25)
+          j.candidate.gains[2]=j.candidate.gains[1]*.02
+          j.candidate.gains[3]=math.min(4,2.8*math.sqrt(j.candidate.gains[1]))
+        end
         if speed>.12 or math.sqrt(dx*dx+dz*dz)>2 then
           j.candidate.maxSpeed=j.candidate.maxSpeed*.85
           j.candidate.responseScale=math.min(4,(j.candidate.responseScale or 1)*1.25)
@@ -479,8 +487,9 @@ local FreshGPS=(function()
       local dz=fix.z-last.z-(state.vz or 0)*dt
       local allowance=1.5+.5*accel*math.min(dt,2)^2+(state.vx and 0 or 40*dt)
       if math.sqrt(dx^2+dz^2)>allowance then return false,"GPS jump rejected" end
-      state.vx=(state.vx or 0)*.5+(fix.x-last.x)/dt*.5
-      state.vz=(state.vz or 0)*.5+(fix.z-last.z)/dt*.5
+      local vx,vz=(fix.x-last.x)/dt,(fix.z-last.z)/dt
+      state.vx=state.vx and state.vx*.5+vx*.5 or vx
+      state.vz=state.vz and state.vz*.5+vz*.5 or vz
     end
     state.last=fix
     return true
@@ -824,7 +833,7 @@ if fs.exists("airship-autopilot.cfg") then
   end)
   if ok and Autopilot.validProfile(profile,navNames) and profile.gpsVersion==2 then
     navController.profile=profile
-    if not pendingAutopilot and profile.cruiseVersion~=2 then
+    if not pendingAutopilot and profile.cruiseVersion~=3 then
       pendingAutopilot=textutils.unserialize(textutils.serialize(profile))
       pendingAutopilot.validated=nil
     end
@@ -1187,7 +1196,7 @@ local function updateFlight(gpsFresh)
     end
     if completed then
       local saved,err=pcall(saveAutopilotProfile,completed)
-      if saved then clearPendingAutopilot(); pendingAutopilot=nil; pendingRetry=nil; navController.profile=completed; applyGainValues(completed.gains); autopilotNotice=("FULL AUTO CAL saved: %.1f b/s, %.0f%% thrust."):format(completed.maxSpeed,(completed.maxThrottle or .35)*100); autopilotNoticeColor=colors.lime
+      if saved then clearPendingAutopilot(); pendingAutopilot=nil; pendingRetry=nil; navController.profile=completed; applyGainValues(completed.gains); autopilotNotice=("FULL AUTO CAL saved: %.1f b/s peak, %.0f%% thrust."):format(completed.verification and completed.verification.peakSpeed or completed.maxSpeed,(completed.maxThrottle or .35)*100); autopilotNoticeColor=colors.lime
       else autopilotNotice="Calibration passed but could not save: "..tostring(err); autopilotNoticeColor=colors.red end
     elseif not commands then autopilotNotice=message; autopilotNoticeColor=colors.red
     else autopilotNotice=message; autopilotNoticeColor=colors.orange end

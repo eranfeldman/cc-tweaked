@@ -136,7 +136,7 @@ do
   local resumed=A.new(names)
   local s={t=10,x=5,z=-3,vx=0,vz=0,heading=.4,yaw=.05,pressure=.85}
   assert(resumed:resumeVerification(s,candidate) and resumed.job.phase=="VERIFY","Saved thruster model must resume at auto tests")
-  local recovered=math.min(math.sqrt(48*candidate.maxAccel),candidate.maxAccel*.75/math.max(.02,candidate.drag[1],candidate.drag[2]))
+  local recovered=A.cruiseSpeed(candidate)
   assert(candidate.maxSpeed==recovered and candidate.gains[1]==.0324,"Resume must use measured speed while bounding gains")
   local legacy={}; for k,v in pairs(profiles[1]) do legacy[k]=v end
   legacy.maxSpeed=2; legacy.cruiseVersion=nil
@@ -244,6 +244,7 @@ do
       profile.channels[#profile.channels+1]={name=name,x=ch.x,y=ch.y,b={ch.b[1]/3,ch.b[2]/3,ch.b[3]/3}}
     end
   end
+  profile.maxSpeed=2
   assert(A.validProfile(profile,names))
   local p=plant(3,.3,.01)
   p.heading,p.vx,p.vz=2.5,-2,2
@@ -259,10 +260,23 @@ do
     if done then arrived=true; break end
   end
   assert(arrived,"24-thruster diagonal route failed to arrive after a pressure change")
-  assert(peak>profile.maxSpeed*.8,"Diagonal cruise failed to reach its measured speed")
+  assert(peak>13,"A stored cruise estimate must not cap available flight speed")
   assert(cross<6,"Sideways initial velocity caused a curved or divergent route")
   print(("PASS: 24 thrusters, diagonal, initial sideways drift, changing pressure; %.2fm/s peak, %.2fm cross-track, %.1fs"):format(peak,cross,p.t))
   names,mounts=oldNames,oldMounts
+end
+
+do
+  local profile={}; for k,v in pairs(profiles[1]) do profile[k]=v end
+  profile.maxAccel,profile.maxSpeed,profile.delay,profile.responseScale=6,13,2,1
+  local controller=A.new(names,profile); controller:reset(0)
+  controller:navigate({t=0,x=0,z=0,vx=13,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=60,z=0})
+  assert(controller.trace.targetAlong>13,"A stable ship with 6 b/s^2 braking authority must not brake 13 b/s at 60 blocks remaining")
+  profile.cruiseVersion=2
+  controller=A.new(names,profile); controller:reset(0)
+  controller:navigate({t=0,x=0,z=0,vx=13,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=60,z=0})
+  assert(controller.trace.targetAlong<=13,"Working legacy profile must retain its speed and braking limits until new validation passes")
+  print("PASS: available-speed cruise does not cap at stored estimate and braking begins later on stable craft")
 end
 
 do
@@ -299,7 +313,8 @@ do
   local p=candidate.gains[1]
   s.t=2
   local commands,message=controller:calibrate(s)
-  assert(commands and message:match("Retuning") and candidate.gains[1]<p and not candidate.validated)
+  assert(commands and message:match("Retuning") and candidate.gains[1]==p and candidate.responseScale>1 and not candidate.validated,
+    "Braking retuning must adjust stopping response without weakening position hold")
   j.retry,j.leg,j.stable,j.overshoot=4,5,2,1
   j.verifyWindow={{t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85,tilt=0}}
   s.t=4
@@ -413,7 +428,7 @@ do
     if type(value)~="table" then return value end
     local result={}; for k,v in pairs(value) do result[k]=clone(v) end; return result
   end
-  local legacy=clone(profiles[1]); legacy.cruiseVersion=nil; legacy.maxSpeed=2
+  local legacy=clone(profiles[1]); legacy.cruiseVersion=2; legacy.maxSpeed=13
   local env=setmetatable({Autopilot=A,navNames=names,navController=A.new(names)}, {__index=_G})
   env.fs={exists=function() return true end,open=function() return {readAll=function() return "saved" end,close=function() end} end}
   env.textutils={serialize=function() return "saved" end,unserialize=function() return clone(legacy) end}

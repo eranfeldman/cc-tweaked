@@ -34,6 +34,8 @@ assert(G.accept(state,{t=2.4,x=.8,y=20,z=.4},12),'A good fix must recover after 
 assert(not G.accept(state,{t=3,x=74,y=20,z=-94},12),'119-block excursion must be rejected')
 local moving={}
 for i=0,100 do assert(G.accept(moving,{t=i*.6,x=i*6,y=20,z=0},12),'Legitimate 10 b/s cruise must not be capped') end
+moving={}
+for i=0,100 do assert(G.accept(moving,{t=i*.6,x=i*14.4,y=20,z=0},12),'GPS startup must accept legitimate 24 b/s cruise') end
 print('PASS: rejects actual recorded excursions while allowing continuous 10 b/s flight')
 
 for _,scenario in ipairs({'success','timeout','bad_ranges','error'}) do
