@@ -98,6 +98,24 @@ for _,scenario in ipairs(scenarios) do
 end
 
 do
+  local candidate={}; for k,v in pairs(profiles[1]) do candidate[k]=v end
+  candidate.validated=nil
+  local resumed=A.new(names)
+  local s={t=10,x=5,z=-3,vx=0,vz=0,heading=.4,yaw=.05,pressure=.85}
+  assert(resumed:resumeVerification(s,candidate) and resumed.job.phase=="VERIFY","Saved thruster model must resume at auto tests")
+  s.t=10.2
+  assert(resumed:calibrate(s) and resumed.job.phase=="VERIFY","Resumed model must bypass all thruster pulses")
+  local yawController=A.new(names,profiles[1]); yawController:reset(0)
+  local yawSample={t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=.05,pressure=.85}
+  local highDrag={}; for k,v in pairs(profiles[1]) do highDrag[k]=v end
+  highDrag.drag={profiles[1].drag[1],profiles[1].drag[2],3}
+  assert(A.validProfile(highDrag,names))
+  yawController:navigate(yawSample,{x=0,z=0},highDrag)
+  assert(yawController.applied[3]<0,"Yaw drag compensation must not amplify an existing fast spin")
+  print("PASS: saved 96-test model resumes auto tests only; high yaw drag retains negative damping")
+end
+
+do
   local controller=A.new(names)
   local s={t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
   assert(controller:begin(s))
@@ -345,6 +363,9 @@ do
   env.clamp=function(v,a,b) return math.max(a,math.min(b,v)) end
   env.hoverBias=function() error("Full calibration must keep the burner fixed") end
   env.saveAutopilotProfile=function(p) assert(p.validated); env.saved=p end
+  env.savePendingAutopilot=function(p) assert(A.validCandidate(p,names)) end
+  env.clearPendingAutopilot=function() end
+  env.pendingAutopilot,env.pendingRetry=nil,nil
   env.applyGainValues=function(g) env.applied=g end
   local start=assert(source:match("(local function startFullCalibration%(%)%s*.-)\nlocal function testVector"))
   local update=assert(source:match("(local function updateFlight%b()%s*.-)\nlocal function savedHoverPoints"))

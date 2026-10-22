@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.5.8"
+local AIRSHIP_BUILD = "1.5.9"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -179,7 +179,8 @@ local Autopilot = (function()
       local a=drive*along-derivative*values[2]+p.gains[2]*bandwidth^2*self.integral[i]
       acceleration[i]=clamp(a,-maxAccel,maxAccel)+p.drag[i]*ratio*values[2]
     end
-    local yaw=clamp(.22*wrap(self.headingTarget-s.heading)-1.8*s.yaw,-.12,.12)+p.drag[3]*ratio*s.yaw
+    local yawDamping=math.max(.6,1.8-p.drag[3]*ratio)
+    local yaw=clamp(.22*wrap(self.headingTarget-s.heading)-yawDamping*s.yaw,-.12,.12)
     local desired={acceleration[1]-self.trim[1],acceleration[2]-self.trim[2],yaw-self.trim[3]}
     local commands,residual=self:allocate(p,desired)
     self.applied={desired[1]-(residual and residual[1] or 0),desired[2]-(residual and residual[2] or 0),desired[3]-(residual and residual[3]/p.yawWeight or 0)}
@@ -249,6 +250,20 @@ local Autopilot = (function()
     return {{x=job.origin.x+span,z=job.origin.z},{x=job.origin.x-span,z=job.origin.z},
       {x=job.origin.x,z=job.origin.z+span},{x=job.origin.x,z=job.origin.z-span},{x=job.origin.x,z=job.origin.z}}
   end
+  function A.validCandidate(p,names)
+    if type(p)~="table" then return false end
+    local checked={}; for k,v in pairs(p) do checked[k]=v end; checked.validated=true
+    return A.validProfile(checked,names)
+  end
+  function A:resumeVerification(s,p)
+    if not A.validSample(s) or not A.validCandidate(p,self.names) then return false,"Saved thruster model or navigation sample is invalid." end
+    if s.pressure<=.001 then return false,"Air pressure reading is zero; check the Avionics altitude sensor." end
+    self:reset(s.heading)
+    self.job={phase="VERIFY",at=s.t,previous=copy(s),origin={x=s.x,z=s.z},heading=s.heading,
+      candidate=p,leg=1,stable=nil,verifyWindow={copy(s)},legStart={x=s.x,z=s.z},overshoot=0,retry=0,dt=0,samples=0,pressure=0}
+    self.job.goals=travelGoals(self.job)
+    return true
+  end
   function A:calibrate(s)
     local j=self.job
     if not j then return nil,"Calibration is not running." end
@@ -309,7 +324,7 @@ local Autopilot = (function()
         if j.leg>#j.goals then
           if j.overshoot>.5 then
             if j.retry>=4 then self.job=nil; return nil,"Braking validation still overshoots; previous calibration kept." end
-            j.retry=j.retry+1; j.candidate.gains[1]=j.candidate.gains[1]*.7
+            j.retry=j.retry+1; j.persistRevision=(j.persistRevision or 0)+1; j.candidate.gains[1]=j.candidate.gains[1]*.7
             j.candidate.gains[2]=j.candidate.gains[1]*.02
             j.candidate.gains[3]=math.min(4,j.candidate.gains[3]*1.2)
             j.candidate.maxSpeed=j.candidate.maxSpeed*.8
@@ -326,7 +341,7 @@ local Autopilot = (function()
           self.job=nil
           return nil,("Auto test %d stalled: error %.2fm, drift %.2fm/s, yaw %.3f. Previous calibration kept."):format(j.leg,math.sqrt(dx*dx+dz*dz),math.sqrt(f.vx^2+f.vz^2),math.abs(f.yaw))
         end
-        j.retry=j.retry+1
+        j.retry=j.retry+1; j.persistRevision=(j.persistRevision or 0)+1
         local speed=math.sqrt(f.vx*f.vx+f.vz*f.vz)
         j.candidate.gains[1]=clamp(j.candidate.gains[1]*(speed>.12 and .7 or 1.25),.0001,.25)
         j.candidate.gains[2]=j.candidate.gains[1]*.02
@@ -578,6 +593,31 @@ local function saveAutopilotProfile(profile)
   local ok,err=pcall(fs.move,path..".tmp",path)
   if not ok then if previous then fs.move(path..".bak",path) end; error(err) end
 end
+local pendingAutopilotPath="airship-autopilot-pending.cfg"
+local function savePendingAutopilot(profile)
+  assert(Autopilot.validCandidate(profile,navNames),"Invalid pending thruster model")
+  local file=assert(fs.open(pendingAutopilotPath..".tmp","w"),"Cannot save pending thruster model")
+  file.write(textutils.serialize(profile)); file.close()
+  local backup=pendingAutopilotPath..".bak"
+  if fs.exists(backup) then fs.delete(backup) end
+  local previous=fs.exists(pendingAutopilotPath)
+  if previous then fs.move(pendingAutopilotPath,backup) end
+  local ok,err=pcall(fs.move,pendingAutopilotPath..".tmp",pendingAutopilotPath)
+  if not ok then if previous then fs.move(backup,pendingAutopilotPath) end; error(err) end
+end
+local function clearPendingAutopilot()
+  if fs.exists(pendingAutopilotPath) then fs.delete(pendingAutopilotPath) end
+  if fs.exists(pendingAutopilotPath..".bak") then fs.delete(pendingAutopilotPath..".bak") end
+  if fs.exists(pendingAutopilotPath..".tmp") then fs.delete(pendingAutopilotPath..".tmp") end
+end
+local pendingAutopilot,pendingRetry
+if fs.exists(pendingAutopilotPath) then
+  local ok,profile=pcall(function()
+    local file=assert(fs.open(pendingAutopilotPath,"r")); local value=textutils.unserialize(file.readAll()); file.close(); return value
+  end)
+  if ok and Autopilot.validCandidate(profile,navNames) then pendingAutopilot=profile
+  else clearPendingAutopilot() end
+end
 if fs.exists("airship-autopilot.cfg") then
   local ok,profile=pcall(function()
     local file=assert(fs.open("airship-autopilot.cfg","r")); local value=textutils.unserialize(file.readAll()); file.close(); return value
@@ -712,6 +752,10 @@ if navController.profile then
   applyGainValues(navController.profile.gains)
   autopilotNotice="Full autopilot calibration loaded."
   autopilotNoticeColor=colors.lime
+end
+if pendingAutopilot then
+  autopilotNotice="96 thruster tests saved; FULL AUTO CAL will resume with auto tests only."
+  autopilotNoticeColor=colors.orange
 end
 local velocity = {x=0, y=0, z=0}
 local previousPosition, previousSample
@@ -900,9 +944,15 @@ local function updateFlight(gpsFresh)
     end
     local commands,message,completed=navController:calibrate(sample)
     autopilotCommands=commands or {}
+    local job=navController.job
+    if job and job.phase=="VERIFY" and (not pendingAutopilot or pendingRetry~=job.persistRevision) then
+      local saved,err=pcall(savePendingAutopilot,job.candidate)
+      if saved then pendingAutopilot=job.candidate; pendingRetry=job.persistRevision
+      else autopilotNotice="Thruster model is in memory but checkpoint failed: "..tostring(err); autopilotNoticeColor=colors.red end
+    end
     if completed then
       local saved,err=pcall(saveAutopilotProfile,completed)
-      if saved then navController.profile=completed; applyGainValues(completed.gains); autopilotNotice=("FULL AUTO CAL saved: %.1f b/s, %.0f%% thrust."):format(completed.maxSpeed,(completed.maxThrottle or .35)*100); autopilotNoticeColor=colors.lime
+      if saved then clearPendingAutopilot(); pendingAutopilot=nil; pendingRetry=nil; navController.profile=completed; applyGainValues(completed.gains); autopilotNotice=("FULL AUTO CAL saved: %.1f b/s, %.0f%% thrust."):format(completed.maxSpeed,(completed.maxThrottle or .35)*100); autopilotNoticeColor=colors.lime
       else autopilotNotice="Calibration passed but could not save: "..tostring(err); autopilotNoticeColor=colors.red end
     elseif not commands then autopilotNotice=message; autopilotNoticeColor=colors.red
     else autopilotNotice=message; autopilotNoticeColor=colors.orange end
@@ -1257,6 +1307,22 @@ local function startFullCalibration()
   if not position then
     autopilotNotice,autopilotNoticeColor="Wait for a GPS fix before FULL AUTO CAL.",colors.orange
     status.text,status.foreground=autopilotNotice,autopilotNoticeColor
+    return
+  end
+  if pendingAutopilot then
+    local sample=navigationSample()
+    local resumed,message=navController:resumeVerification(sample,pendingAutopilot)
+    if not resumed then
+      autopilotNotice,autopilotNoticeColor=message,colors.orange
+      status.text,status.foreground=message,colors.orange
+      return
+    end
+    pendingRetry=nil
+    manualBurner,burnerCommand=burner,burner
+    vectorX,vectorY,power,target=0,0,0,nil; arrivalHeading=nil
+    autopilotCommands={}; fullCalibration,calibrationRunning=true,true
+    mode="FULL AUTO CAL"; autopilotNotice="Resuming auto tests from saved thruster measurements."
+    autopilotNoticeColor=colors.orange; status.text=autopilotNotice; status.foreground=colors.orange
     return
   end
   navController:cancel()
