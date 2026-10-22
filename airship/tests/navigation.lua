@@ -98,6 +98,20 @@ for _,scenario in ipairs(scenarios) do
 end
 
 do
+  local controller=A.new(names)
+  local s={t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
+  assert(controller:begin(s))
+  local commands,message=controller:calibrate(nil)
+  assert(commands and controller.job and message:match("Waiting for fresh"),"A missing live sample must pause, not cancel, calibration")
+  s.t=3
+  commands,message=controller:calibrate(s)
+  assert(commands and controller.job and controller.job.phase=="BASELINE" and controller.job.index==1,
+    "A long sensor gap must restart only the active thruster baseline")
+  assert(message:match("repeating thruster 1/32"))
+  print("PASS: navigation sample loss pauses calibration and a long gap restarts the active baseline")
+end
+
+do
   local candidate={}; for key,value in pairs(profiles[1]) do candidate[key]=value end
   candidate.gains={table.unpack(profiles[1].gains)}; candidate.validated=false
   local controller=A.new(names,profiles[1])
@@ -304,8 +318,8 @@ do
   assert(controller.job==nil and controller.profile==old,"Failed calibration replaced the previous profile")
   assert(controller:begin(p:sample()))
   local invalid=p:sample(); invalid.heading=0/0
-  local commands=controller:calibrate(invalid)
-  assert(commands==nil and controller.profile==old,"Invalid sensors did not abort calibration")
+  local commands,message=controller:calibrate(invalid)
+  assert(commands and controller.job and controller.profile==old and message:match("Waiting for fresh"),"Invalid samples must pause calibration without replacing its profile")
   assert(controller:begin(p:sample()))
   controller:cancel()
   assert(controller.job==nil and controller.profile==old,"Cancel must preserve existing calibration")

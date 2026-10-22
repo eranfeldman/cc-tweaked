@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.5.4"
+local AIRSHIP_BUILD = "1.5.5"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -251,7 +251,18 @@ local Autopilot = (function()
   function A:calibrate(s)
     local j=self.job
     if not j then return nil,"Calibration is not running." end
-    if not A.validSample(s) or s.t<=j.previous.t or s.t-j.previous.t>2 then self.job=nil; return nil,"Calibration stopped: stale or invalid navigation readings." end
+    if not A.validSample(s) then return {},"Waiting for fresh GPS, heading, yaw rate and pressure readings." end
+    if s.t<=j.previous.t then return {},"Waiting for a new navigation sample." end
+    if s.t-j.previous.t>2 then
+      j.previous=copy(s)
+      if j.phase=="VERIFY" then
+        j.at=s.t; j.stable=nil; j.verifyWindow={copy(s)}; j.legStart={x=s.x,z=s.z}; self:reset(j.heading)
+        return {},("Navigation gap; restarting auto test %d/5."):format(j.leg)
+      end
+      while #j.coasts>(j.index-1)*2 do table.remove(j.coasts) end
+      j.phase="BASELINE"; j.at=s.t; j.window={copy(s)}; j.before=nil; j.pulse=nil
+      return {},("Navigation gap; repeating thruster %d/%d baseline."):format(j.index,#self.names*4)
+    end
     local dt=s.t-j.previous.t
     j.dt=j.dt+dt; j.samples=j.samples+1; j.pressure=j.pressure+s.pressure
     j.previous=copy(s)
@@ -1601,7 +1612,7 @@ local function refresh()
     monitorSystem.text = ("B%d/15 T%.1f SPD %.1f GPS %s"):format(burner, measuredThrust,speed,position and "OK" or "LOST")
     monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
   end
-  if directGpu and (gpuRedrawPending or os.clock() - lastGpuRender >= .05) then
+  if directGpu and (gpuRedrawPending or os.clock() - lastGpuRender >= .025) then
     gpuRedrawPending = false
     createGpuButtons()
     local ok, renderError = pcall(renderDirectMonitor)
@@ -1688,7 +1699,7 @@ local ok, err = pcall(function()
     yieldComputer()
     while running do
       refresh()
-      sleep(gpuRedrawPending and 0 or .05)
+      sleep(gpuRedrawPending and 0 or .025)
     end
   end)
   basalt.schedule(function()
