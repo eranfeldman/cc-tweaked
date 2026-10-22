@@ -164,8 +164,8 @@ do
   local opened,selected
   local env=setmetatable({status={},mode="HOLDING ALTITUDE",fullCalibration=true,burner=6},{__index=_G})
   env.fs={exists=function(path) return path=="airship-flight.log" end}
-  env.shell={openTab=function(program,action,path)
-    assert(program=="pastebin" and action=="put" and path=="/airship-flight.log")
+  env.shell={getRunningProgram=function() return "/airship.lua" end,openTab=function(program,action)
+    assert(program=="/airship.lua" and action=="--upload-report")
     opened=true; return 2
   end,switchTab=function(tab) selected=tab end}
   local code=assert(source:match('(local function uploadFlightReport%b()%s*.-)\nlocal function stop'))
@@ -173,6 +173,30 @@ do
   upload(); assert(not opened,"Active calibration must hold before report upload")
   env.fullCalibration=false
   upload(); assert(opened and selected==2 and env.burner==6,"Report upload must run in another tab without cutting burners")
+end
+for _,scenario in ipairs({"success","http_error","disk_full"}) do
+  local saved,waited,failed
+  local original={write=function() end}
+  local current=original
+  local env=setmetatable({print=function() end,printError=function() failed=true end},{__index=_G})
+  env.term={current=function() return current end,redirect=function(target) current=target end}
+  env.shell={run=function(program,action,path)
+    assert(program=="pastebin" and action=="put" and path=="/airship-flight.log")
+    if scenario=="http_error" then error("HTTP disabled") end
+    current.write("Uploaded to https://pastebin."); current.write("com/AbCd1234")
+    return true
+  end}
+  env.fs={open=function(path)
+    assert(path=="/airship-upload-result.txt")
+    if scenario=="disk_full" then return nil end
+    return {writeLine=function(line) saved=line end,close=function() end}
+  end}
+  env.read=function() waited=true; return "" end
+  env.require=function() error("Upload wrapper started the flight UI") end
+  assert(load(source,"@persistent-report-tab","t",env))("--upload-report")
+  assert(waited and current==original,"Upload result or failure must stay open and restore the terminal")
+  if scenario=="success" then assert(saved=="https://pastebin.com/AbCd1234","Uploaded URL must survive a closed tab") end
+  if scenario=="http_error" then assert(failed,"Upload errors must remain visible") end
 end
 local renderer = assert(source:match("(local function renderDirectMonitor%(%)%s*.-)\nlocal monitorStatus"))
 local function renderFixture(tab)

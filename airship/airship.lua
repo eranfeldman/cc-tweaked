@@ -1,5 +1,28 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.6.2"
+local AIRSHIP_BUILD = "1.6.3"
+if (...) == "--upload-report" then
+  local previous,output=term.current(),{}
+  local capture=setmetatable({write=function(value)
+    output[#output+1]=tostring(value)
+    previous.write(value)
+  end},{__index=previous})
+  term.redirect(capture)
+  local ok,err=pcall(shell.run,"pastebin","put","/airship-flight.log")
+  term.redirect(previous)
+  if not ok then printError(tostring(err)) end
+  local link=table.concat(output):match("https?://pastebin%.com/[%w]+")
+  if link then
+    local saved=pcall(function()
+      local file=assert(fs.open("/airship-upload-result.txt","w"))
+      file.writeLine(link); file.close()
+    end)
+    print("\nReport link: "..link)
+    if saved then print("Also saved in /airship-upload-result.txt") end
+  end
+  print("\nPress Enter to close this tab.")
+  read()
+  return
+end
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -890,7 +913,7 @@ local function uploadFlightReport()
   if fullCalibration or mode=="AUTOPILOT" or mode=="FINAL TURN" then status.text="Press H to hold before uploading the report."; return end
   if not fs.exists("airship-flight.log") then status.text="No flight report yet; run an auto test first."; return end
   if not shell or type(shell.openTab)~="function" then status.text="In another shell: pastebin put /airship-flight.log"; return end
-  local ok,tab=pcall(shell.openTab,"pastebin","put","/airship-flight.log")
+  local ok,tab=pcall(shell.openTab,shell.getRunningProgram(),"--upload-report")
   if ok and tab then
     status.text="Public report upload opened in another tab."
     if type(shell.switchTab)=="function" then shell.switchTab(tab) end
