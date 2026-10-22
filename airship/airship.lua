@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.6.1"
+local AIRSHIP_BUILD = "1.6.2"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -206,6 +206,7 @@ local Autopilot = (function()
     local desired={acceleration[1]-self.trim[1],acceleration[2]-self.trim[2],yaw-self.trim[3]}
     local commands,residual=self:allocate(p,desired)
     self.applied={desired[1]-(residual and residual[1] or 0),desired[2]-(residual and residual[2] or 0),desired[3]-(residual and residual[3]/p.yawWeight or 0)}
+    self.trace={cross=cross,remaining=remaining,targetAlong=targetAlong,targetCross=targetCross,desired=desired}
     self.previous=copy(s)
     return commands,distance<.35 and speed<.08 and math.abs(s.yaw)<.03 and math.abs(wrap(self.headingTarget-s.heading))<.03
   end
@@ -615,6 +616,38 @@ local navNames={}; for name in pairs(thrusters) do navNames[#navNames+1]=name en
 local navController=Autopilot.new(navNames)
 local autopilotCommands, fullCalibration, autopilotNotice
 local autopilotNoticeColor=colors.orange
+local flightRecording
+local function recordFlight(s,goal,profile,commands,stage)
+  if not Autopilot.validSample(s) then return end
+  local r=flightRecording
+  if r and (r.failed or r.count>=180 or s.t-r.at<.5) then return end
+  r=r or {t=s.t,x=s.x,z=s.z,at=s.t-.5,count=0}
+  flightRecording=r
+  local file
+  local ok,err=pcall(function()
+    file=assert(fs.open("airship-flight.log",r.count==0 and "w" or "a"),"Cannot open flight report")
+    if r.count==0 then
+      file.writeLine("# Airship v"..AIRSHIP_BUILD.."; relative X/Z only; first 180 samples at no more than 2 Hz")
+      file.writeLine("# profile "..textutils.serialize(profile,{compact=true}))
+      local columns="time,stage,x,z,goal_x,goal_z,vx,vz,heading,yaw,pressure,cross,remaining,target_along,target_cross,requested_ax,requested_az,requested_yaw,allocated_ax,allocated_az,allocated_yaw"
+      for _,name in ipairs(navNames) do columns=columns..","..name.."_x,"..name.."_y,"..name.."_power" end
+      file.writeLine(columns)
+    end
+    local trace=navController.trace or {}
+    local desired,applied=trace.desired or {},navController.applied or {}
+    local values={s.t-r.t,stage,s.x-r.x,s.z-r.z,goal.x-r.x,goal.z-r.z,s.vx,s.vz,s.heading,s.yaw,s.pressure,
+      trace.cross or 0,trace.remaining or 0,trace.targetAlong or 0,trace.targetCross or 0,
+      desired[1] or 0,desired[2] or 0,desired[3] or 0,applied[1] or 0,applied[2] or 0,applied[3] or 0}
+    for _,name in ipairs(navNames) do
+      local command=commands and commands[name] or {}
+      values[#values+1]=command.x or 0; values[#values+1]=command.y or 0; values[#values+1]=command.power or 0
+    end
+    for i,value in ipairs(values) do values[i]=type(value)=="number" and ("%.5g"):format(value) or tostring(value) end
+    file.writeLine(table.concat(values,","))
+  end)
+  if file then pcall(file.close) end
+  if not ok then r.failed=tostring(err) else r.at=s.t; r.count=r.count+1 end
+end
 local function saveAutopilotProfile(profile)
   assert(Autopilot.validProfile(profile,navNames),"Invalid autopilot calibration")
   local path="airship-autopilot.cfg"
@@ -853,6 +886,16 @@ local function outputs(cooperative)
   -- These methods wait for server ticks; dispatch corners together instead of 48 serial waits.
   if #jobs>0 then parallel.waitForAll(table.unpack(jobs)) end
 end
+local function uploadFlightReport()
+  if fullCalibration or mode=="AUTOPILOT" or mode=="FINAL TURN" then status.text="Press H to hold before uploading the report."; return end
+  if not fs.exists("airship-flight.log") then status.text="No flight report yet; run an auto test first."; return end
+  if not shell or type(shell.openTab)~="function" then status.text="In another shell: pastebin put /airship-flight.log"; return end
+  local ok,tab=pcall(shell.openTab,"pastebin","put","/airship-flight.log")
+  if ok and tab then
+    status.text="Public report upload opened in another tab."
+    if type(shell.switchTab)=="function" then shell.switchTab(tab) end
+  else status.text="Cannot open report upload: "..tostring(tab) end
+end
 local function stop()
   calibrationRunning = false
   autopilotNotice=nil
@@ -990,6 +1033,7 @@ local function updateFlight(gpsFresh)
     local commands,message,completed=navController:calibrate(sample)
     autopilotCommands=commands or {}
     local job=navController.job
+    if job and job.phase=="VERIFY" then recordFlight(sample,job.goals[job.leg],job.candidate,commands,"CAL_"..job.leg.."_PASS_"..(job.retry+1)) end
     if job and job.phase=="VERIFY" and (not pendingAutopilot or pendingRetry~=job.persistRevision) then
       local saved,err=pcall(savePendingAutopilot,job.candidate)
       if saved then pendingAutopilot=job.candidate; pendingRetry=job.persistRevision
@@ -1020,6 +1064,7 @@ local function updateFlight(gpsFresh)
     local wasFinalTurn=mode=="FINAL TURN"
     local commands,arrived=navController:navigate(sample,target)
     autopilotCommands=commands or {}
+    recordFlight(sample,target,navController.profile,commands,mode)
     if arrived and mode=="AUTOPILOT" then
       navController:setHeadingTarget(arrivalHeading or nearestCardinalHeading(sample.heading))
       mode="FINAL TURN"
@@ -1336,7 +1381,7 @@ local function engageAutopilot()
     local dx,dz=target.x-position.x,target.z-position.z
     local routeHeading=dx*dx+dz*dz>.25 and math.atan(dx,dz) or sample.heading
     arrivalHeading=nearestCardinalHeading(routeHeading)
-    setFlightMode("AUTOPILOT"); navController:reset(sample.heading); autopilotNotice=nil
+    setFlightMode("AUTOPILOT"); navController:reset(sample.heading); autopilotNotice=nil; flightRecording=nil
     status.text = "Autopilot engaged; final heading is cardinal"; status.foreground = colors.lime
   end
 end
@@ -1353,6 +1398,7 @@ local function startFullCalibration()
     status.text,status.foreground=autopilotNotice,autopilotNoticeColor
     return
   end
+  flightRecording=nil
   if pendingAutopilot then
     local sample=navigationSample()
     local resumed,message=navController:resumeVerification(sample,pendingAutopilot)
@@ -1893,6 +1939,7 @@ local ok, err = pcall(function()
         elseif key == keys.s then stop()
         elseif key == keys.c then confirmCalibration()
         elseif key == keys.r then startFullCalibration()
+        elseif key == keys.f8 then uploadFlightReport()
         end
       end
     end

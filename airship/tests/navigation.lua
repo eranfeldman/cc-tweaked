@@ -438,6 +438,7 @@ do
   env.saveAutopilotProfile=function(p) assert(p.validated); env.saved=p end
   env.savePendingAutopilot=function(p) assert(A.validCandidate(p,names)) end
   env.clearPendingAutopilot=function() end
+  env.recordFlight=function() end
   env.pendingAutopilot,env.pendingRetry=nil,nil
   env.applyGainValues=function(g) env.applied=g end
   local start=assert(source:match("(local function startFullCalibration%(%)%s*.-)\nlocal function testVector"))
@@ -476,4 +477,25 @@ do
   updateFn(true)
   assert(env.mode=="NAV LOST - RE-ENGAGE" and next(env.autopilotCommands)==nil and env.autopilotNotice:match("yaw"),"Missing yaw rate must stop navigation visibly")
   print("PASS: controller button, fixed burner output, calibration completion and failed-save rollback")
+end
+
+do
+  local lines,closed={},0
+  local env=setmetatable({Autopilot=A,navNames=names,navController={trace={},applied={}},AIRSHIP_BUILD="test"},{__index=_G})
+  env.textutils={serialize=function(profile) assert(profile==profiles[1]); return "fixture profile" end}
+  env.fs={open=function(path,mode)
+    assert(path=="airship-flight.log")
+    if mode=="w" then lines={} end
+    return {writeLine=function(line) lines[#lines+1]=line end,close=function() closed=closed+1 end}
+  end}
+  local recording=assert(source:match('(local flightRecording.-)\nlocal function saveAutopilotProfile'))
+  local record=assert(load(recording..'\nreturn recordFlight',"@flight-recorder","t",env))()
+  local s={t=0,x=123456,z=-654321,vx=0,vz=0,heading=0,yaw=0,pressure=.8}
+  local goal={x=s.x+20,z=s.z-10}
+  for i=0,200 do s.t=i; record(s,goal,profiles[1],{},"CAL_1_PASS_4") end
+  assert(closed==180 and #lines==183,"Recorder must close each write and stop at 180 samples")
+  local report=table.concat(lines,'\n')
+  assert(not report:find('123456',1,true) and not report:find('654321',1,true),"Flight report exposed absolute GPS coordinates")
+  assert(lines[4]:find('0,CAL_1_PASS_4,0,0,20,-10',1,true),"Flight report must retain relative target and movement")
+  print("PASS: bounded flight report includes model and commands without absolute GPS coordinates")
 end

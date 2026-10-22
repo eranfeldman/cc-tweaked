@@ -160,6 +160,20 @@ do
   assert(#powers==1 and powers[1]==0,"A canceled output pass must not restore stale thruster power")
 end
 local layout = assert(source:match("(local function gpuLayout%(%)%s*.-)\nlocal function addGpuButton"))
+do
+  local opened,selected
+  local env=setmetatable({status={},mode="HOLDING ALTITUDE",fullCalibration=true,burner=6},{__index=_G})
+  env.fs={exists=function(path) return path=="airship-flight.log" end}
+  env.shell={openTab=function(program,action,path)
+    assert(program=="pastebin" and action=="put" and path=="/airship-flight.log")
+    opened=true; return 2
+  end,switchTab=function(tab) selected=tab end}
+  local code=assert(source:match('(local function uploadFlightReport%b()%s*.-)\nlocal function stop'))
+  local upload=assert(load(code..'\nreturn uploadFlightReport',"@report-upload","t",env))()
+  upload(); assert(not opened,"Active calibration must hold before report upload")
+  env.fullCalibration=false
+  upload(); assert(opened and selected==2 and env.burner==6,"Report upload must run in another tab without cutting burners")
+end
 local renderer = assert(source:match("(local function renderDirectMonitor%(%)%s*.-)\nlocal monitorStatus"))
 local function renderFixture(tab)
   local env, run, _, counts = fixture()
