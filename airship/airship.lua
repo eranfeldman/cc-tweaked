@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.6.0"
+local AIRSHIP_BUILD = "1.6.1"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -834,18 +834,24 @@ end
 
 local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 local function outputs(cooperative)
+  local jobs={}
   for name, thruster in pairs(thrusters) do
-    local command=autopilotCommands and autopilotCommands[name]
-    local x,y,thrust=vectorX,vectorY,power
-    if autopilotCommands then x,y,thrust=command and command.x or 0,command and command.y or 0,command and command.power or 0 end
-    thruster.setVector(x, y)
-    if cooperative then yieldComputer() end
-    command=autopilotCommands and autopilotCommands[name]
-    thrust=autopilotCommands and (command and command.power or 0) or power
-    thruster.setThrustNormalized(thrust)
-    if cooperative then yieldComputer() end
+    local device,id=thruster,name
+    jobs[#jobs+1]=function()
+      local command=autopilotCommands and autopilotCommands[id]
+      local x,y=vectorX,vectorY
+      if autopilotCommands then x,y=command and command.x or 0,command and command.y or 0 end
+      device.setVector(x, y)
+      if cooperative then yieldComputer() end
+      command=autopilotCommands and autopilotCommands[id]
+      local thrust=autopilotCommands and (command and command.power or 0) or power
+      device.setThrustNormalized(thrust)
+      if cooperative then yieldComputer() end
+    end
   end
   redstone.setAnalogOutput("front", burner)
+  -- These methods wait for server ticks; dispatch corners together instead of 48 serial waits.
+  if #jobs>0 then parallel.waitForAll(table.unpack(jobs)) end
 end
 local function stop()
   calibrationRunning = false
@@ -919,7 +925,7 @@ local function locate()
     local centerX,centerZ=x,z
     if shipHeading then centerX,centerZ=x+2*math.sin(shipHeading),z+2*math.cos(shipHeading) end
     if previousPosition and previousSample then
-      sampleDt = clamp(now - previousSample, .01, 1.5)
+      sampleDt = math.max(.01, now - previousSample)
       velocity.x = velocity.x * .5 + ((centerX - previousPosition.x) / sampleDt) * .5
       if not altitudeSensorReady then velocity.y = velocity.y * .5 + ((y - previousPosition.y) / sampleDt) * .5 end
       velocity.z = velocity.z * .5 + ((centerZ - previousPosition.z) / sampleDt) * .5

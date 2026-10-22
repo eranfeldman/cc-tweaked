@@ -5,6 +5,16 @@ local core=assert(source:match("%-%- BEGIN AUTOPILOT CORE\n(.-)\n%-%- END AUTOPI
 local A=assert(load(core.."\nreturn Autopilot","@autopilot-core"))()
 local names={"t0","t1","t2","t3","t4","t5","t6","t7"}
 do
+  local env=setmetatable({previousPosition={x=0,y=20,z=0},previousSample=0,velocity={x=0,y=0,z=0}},{__index=_G})
+  env.os={clock=function() return 3 end}
+  env.gps={locate=function() return 6,20,-3 end}
+  local locating=assert(source:match('(local function locate%(%)%s*.-)\nlocal function updateFlight'))
+  local locate=assert(load(locating..'\nreturn locate',"@slow-gps-velocity","t",env))()
+  assert(locate() and env.sampleDt==3 and env.velocity.x==1 and env.velocity.z==-.5,
+    "Slow peripheral cycles must use actual GPS elapsed time instead of inflating velocity")
+  print("PASS: three-second peripheral cycle preserves correct GPS velocity units")
+end
+do
   local up={.3,math.sqrt(1-.3^2-.2^2),.2}
   local rates,gravity={},{}
   for i=1,3 do rates[i]=up[i]*.1; gravity[i]=-up[i]*9.81 end

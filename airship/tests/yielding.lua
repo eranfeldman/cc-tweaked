@@ -118,14 +118,33 @@ do
 end
 
 do
-  local env, run, call, counts = fixture()
-  env.thrusters, env.redstone = {}, {setAnalogOutput=function() end}
-  for i=1,24 do env.thrusters[i] = {setVector=call, setThrustNormalized=call} end
+  local tick,calls=0,{}
+  local env=setmetatable({thrusters={},redstone={setAnalogOutput=function() end},yieldComputer=function() end},{__index=_G})
+  env.parallel={waitForAll=function(...)
+    local jobs={}
+    for _,fn in ipairs({...}) do jobs[#jobs+1]={co=coroutine.create(fn),at=0} end
+    while #jobs>0 do
+      for i=#jobs,1,-1 do
+        local job=jobs[i]
+        if job.at<=tick then
+          local ok,at=coroutine.resume(job.co)
+          assert(ok,at)
+          if coroutine.status(job.co)=="dead" then table.remove(jobs,i) else job.at=at end
+        end
+      end
+      if #jobs>0 then tick=tick+1 end
+    end
+  end}
+  for i=1,24 do
+    local id=i
+    env.thrusters[id]={setVector=function() calls[#calls+1]={id,"vector",tick}; coroutine.yield(tick+1) end,
+      setThrustNormalized=function() calls[#calls+1]={id,"power",tick}; coroutine.yield(tick+1) end}
+  end
   local outputs = assert(source:match("(local function outputs%b()%s*.-)\nlocal function stop"))
-  local send = assert(load(helper .. "\n" .. outputs .. "\nreturn outputs", "@outputs", "t", env))()
-  local ok, err = run(function() send(true) end)
-  assert(ok, err)
-  assert(counts() == 48, "Every thruster must receive both commands")
+  local send = assert(load(outputs .. "\nreturn outputs", "@outputs", "t", env))()
+  send(true)
+  assert(#calls==48 and tick==2,"24 server-tick thrusters must update together in two ticks, not 48 serial ticks")
+  for _,call in ipairs(calls) do assert(call[3]==(call[2]=="vector" and 0 or 1),"Corners received commands on different ticks") end
 end
 do
   local env, run = fixture()
@@ -134,6 +153,7 @@ do
   env.redstone={setAnalogOutput=function() end}
   env.autopilotCommands={t0={x=.2,y=0,power=.3}}
   env.power=.3
+  env.parallel={waitForAll=function(fn) fn() end}
   local outputs=assert(source:match("(local function outputs%b()%s*.-)\nlocal function stop"))
   local send=assert(load(helper.."\n"..outputs.."\nreturn outputs","@cancel-output","t",env))()
   assert(run(function() send(true) end,function() env.autopilotCommands=nil; env.power=0 end))
