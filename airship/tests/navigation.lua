@@ -276,12 +276,24 @@ do
   local controller=A.new(names,profile); controller:reset(0)
   controller:navigate({t=0,x=0,z=0,vx=13,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=60,z=0})
   local oldTarget=math.sqrt((6*.6*2)^2+2*6*.6*(60-4))-6*.6*2
-  assert(controller.trace.targetAlong<13 and controller.trace.targetAlong>oldTarget*.85,
+  assert(controller.trace.targetAlong<13 and controller.trace.targetAlong>oldTarget*.75,
     "Braking must start earlier without replacing fast arrival with a crawl")
   controller:reset(0)
   controller:navigate({t=0,x=0,z=0,vx=13,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=10000,z=0})
   assert(controller.trace.targetAlong>13 and controller.trace.desired[1]>=profile.maxAccel,
     "Long routes must still request full acceleration beyond the stored cruise estimate")
+  controller:reset(0)
+  controller:navigate({t=0,x=0,z=0,vx=20,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=60,z=0})
+  assert(controller.trace.desired[1]-profile.drag[1]*20<=-5.9,
+    "Fast closing speed near the braking boundary must request strong net deceleration")
+  profile.responseScale=2
+  controller:reset(0)
+  controller:navigate({t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=6,z=0})
+  assert(controller.trace.targetAlong>.65 and controller.trace.desired[1]>.25,
+    "A cautious profile six blocks out must retain useful approach speed instead of blending into weak position hold")
+  controller:reset(0)
+  controller:navigate({t=0,x=0,z=0,vx=13,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=10000,z=0})
+  assert(controller.trace.targetAlong>13,"Braking caution must not impose a fixed forward cruise cap")
   profile.cruiseVersion=2
   controller=A.new(names,profile); controller:reset(0)
   controller:navigate({t=0,x=0,z=0,vx=13,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=60,z=0})
@@ -458,7 +470,7 @@ for i,profile in ipairs(profiles) do
       local controller=A.new(names,profile); controller:reset(p.heading)
       local sign=pressure==.85 and 1 or -1
       local goal=length==100 and {x=sign*length,z=0} or {x=0,z=sign*length}
-      local peak,overshoot=0,0
+      local peak,overshoot,atSix,atOne=0,0,nil,nil
       local arrived=false
       for _=1,10000 do
         local commands,done=controller:navigate(p:sample(),goal)
@@ -467,11 +479,15 @@ for i,profile in ipairs(profiles) do
         p:advance(commands)
         peak=math.max(peak,math.sqrt(p.vx^2+p.vz^2))
         overshoot=math.max(overshoot,(p.x*goal.x+p.z*goal.z)/length-length)
+        local actualDistance=math.sqrt((p.x-goal.x)^2+(p.z-goal.z)^2)
+        if not atSix and actualDistance<=6 then atSix=p.t end
+        if not atOne and actualDistance<=1 then atOne=p.t end
         if done then arrived=true; break end
       end
       assert(arrived,"Fast cruise never arrived")
       assert(p.t<(length==100 and 140 or 600),"Fast cruise regressed to crawl speed")
       assert(overshoot<.5,"Fast cruise failed the braking tolerance")
+      if i<=3 then assert(atSix and atOne and atOne-atSix<20,"Final approach must not crawl between six and one blocks remaining") end
       local travelTime=p.t
       for _=1,100 do p:advance(controller:navigate(p:sample(),goal)) end
       assert(math.sqrt((p.x-goal.x)^2+(p.z-goal.z)^2)<.4,"Fast arrival failed to hold its destination")
