@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.3.8"
+local AIRSHIP_BUILD = "1.4.0"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -97,10 +97,11 @@ local Autopilot = (function()
     self.integral={0,0}; self.headingTarget=heading; self.previous=nil; self.mix=nil; self.goalKey=nil
     self.trim={0,0,0}; self.motion=nil; self.applied=nil; self.track={}
   end
+  function A:setHeadingTarget(heading) self.headingTarget=heading end
   function A:cancel()
     self.job=nil; self:reset(nil)
   end
-  function A:allocate(p,desired)
+  function A:allocate(p,desired,throttleCap)
     local u,group={},{}
     local residual={desired[1],desired[2],desired[3]*p.yawWeight}
     local columns={}
@@ -116,7 +117,7 @@ local Autopilot = (function()
         local b=columns[i]
         local norm=b[1]^2+b[2]^2+b[3]^2+ridge
         local gradient=b[1]*residual[1]+b[2]*residual[2]+b[3]*residual[3]-ridge*u[i]
-        local value=clamp(u[i]+gradient/norm,0,(p.maxThrottle or .35)-group[ch.name]+u[i])
+        local value=clamp(u[i]+gradient/norm,0,math.min(p.maxThrottle or .35,throttleCap or p.maxThrottle or .35)-group[ch.name]+u[i])
         local change=value-u[i]
         u[i]=value; group[ch.name]=group[ch.name]+change
         for j=1,3 do residual[j]=residual[j]-b[j]*change end
@@ -183,10 +184,10 @@ local Autopilot = (function()
     end
     local yaw=clamp(.22*wrap(self.headingTarget-s.heading)-1.8*s.yaw,-.12,.12)+p.drag[3]*ratio*s.yaw
     local desired={acceleration[1]-self.trim[1],acceleration[2]-self.trim[2],yaw-self.trim[3]}
-    local commands,residual=self:allocate(p,desired)
+    local commands,residual=self:allocate(p,desired,(p.maxThrottle or .35)*balance)
     self.applied={desired[1]-(residual and residual[1] or 0),desired[2]-(residual and residual[2] or 0),desired[3]-(residual and residual[3]/p.yawWeight or 0)}
     self.previous=copy(s)
-    return commands,distance<.35 and speed<.08 and math.abs(s.yaw)<.03
+    return commands,distance<.35 and speed<.08 and math.abs(s.yaw)<.03 and math.abs(wrap(self.headingTarget-s.heading))<.03
   end
   function A:begin(s)
     if not A.validSample(s) or s.pressure<=.001 then return false,"Fresh GPS, heading, yaw rate and air pressure are required." end
@@ -878,7 +879,7 @@ local function updateFlight(gpsFresh)
     end
     return
   end
-  if (mode == "AUTOPILOT" or mode == "DESTINATION REACHED") and target then
+  if (mode == "AUTOPILOT" or mode == "FINAL TURN" or mode == "DESTINATION REACHED") and target then
     vectorX,vectorY,power=0,0,0
     if not gpsFresh then autopilotCommands={}; return end
     local sample=navigationSample()
@@ -888,10 +889,17 @@ local function updateFlight(gpsFresh)
       return
     end
     local wasReached=mode=="DESTINATION REACHED"
+    local wasFinalTurn=mode=="FINAL TURN"
     local commands,arrived=navController:navigate(sample,target)
     autopilotCommands=commands or {}
-    if arrived and not wasReached then target={x=sample.x,z=sample.z} end
-    mode=arrived and "DESTINATION REACHED" or "AUTOPILOT"
+    if arrived and mode=="AUTOPILOT" then
+      local dx,dz=target.x-sample.x,target.z-sample.z
+      if dx*dx+dz*dz>.25 then navController:setHeadingTarget(math.atan(dx,dz)) end
+      target={x=sample.x,z=sample.z}
+      mode="FINAL TURN"
+    elseif wasFinalTurn then mode=arrived and "DESTINATION REACHED" or "FINAL TURN"
+    elseif wasReached then mode="DESTINATION REACHED"
+    else mode="AUTOPILOT" end
   end
 end
 
@@ -1556,6 +1564,7 @@ local function refresh()
   elseif mode == "WAITING FOR GPS" then status.text, status.foreground = "Waiting for GPS signal...", colors.orange
   elseif mode == "HOLDING ALTITUDE" then status.text, status.foreground = "ALTITUDE HOLD ACTIVE", colors.lightBlue
   elseif mode == "DESTINATION REACHED" then status.text, status.foreground = "DESTINATION REACHED  |  HOLDING POSITION + ALTITUDE", colors.lime
+  elseif mode == "FINAL TURN" then status.text, status.foreground = "AT DESTINATION  |  ALIGNING TO ROUTE", colors.orange
   elseif mode == "SET ALTITUDE" then status.text, status.foreground = "GPS ready  |  set an altitude target", colors.orange
   elseif mode == "CALIBRATION CONFIRM" then status.text, status.foreground = "Confirm calibration within 8 seconds", colors.orange
   elseif mode == "BURNER SWEEP" and burnerSweep then status.text, status.foreground = ("SWEEP %d/15 | saved %d, skipped %d | press S to stop"):format(burnerSweep.level, burnerSweep.saved, burnerSweep.skipped), colors.orange
