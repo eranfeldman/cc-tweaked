@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.3.0"
+local AIRSHIP_BUILD = "1.3.1"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -204,7 +204,7 @@ local Autopilot = (function()
       if j.index>#self.names*4 then
         local p,err=self:fit(j)
         if not p then self.job=nil; return nil,err end
-        j.candidate=p; j.phase="VERIFY"; j.leg=1; j.at=s.t; j.stable=nil; j.legStart={x=s.x,z=s.z}; j.overshoot=0
+        j.candidate=p; j.phase="VERIFY"; j.leg=1; j.at=s.t; j.stable=nil; j.verifySample=nil; j.legStart={x=s.x,z=s.z}; j.overshoot=0
         j.goals={{x=j.origin.x+4,z=j.origin.z},{x=j.origin.x-4,z=j.origin.z},
           {x=j.origin.x,z=j.origin.z+4},{x=j.origin.x,z=j.origin.z-4},{x=j.origin.x,z=j.origin.z}}
         self:reset(j.heading)
@@ -215,10 +215,23 @@ local Autopilot = (function()
       local gx,gz=goal.x-j.legStart.x,goal.z-j.legStart.z
       local length=math.sqrt(gx*gx+gz*gz)
       if length>.01 then j.overshoot=math.max(j.overshoot,((s.x-goal.x)*gx+(s.z-goal.z)*gz)/length) end
-      local commands,arrived=self:navigate(s,goal,j.candidate)
-      j.stable=arrived and (j.stable or s.t) or nil
+      local commands=self:navigate(s,goal,j.candidate)
+      -- Smooth brief GPS/physics wobble, but keep raw limits so a moving ship cannot pass validation.
+      local f=j.verifySample
+      if not f then f=copy(s); j.verifySample=f
+      else
+        local alpha=1-math.exp(-clamp(s.t-f.t,.01,.5)/.8)
+        for _,key in ipairs({"x","z","vx","vz","yaw"}) do f[key]=f[key]+(s[key]-f[key])*alpha end
+        f.t=s.t
+      end
+      local dx,dz=goal.x-f.x,goal.z-f.z
+      local settled=math.sqrt(dx*dx+dz*dz)<.35 and math.sqrt(f.vx*f.vx+f.vz*f.vz)<.08 and math.abs(f.yaw)<.03
+      local rawDistance=math.sqrt((goal.x-s.x)^2+(goal.z-s.z)^2)
+      local rawSpeed=math.sqrt(s.vx*s.vx+s.vz*s.vz)
+      local bounded=rawDistance<.7 and rawSpeed<.18 and math.abs(s.yaw)<.1
+      j.stable=settled and bounded and (j.stable or s.t) or nil
       if j.stable and s.t-j.stable>=1.5 then
-        j.leg=j.leg+1; j.at=s.t; j.stable=nil; j.legStart={x=s.x,z=s.z}
+        j.leg=j.leg+1; j.at=s.t; j.stable=nil; j.verifySample=copy(s); j.legStart={x=s.x,z=s.z}
         if j.leg>#j.goals then
           if j.overshoot>.5 then
             if j.retry>=2 then self.job=nil; return nil,"Braking validation still overshoots; previous calibration kept." end
@@ -242,7 +255,7 @@ local Autopilot = (function()
         j.candidate.gains[2]=j.candidate.gains[1]*.02
         j.candidate.gains[3]=math.min(4,2.8*math.sqrt(j.candidate.gains[1]))
         j.candidate.maxSpeed=j.candidate.maxSpeed*.85
-        j.leg=1; j.at=s.t; j.stable=nil; j.legStart={x=s.x,z=s.z}; j.overshoot=0; self:reset(j.heading)
+        j.leg=1; j.at=s.t; j.stable=nil; j.verifySample=nil; j.legStart={x=s.x,z=s.z}; j.overshoot=0; self:reset(j.heading)
       end
       return commands,("AUTO TEST %d/5  |  tune pass %d/3"):format(math.min(j.leg,5),j.retry+1)
     end

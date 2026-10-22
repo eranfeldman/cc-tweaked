@@ -74,6 +74,42 @@ for _,scenario in ipairs(scenarios) do
 end
 
 do
+  local candidate={}; for key,value in pairs(profiles[1]) do candidate[key]=value end
+  candidate.gains={table.unpack(profiles[1].gains)}; candidate.validated=false
+  local controller=A.new(names,profiles[1])
+  local s={t=0,x=0,z=-4,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
+  assert(controller:begin(s))
+  local j=controller.job
+  j.phase,j.candidate,j.leg,j.overshoot="VERIFY",candidate,5,0
+  j.goals={{x=4,z=0},{x=-4,z=0},{x=0,z=4},{x=0,z=-4},{x=0,z=0}}
+  j.legStart={x=0,z=-4}
+  controller.navigate=function() return {},false end
+  local completed
+  for i=1,20 do
+    s.t=i*.2; s.x=(i%2==0) and .45 or -.45; s.z=0; s.vx=.05
+    local commands,message
+    commands,message,completed=controller:calibrate(s)
+    if completed then break end
+    assert(commands,message)
+  end
+  assert(completed and completed.validated,"Small bounded rocking/GPS variation should not reset the settle window")
+  local moving=A.new(names,profiles[1])
+  s={t=0,x=0,z=-4,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
+  assert(moving:begin(s))
+  j=moving.job
+  j.phase,j.candidate,j.leg,j.overshoot="VERIFY",candidate,5,0
+  j.goals={{x=4,z=0},{x=-4,z=0},{x=0,z=4},{x=0,z=-4},{x=0,z=0}}
+  j.legStart={x=0,z=-4}
+  moving.navigate=function() return {},false end
+  for i=1,12 do
+    s.t=i*.2; s.x=.8; s.z=0; s.vx=.2
+    moving:calibrate(s)
+  end
+  assert(moving.job and moving.job.stable==nil,"Large raw motion must never pass filtered settling")
+  print("PASS: calibration validation tolerates bounded rocking while rejecting large movement")
+end
+
+do
   local controller=A.new(names,profiles[1])
   local captured
   controller.allocate=function(_,_,desired) captured=desired; return {} end

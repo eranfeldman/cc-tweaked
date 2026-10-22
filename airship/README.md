@@ -4,7 +4,7 @@ CC:Tweaked controller for eight Create Propulsion liquid vector thrusters. GPS, 
 
 ## Install
 
-Controller v1.3.0 includes FULL AUTO CAL. The existing updater installs it without extra dependencies. GPU rendering retains cooperative yields, a 20 Hz refresh target, and native monitor/GPU click support.
+Controller v1.3.1 includes FULL AUTO CAL with a smoothed, bounded settling check to tolerate brief GPS and physics wobble. The existing updater installs it without extra dependencies. GPU rendering retains cooperative yields, a 20 Hz refresh target, and native monitor/GPU click support.
 
 In the computer terminal, install Basalt 2.5, download the updated controller beside it, and run it:
 
