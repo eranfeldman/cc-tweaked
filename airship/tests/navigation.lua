@@ -2,17 +2,39 @@
 local file=assert(io.open("airship/airship.lua","r"))
 local source=file:read("*a"):gsub("\r\n","\n"); file:close()
 local core=assert(source:match("%-%- BEGIN AUTOPILOT CORE\n(.-)\n%-%- END AUTOPILOT CORE"))
-local A=assert(load(core.."\nreturn Autopilot","@autopilot-core"))()
+local A=assert(load(core:gsub('  function A.validSample','  A.testWindow=window\n  function A.validSample',1).."\nreturn Autopilot","@autopilot-core"))()
 local names={"t0","t1","t2","t3","t4","t5","t6","t7"}
 do
   local env=setmetatable({previousPosition={x=0,y=20,z=0},previousSample=0,velocity={x=0,y=0,z=0}},{__index=_G})
   env.os={clock=function() return 3 end}
-  env.gps={locate=function() return 6,20,-3 end}
+  env.FreshGPS={locate=function() return 6,20,-3 end,accept=function() return true end}
+  env.navController={}; env.gpsFilter={}
+  env.colors={orange=1,red=2}
   local locating=assert(source:match('(local function locate%(%)%s*.-)\nlocal function updateFlight'))
   local locate=assert(load(locating..'\nreturn locate',"@slow-gps-velocity","t",env))()
   assert(locate() and env.sampleDt==3 and env.velocity.x==1 and env.velocity.z==-.5,
     "Slow peripheral cycles must use actual GPS elapsed time instead of inflating velocity")
+  env.os.clock=function() return 10 end
+  env.FreshGPS.locate=function() return nil end; env.FreshGPS.error="GPS host ranges disagree"
+  env.burner,env.burnerCommand,env.mode=6,6,"AUTOPILOT"
+  env.navController.cancel=function() end
+  assert(not locate() and env.position==nil and env.power==0 and env.burner==6 and env.manualBurner==6,
+    "Invalid GPS must disengage navigation without shutting down the holding burners")
   print("PASS: three-second peripheral cycle preserves correct GPS velocity units")
+end
+do
+  local samples={{t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=1}}
+  local vx,vz=0,0
+  for i=1,300 do
+    local heading=(i-.5)*.02
+    vx=vx+(math.cos(heading)*.7-math.sin(heading)*.3)*.02
+    vz=vz+(-math.sin(heading)*.7-math.cos(heading)*.3)*.02
+    samples[#samples+1]={t=i*.02,x=0,z=0,vx=vx,vz=vz,heading=i*.02,yaw=1}
+  end
+  local measured=A.testWindow(samples)
+  assert(math.abs(measured.a[1]-.7)<1e-6 and math.abs(measured.a[2]+.3)<1e-6,
+    "Survey must recover body thrust while heading turns through almost a full circle")
+  print("PASS: rotating survey retains correct body acceleration instead of canceling world-space forces")
 end
 do
   local up={.3,math.sqrt(1-.3^2-.2^2),.2}
@@ -122,6 +144,8 @@ do
   assert(legacyResume:resumeVerification(s,legacy) and legacy.maxSpeed==recovered,"Resume must recover speed from the old 8 b/s cap using measured acceleration and drag")
   legacy.maxSpeed=2
   assert(legacyResume:resumeVerification(s,legacy) and legacy.maxSpeed==2,"New controller must preserve its own failed-braking speed reduction")
+  legacy.gpsVersion=nil
+  assert(not legacyResume:resumeVerification(s,legacy),"Unchecked-GPS measurements must not resume as a validated new survey")
   s.t=10.2; s.yaw=1
   local safeCommands,message=resumed:calibrate(s)
   assert(safeCommands and not next(safeCommands) and message:match("paused") and resumed.job.phase=="VERIFY",
@@ -151,6 +175,9 @@ do
   assert(commands and controller.job and controller.job.phase=="BASELINE" and controller.job.index==1,
     "A long sensor gap must restart only the active thruster baseline")
   assert(message:match("repeating thruster 1/32"))
+  controller.job.phase="PULSE"; controller.job.interrupted=true; s.t=11.2
+  commands,message=controller:calibrate(s)
+  assert(commands and controller.job.phase=="BASELINE","A pulse interrupted by bad GPS must restart rather than contaminate the survey")
   print("PASS: navigation sample loss pauses calibration and a long gap restarts the active baseline")
 end
 
@@ -394,6 +421,9 @@ do
   assert(load(loading,"@legacy-profile-load","t",env))()
   assert(env.navController.profile.validated and env.pendingAutopilot.validated==nil,"Migration must retain working profile while preparing auto tests")
   assert(#env.pendingAutopilot.channels==#names*4 and env.pendingAutopilot~=env.navController.profile,"Migration must reuse the survey without modifying the working profile")
+  legacy.gpsVersion=nil; env.pendingAutopilot=nil; env.navController=A.new(names)
+  assert(load(loading,"@unsafe-gps-profile-load","t",env))()
+  assert(not env.navController.profile and not env.pendingAutopilot and env.autopilotNotice:match("GPS"),"Old unchecked-GPS model must require a fresh survey")
   print("PASS: completed legacy profile reuses its full thruster survey for new cruise validation")
 end
 
@@ -476,6 +506,9 @@ do
   sample.yaw=nil
   updateFn(true)
   assert(env.mode=="NAV LOST - RE-ENGAGE" and next(env.autopilotCommands)==nil and env.autopilotNotice:match("yaw"),"Missing yaw rate must stop navigation visibly")
+  env.position=nil; env.burner,env.burnerCommand=6,6
+  updateFn(false)
+  assert(env.burner==6 and env.burnerCommand==6 and env.power==0,"Control pass after GPS loss must preserve holding burner output")
   print("PASS: controller button, fixed burner output, calibration completion and failed-save rollback")
 end
 

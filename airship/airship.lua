@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.6.3"
+local AIRSHIP_BUILD = "1.6.4"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -56,21 +56,29 @@ local Autopilot = (function()
     return {ax,az,(b.yaw-a.yaw)/dt},{vx,vz,(a.yaw+b.yaw)/2}
   end
   local function window(samples)
-    local n,t,tt,h=0,0,0,0
-    local v,tv={0,0,0},{0,0,0}
+    local n,t,tt=0,0,0
+    local a,v,duration={0,0,0},{0,0,0},0
+    local sum,weighted={0,0,0},{0,0,0}
     local x,z,tx,tz=0,0,0,0
     local first=samples[1]
-    for _,s in ipairs(samples) do
+    for index,s in ipairs(samples) do
       local elapsed=s.t-first.t
-      n=n+1; t=t+elapsed; tt=tt+elapsed^2; h=h+wrap(s.heading-first.heading)
+      n=n+1; t=t+elapsed; tt=tt+elapsed^2
       x=x+s.x; z=z+s.z; tx=tx+elapsed*s.x; tz=tz+elapsed*s.z
-      for i,value in ipairs({s.vx,s.vz,s.yaw}) do v[i]=v[i]+value; tv[i]=tv[i]+elapsed*value end
+      if index>1 then
+        local previous=samples[index-1]
+        local dt=s.t-previous.t
+        if dt>0 then
+          local acceleration,velocity=observation(previous,s)
+          for i=1,3 do a[i]=a[i]+acceleration[i]*dt; v[i]=v[i]+velocity[i]*dt end
+          duration=duration+dt
+        end
+      end
+      for i=1,3 do sum[i]=sum[i]+a[i]; weighted[i]=weighted[i]+elapsed*a[i] end
     end
-    local a={}
-    for i=1,3 do a[i]=(tv[i]-t*v[i]/n)/math.max(.0001,tt-t*t/n); v[i]=v[i]/n end
-    local heading=first.heading+h/n
-    a[1],a[2]=body(a[1],a[2],heading); v[1],v[2]=body(v[1],v[2],heading)
+    -- Rotate each interval before averaging; a turning ship's world-space forces cancel out.
     local variance=math.max(.0001,tt-t*t/n)
+    for i=1,3 do a[i]=(weighted[i]-t*sum[i]/n)/variance; v[i]=v[i]/math.max(.0001,duration) end
     return {a=a,v=v,x=x/n,z=z/n,vx=(tx-t*x/n)/variance,vz=(tz-t*z/n)/variance,yaw=v[3],span=samples[n].t-first.t}
   end
   function A.validSample(s)
@@ -252,7 +260,7 @@ local Autopilot = (function()
     return result
   end
   function A:fit(job)
-    local p={version=1,cruiseVersion=2,responseScale=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8,maxThrottle=throttleLimit}
+    local p={version=1,gpsVersion=2,cruiseVersion=2,responseScale=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8,maxThrottle=throttleLimit}
     for index,m in ipairs(job.measurements) do
       local response={}
       for i=1,3 do
@@ -303,6 +311,7 @@ local Autopilot = (function()
   end
   function A:resumeVerification(s,p)
     if not A.validSample(s) or not A.validCandidate(p,self.names) then return false,"Saved thruster model or navigation sample is invalid." end
+    if p.gpsVersion~=2 then return false,"Old survey used unchecked GPS; a fresh thruster survey is required." end
     if s.pressure<=.001 then return false,"Air pressure reading is zero; check the Avionics altitude sensor." end
     if p.cruiseVersion~=2 then
       p.maxSpeed=math.min(math.sqrt(48*p.maxAccel),p.maxAccel*.75/math.max(.02,p.drag[1],p.drag[2]))
@@ -320,7 +329,8 @@ local Autopilot = (function()
     if not j then return nil,"Calibration is not running." end
     if not A.validSample(s) then return {},"Waiting for fresh GPS, heading, yaw rate and pressure readings." end
     if s.t<=j.previous.t then return {},"Waiting for a new navigation sample." end
-    if s.t-j.previous.t>8 then
+    if s.t-j.previous.t>8 or j.interrupted then
+      j.interrupted=nil
       j.previous=copy(s)
       if j.phase=="VERIFY" then
         j.at=s.t; j.stable=nil; j.verifyWindow={copy(s)}; j.legStart={x=s.x,z=s.z}; self:reset(j.heading)
@@ -328,7 +338,7 @@ local Autopilot = (function()
       end
       while #j.coasts>(j.index-1)*2 do table.remove(j.coasts) end
       j.phase="BASELINE"; j.at=s.t; j.window={copy(s)}; j.before=nil; j.pulse=nil
-    return {},("Navigation gap over 8s; repeating thruster %d/%d baseline."):format(j.index,#self.names*4)
+    return {},("Navigation interrupted; repeating thruster %d/%d baseline."):format(j.index,#self.names*4)
     end
     local dt=s.t-j.previous.t
     j.dt=j.dt+dt; j.samples=j.samples+1; j.pressure=j.pressure+s.pressure
@@ -419,6 +429,104 @@ local Autopilot = (function()
   return A
 end)()
 -- END AUTOPILOT CORE
+
+-- BEGIN GPS FIX CORE
+local FreshGPS=(function()
+  local G={channel=40000}
+  local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
+  function G.solve(fixes)
+    if #fixes<4 then return nil,"Need four fresh GPS hosts" end
+    local first=fixes[1]
+    local matrix={{0,0,0,0},{0,0,0,0},{0,0,0,0}}
+    for i=2,#fixes do
+      local f=fixes[i]
+      local row={f.x-first.x,f.y-first.y,f.z-first.z}
+      local length=math.sqrt(row[1]^2+row[2]^2+row[3]^2)
+      if length<.01 then return nil,"Duplicate GPS host positions" end
+      local value=(length^2+first.distance^2-f.distance^2)/(2*length)
+      for j=1,3 do row[j]=row[j]/length end
+      for j=1,3 do
+        for k=1,3 do matrix[j][k]=matrix[j][k]+row[j]*row[k] end
+        matrix[j][4]=matrix[j][4]+row[j]*value
+      end
+    end
+    for col=1,3 do
+      local pivot=col
+      for row=col+1,3 do if math.abs(matrix[row][col])>math.abs(matrix[pivot][col]) then pivot=row end end
+      matrix[col],matrix[pivot]=matrix[pivot],matrix[col]
+      local divisor=matrix[col][col]
+      if math.abs(divisor)<1e-6 then return nil,"GPS host geometry is flat or too narrow" end
+      for j=col,4 do matrix[col][j]=matrix[col][j]/divisor end
+      for row=1,3 do if row~=col then
+        local factor=matrix[row][col]
+        for j=col,4 do matrix[row][j]=matrix[row][j]-factor*matrix[col][j] end
+      end end
+    end
+    local p={x=first.x+matrix[1][4],y=first.y+matrix[2][4],z=first.z+matrix[3][4]}
+    for _,f in ipairs(fixes) do
+      local distance=math.sqrt((p.x-f.x)^2+(p.y-f.y)^2+(p.z-f.z)^2)
+      if math.abs(distance-f.distance)>.75 then return nil,"GPS host ranges disagree" end
+    end
+    return p
+  end
+  function G.accept(state,fix,accel)
+    if not finite(fix.x) or not finite(fix.y) or not finite(fix.z) or not finite(fix.t) then return false,"Invalid GPS coordinates" end
+    local last=state.last
+    if last then
+      local dt=fix.t-last.t
+      if dt<=0 then return false,"Repeated GPS timestamp" end
+      local dx=fix.x-last.x-(state.vx or 0)*dt
+      local dz=fix.z-last.z-(state.vz or 0)*dt
+      local allowance=1.5+.5*accel*math.min(dt,2)^2+(state.vx and 0 or 40*dt)
+      if math.sqrt(dx^2+dz^2)>allowance then return false,"GPS jump rejected" end
+      state.vx=(state.vx or 0)*.5+(fix.x-last.x)/dt*.5
+      state.vz=(state.vz or 0)*.5+(fix.z-last.z)/dt*.5
+    end
+    state.last=fix
+    return true
+  end
+  function G.locate(timeout)
+    local side
+    for _,name in ipairs(rs.getSides()) do
+      if peripheral.getType(name)=="modem" and peripheral.call(name,"isWireless") then side=name; break end
+    end
+    if not side then G.error="No attached wireless modem"; return nil end
+    local modem=peripheral.wrap(side)
+    local reply
+    for _=1,20000 do
+      G.channel=40000+(G.channel-39999)%20000
+      if not modem.isOpen(G.channel) then reply=G.channel; break end
+    end
+    if not reply then G.error="No free GPS reply channel"; return nil end
+    modem.open(reply)
+    local timer=os.startTimer(timeout or 2)
+    local ok,result,reason=pcall(function()
+      modem.transmit(65534,reply,"PING")
+      local fixes,seen={},{}
+      local failure="Need four fresh GPS hosts"
+      while true do
+        local event,from,channel,sender,message,distance=os.pullEvent()
+        if event=="timer" and from==timer then return nil,failure end
+        if event=="modem_message" and from==side and channel==reply and sender==65534 and finite(distance) and distance>=0
+          and type(message)=="table" and finite(message[1]) and finite(message[2]) and finite(message[3]) then
+          local key=message[1]..":"..message[2]..":"..message[3]
+          if not seen[key] then
+            seen[key]=true; fixes[#fixes+1]={x=message[1],y=message[2],z=message[3],distance=distance}
+            local position,err=G.solve(fixes)
+            if position then return position end
+            failure=err
+          end
+        end
+      end
+    end)
+    modem.close(reply); os.cancelTimer(timer)
+    if not ok then G.error=tostring(result); return nil end
+    G.error=reason
+    if result then return result.x,result.y,result.z end
+  end
+  return G
+end)()
+-- END GPS FIX CORE
 
 print("Discovering peripherals...")
 local monitor = peripheral.find("monitor")
@@ -705,20 +813,22 @@ if fs.exists(pendingAutopilotPath) then
   local ok,profile=pcall(function()
     local file=assert(fs.open(pendingAutopilotPath,"r")); local value=textutils.unserialize(file.readAll()); file.close(); return value
   end)
-  if ok and Autopilot.validCandidate(profile,navNames) then pendingAutopilot=profile
+  if ok and Autopilot.validCandidate(profile,navNames) then
+    if profile.gpsVersion==2 then pendingAutopilot=profile
+    else autopilotNotice="Old survey used unchecked GPS; FULL AUTO CAL must measure again." end
   else clearPendingAutopilot() end
 end
 if fs.exists("airship-autopilot.cfg") then
   local ok,profile=pcall(function()
     local file=assert(fs.open("airship-autopilot.cfg","r")); local value=textutils.unserialize(file.readAll()); file.close(); return value
   end)
-  if ok and Autopilot.validProfile(profile,navNames) then
+  if ok and Autopilot.validProfile(profile,navNames) and profile.gpsVersion==2 then
     navController.profile=profile
     if not pendingAutopilot and profile.cruiseVersion~=2 then
       pendingAutopilot=textutils.unserialize(textutils.serialize(profile))
       pendingAutopilot.validated=nil
     end
-  else autopilotNotice="Saved autopilot profile is invalid or thrusters changed; run FULL AUTO CAL." end
+  else autopilotNotice="Saved autopilot needs a fresh GPS-checked survey; run FULL AUTO CAL." end
 end
 local sweepConfirmAt
 local sweepSummary
@@ -854,6 +964,7 @@ if pendingAutopilot then
 end
 local velocity = {x=0, y=0, z=0}
 local previousPosition, previousSample
+local gpsFilter={}
 local sampleDt = .5
 local altitudeSensorHeight
 local altitudeSensorReady = false
@@ -985,11 +1096,16 @@ local function locate()
     if ok then headingRate=Autopilot.headingRate(rates,gravityOk and gravity or nil) end
     if headingRate then yawRate=headingRate; yawAt=os.clock() end
   end
-  local x, y, z = gps.locate(2, false)
+  local x, y, z = FreshGPS.locate(2)
   now=os.clock()
   if x then
+    if shipHeading then x,z=x+2*math.sin(shipHeading),z+2*math.cos(shipHeading) end
+    local profile=navController.job and navController.job.candidate or navController.profile
+    local accepted,reason=FreshGPS.accept(gpsFilter,{t=now,x=x,y=y,z=z},math.max(12,profile and profile.maxAccel*2 or 12))
+    if not accepted then x=nil; FreshGPS.error=reason end
+  end
+  if x then
     local centerX,centerZ=x,z
-    if shipHeading then centerX,centerZ=x+2*math.sin(shipHeading),z+2*math.cos(shipHeading) end
     if previousPosition and previousSample then
       sampleDt = math.max(.01, now - previousSample)
       velocity.x = velocity.x * .5 + ((centerX - previousPosition.x) / sampleDt) * .5
@@ -1007,24 +1123,27 @@ local function locate()
     previousPosition, previousSample = nil, nil
     velocity = {x=0, y=0, z=0}
     lastGpsAt = nil
+    gpsFilter={}
     if mode ~= "STOPPED" then
-      vectorX, vectorY, power, burner, burnerCommand = 0, 0, 0, 0, 0
+      vectorX, vectorY, power = 0, 0, 0
       if burnerSweep then
         sweepSummary = ("Sweep aborted: GPS lost. Saved %d/11; skipped %d."):format(burnerSweep.saved, burnerSweep.skipped)
         sweepSummaryUntil = os.clock() + 15
       end
-      burnerSweep, manualBurner = nil, nil
-      if fullCalibration then autopilotNotice="GPS lost; full calibration stopped. Previous profile kept."; autopilotNoticeColor=colors.red
-      else autopilotNotice=nil end
+      burnerSweep, manualBurner = nil, burner
+      if fullCalibration then autopilotNotice="GPS invalid: "..tostring(FreshGPS.error).."; calibration stopped, burner held."; autopilotNoticeColor=colors.red
+      else autopilotNotice="GPS invalid: "..tostring(FreshGPS.error or "no fix").."; re-engage AUTO."; autopilotNoticeColor=colors.orange end
       navController:cancel(); autopilotCommands,fullCalibration=nil,nil; calibrationRunning=false
       mode = mode == "AUTOPILOT" and "GPS LOST - RE-ENGAGE" or "WAITING FOR GPS"
     end
+  elseif FreshGPS.error and (fullCalibration or mode=="AUTOPILOT" or not position) then
+    autopilotNotice="GPS paused: "..FreshGPS.error; autopilotNoticeColor=colors.orange
   end
   return false
 end
 local function updateFlight(gpsFresh)
   if not position then
-    vectorX, vectorY, power, burner, burnerCommand = 0, 0, 0, 0, 0
+    vectorX, vectorY, power = 0, 0, 0
     if mode ~= "STOPPED" and mode ~= "GPS LOST - RE-ENGAGE" then mode = "WAITING FOR GPS" end
     return
   end
@@ -1044,7 +1163,11 @@ local function updateFlight(gpsFresh)
   end
   if fullCalibration then
     vectorX,vectorY,power=0,0,0
-    if not gpsFresh then autopilotCommands={}; return end
+    if not gpsFresh then
+      autopilotCommands={}
+      if navController.job and navController.job.phase~="VERIFY" then navController.job.interrupted=true end
+      return
+    end
     local sample=navigationSample()
     if not navController.job then
       local started,message=navController:begin(sample)
@@ -1417,7 +1540,7 @@ local function startFullCalibration()
     return
   end
   if not position then
-    autopilotNotice,autopilotNoticeColor="Wait for a GPS fix before FULL AUTO CAL.",colors.orange
+    autopilotNotice,autopilotNoticeColor="GPS: "..tostring(FreshGPS.error or "waiting for a fix").."; FULL AUTO CAL needs a valid fix.",colors.orange
     status.text,status.foreground=autopilotNotice,autopilotNoticeColor
     return
   end
