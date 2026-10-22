@@ -74,7 +74,7 @@ for _,scenario in ipairs(scenarios) do
   assert(controller:begin(p:sample()))
   local commands={}
   local completed
-  for _=1,5000 do
+  for _=1,10000 do
     p:advance(commands)
     local message
     commands,message,completed=controller:calibrate(p:sample())
@@ -99,7 +99,7 @@ end
 
 do
   local candidate={}; for k,v in pairs(profiles[1]) do candidate[k]=v end
-  candidate.validated=nil
+  candidate.validated=nil; candidate.cruiseVersion=nil
   candidate.maxSpeed=17; candidate.gains={.09,.001,.66}
   local resumed=A.new(names)
   local s={t=10,x=5,z=-3,vx=0,vz=0,heading=.4,yaw=.05,pressure=.85}
@@ -107,9 +107,11 @@ do
   local recovered=math.min(math.sqrt(48*candidate.maxAccel),candidate.maxAccel*.75/math.max(.02,candidate.drag[1],candidate.drag[2]))
   assert(candidate.maxSpeed==recovered and candidate.gains[1]==.0324,"Resume must use measured speed while bounding gains")
   local legacy={}; for k,v in pairs(profiles[1]) do legacy[k]=v end
-  legacy.maxSpeed=8
+  legacy.maxSpeed=2; legacy.cruiseVersion=nil
   local legacyResume=A.new(names)
   assert(legacyResume:resumeVerification(s,legacy) and legacy.maxSpeed==recovered,"Resume must recover speed from the old 8 b/s cap using measured acceleration and drag")
+  legacy.maxSpeed=2
+  assert(legacyResume:resumeVerification(s,legacy) and legacy.maxSpeed==2,"New controller must preserve its own failed-braking speed reduction")
   s.t=10.2; s.yaw=1
   local safeCommands,message=resumed:calibrate(s)
   assert(safeCommands and not next(safeCommands) and message:match("paused") and resumed.job.phase=="VERIFY",
@@ -188,6 +190,42 @@ do
     assert(not saved,"Sustained drift through the destination must not pass calibration")
   end
   print("PASS: calibration validation tolerates bounded rocking while rejecting large movement")
+end
+
+do
+  local oldNames,oldMounts=names,mounts
+  names,mounts={},{}
+  local profile={}; for k,v in pairs(profiles[1]) do profile[k]=v end
+  profile.names,profile.channels={},{}
+  for i=1,24 do
+    local name=("t%02d"):format(i)
+    names[i],profile.names[i]=name,name
+    local sourceIndex=math.floor((i-1)/3)+1
+    mounts[i]=oldMounts[sourceIndex]
+    for d=1,4 do
+      local ch=profiles[1].channels[(sourceIndex-1)*4+d]
+      profile.channels[#profile.channels+1]={name=name,x=ch.x,y=ch.y,b={ch.b[1]/3,ch.b[2]/3,ch.b[3]/3}}
+    end
+  end
+  assert(A.validProfile(profile,names))
+  local p=plant(3,.3,.01)
+  p.heading,p.vx,p.vz=2.5,-2,2
+  local controller=A.new(names,profile); controller:reset(p.heading)
+  local goal={x=400,z=300}
+  local arrived,peak,cross= false,0,0
+  for _=1,4000 do
+    if p.t>20 then p.pressure=.3 end
+    local commands,done=controller:navigate(p:sample(),goal)
+    p:advance(commands)
+    peak=math.max(peak,math.sqrt(p.vx^2+p.vz^2))
+    cross=math.max(cross,math.abs(-.6*p.x+.8*p.z))
+    if done then arrived=true; break end
+  end
+  assert(arrived,"24-thruster diagonal route failed to arrive after a pressure change")
+  assert(peak>profile.maxSpeed*.8,"Diagonal cruise failed to reach its measured speed")
+  assert(cross<6,"Sideways initial velocity caused a curved or divergent route")
+  print(("PASS: 24 thrusters, diagonal, initial sideways drift, changing pressure; %.2fm/s peak, %.2fm cross-track, %.1fs"):format(peak,cross,p.t))
+  names,mounts=oldNames,oldMounts
 end
 
 do
@@ -334,6 +372,22 @@ do
 end
 
 do
+  local function clone(value)
+    if type(value)~="table" then return value end
+    local result={}; for k,v in pairs(value) do result[k]=clone(v) end; return result
+  end
+  local legacy=clone(profiles[1]); legacy.cruiseVersion=nil; legacy.maxSpeed=2
+  local env=setmetatable({Autopilot=A,navNames=names,navController=A.new(names)}, {__index=_G})
+  env.fs={exists=function() return true end,open=function() return {readAll=function() return "saved" end,close=function() end} end}
+  env.textutils={serialize=function() return "saved" end,unserialize=function() return clone(legacy) end}
+  local loading=assert(source:match('(if fs.exists%("airship%-autopilot.cfg"%) then.-)\nlocal sweepConfirmAt'))
+  assert(load(loading,"@legacy-profile-load","t",env))()
+  assert(env.navController.profile.validated and env.pendingAutopilot.validated==nil,"Migration must retain working profile while preparing auto tests")
+  assert(#env.pendingAutopilot.channels==#names*4 and env.pendingAutopilot~=env.navController.profile,"Migration must reuse the survey without modifying the working profile")
+  print("PASS: completed legacy profile reuses its full thruster survey for new cruise validation")
+end
+
+do
   local p=plant(1,.2)
   local old=profiles[1]
   local controller=A.new(names,old)
@@ -403,6 +457,11 @@ do
   env.mode,env.target="AUTOPILOT",{x=10,z=0}; sample.tilt=nil
   updateFn(true)
   assert(env.mode=="AUTOPILOT","Gyro-handled tilt must not stop navigation")
+  local destination=env.target
+  env.navController.navigate=function() return {},true end
+  env.nearestCardinalHeading=function() return 0 end
+  updateFn(true)
+  assert(env.mode=="FINAL TURN" and env.target==destination,"Arrival turn must preserve the requested destination")
   sample.yaw=nil
   updateFn(true)
   assert(env.mode=="NAV LOST - RE-ENGAGE" and next(env.autopilotCommands)==nil and env.autopilotNotice:match("yaw"),"Missing yaw rate must stop navigation visibly")
