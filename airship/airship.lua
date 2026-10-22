@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.6.8"
+local AIRSHIP_BUILD = "1.6.9"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -281,7 +281,7 @@ local Autopilot = (function()
     return math.min(math.sqrt(96*p.maxAccel),p.maxAccel*.9/math.max(.02,p.drag[1],p.drag[2]))
   end
   function A:fit(job)
-    local p={version=1,gpsVersion=2,cruiseVersion=3,responseScale=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8,maxThrottle=throttleLimit}
+    local p={version=1,gpsVersion=2,cruiseVersion=3,validationVersion=2,responseScale=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8,maxThrottle=throttleLimit}
     for index,m in ipairs(job.measurements) do
       local response={}
       for i=1,3 do
@@ -338,12 +338,32 @@ local Autopilot = (function()
       p.maxSpeed=A.cruiseSpeed(p)
       p.cruiseVersion,p.responseScale=3,1
     end
+    if p.validationVersion~=2 then
+      p.maxSpeed=A.cruiseSpeed(p); p.responseScale=1; p.validationVersion=2
+    end
     p.gains={math.min(p.gains[1],.0324),math.min(p.gains[2],.00065),math.min(1,math.max(p.gains[3],.396))}
     self:reset(s.heading)
     self.job={phase="VERIFY",at=s.t,previous=copy(s),origin={x=s.x,z=s.z},heading=s.heading,
       candidate=p,leg=1,stable=nil,verifyWindow={copy(s)},legStart={x=s.x,z=s.z},overshoot=0,retry=0,persistRevision=0,dt=0,samples=0,pressure=0}
     self.job.goals=travelGoals(self.job)
     return true
+  end
+  local function retryLeg(controller,j,s,reason,braking,speed)
+    if j.retry>=4 then
+      controller.job=nil
+      return nil,("Auto test %d failed after 5 attempts: %s. Previous calibration kept."):format(j.leg,reason)
+    end
+    j.retry=j.retry+1; j.totalRetries=(j.totalRetries or 0)+1; j.persistRevision=(j.persistRevision or 0)+1
+    if braking then
+      j.candidate.responseScale=math.min(4,(j.candidate.responseScale or 1)*1.2)
+    else
+      local gains=j.candidate.gains
+      if speed>.35 then gains[3]=math.min(4,gains[3]*1.2)
+      else gains[1]=clamp(gains[1]*1.25,.0001,.25); gains[2]=gains[1]*.02 end
+    end
+    j.lastRetry=reason; j.returning=true; j.at=s.t; j.stable=nil; j.verifyWindow=nil
+    controller:reset(j.heading)
+    return {},("AUTO TEST %d/5 retry %d/5: %s; returning to start."):format(j.leg,j.retry+1,reason)
   end
   function A:calibrate(s)
     local j=self.job
@@ -354,7 +374,7 @@ local Autopilot = (function()
       j.interrupted=nil
       j.previous=copy(s)
       if j.phase=="VERIFY" then
-        j.at=s.t; j.stable=nil; j.verifyWindow={copy(s)}; j.legStart={x=s.x,z=s.z}; self:reset(j.heading)
+        j.at=s.t; j.stable=nil; j.verifyWindow={copy(s)}; j.overAt=nil; self:reset(j.heading)
         return {},("Navigation gap; restarting auto test %d/5."):format(j.leg)
       end
       while #j.coasts>(j.index-1)*2 do table.remove(j.coasts) end
@@ -389,10 +409,16 @@ local Autopilot = (function()
       if math.abs(s.yaw)>.8 then
         return {},("Auto tests paused at yaw %.2f rad/s; thrusters are off, model saved. Press HOLD before resuming."):format(s.yaw)
       end
-      local goal=j.goals[j.leg]
-      local gx,gz=goal.x-j.legStart.x,goal.z-j.legStart.z
+      local destination=j.goals[j.leg]
+      local goal=j.returning and j.legStart or destination
+      local gx,gz=destination.x-j.legStart.x,destination.z-j.legStart.z
       local length=math.sqrt(gx*gx+gz*gz)
-      if length>.01 then j.overshoot=math.max(j.overshoot,((s.x-goal.x)*gx+(s.z-goal.z)*gz)/length) end
+      if not j.returning and length>.01 then
+        local over=((s.x-destination.x)*gx+(s.z-destination.z)*gz)/length
+        j.overAt=over>.5 and (j.overAt or s.t) or nil
+        -- One noisy fix must not fail a run; sustained or large overshoot still does.
+        if over<=.5 or over>2 or j.overAt and s.t-j.overAt>=.3 then j.overshoot=math.max(j.overshoot,over) end
+      end
       local commands=self:navigate(s,goal,j.candidate)
       -- Measure net drift over several rocking cycles; bound each position so real excursions cannot pass.
       j.verifyWindow=j.verifyWindow or {}
@@ -406,40 +432,30 @@ local Autopilot = (function()
       local bounded=rawDistance<.7 and math.abs(s.yaw)<.1
       j.stable=settled and bounded and (j.stable or s.t) or nil
       if j.stable and s.t-j.stable>=1.5 and f.span>=3 then
+        if j.returning then
+          j.returning=nil; j.at=s.t; j.stable=nil; j.verifyWindow=nil; j.overshoot=0; j.overAt=nil
+          self:reset(j.heading)
+          return {},("AUTO TEST %d/5 retry %d/5: %s; starting repeat."):format(j.leg,j.retry+1,j.lastRetry)
+        elseif j.overshoot>.5 then
+          return retryLeg(self,j,s,("overshoot %.2fm > 0.50m"):format(j.overshoot),true)
+        end
+        j.maxOvershoot=math.max(j.maxOvershoot or 0,j.overshoot)
         j.leg=j.leg+1; j.at=s.t; j.stable=nil; j.verifyWindow=nil; j.legStart={x=s.x,z=s.z}
+        j.retry=0; j.overshoot=0; j.overAt=nil; j.lastRetry=nil
         if j.leg>#j.goals then
-          if j.overshoot>.5 then
-            if j.retry>=4 then self.job=nil; return nil,"Braking validation still overshoots; previous calibration kept." end
-            j.retry=j.retry+1; j.persistRevision=(j.persistRevision or 0)+1
-            j.candidate.maxSpeed=j.candidate.maxSpeed*.8
-            j.candidate.responseScale=math.min(4,(j.candidate.responseScale or 1)*1.25)
-            j.leg=1; j.overshoot=0; self:reset(j.heading)
-            return {},"Retuning braking; repeating all four direction tests."
-          end
           j.candidate.validated=true
-          j.candidate.verification={overshoot=j.overshoot,passes=j.retry+1,peakSpeed=j.peakSpeed}
+          j.candidate.verification={overshoot=j.maxOvershoot,retries=j.totalRetries or 0,tests=#j.goals,peakSpeed=j.peakSpeed}
           self.job=nil
           return {},nil,j.candidate
         end
       elseif s.t-j.at>math.max(60,6/math.sqrt(j.candidate.gains[1]))+length/math.max(.1,j.candidate.maxSpeed)*2 then
-        if j.retry>=4 then
-          self.job=nil
-          return nil,("Auto test %d stalled: error %.2fm, drift %.2fm/s, yaw %.3f. Previous calibration kept."):format(j.leg,math.sqrt(dx*dx+dz*dz),math.sqrt(f.vx^2+f.vz^2),math.abs(f.yaw))
+        if not j.returning and j.overshoot>.5 then
+          return retryLeg(self,j,s,("overshoot %.2fm > 0.50m"):format(j.overshoot),true)
         end
-        j.retry=j.retry+1; j.persistRevision=(j.persistRevision or 0)+1
         local speed=math.sqrt(f.vx*f.vx+f.vz*f.vz)
-        if math.sqrt(dx*dx+dz*dz)<=2 then
-          j.candidate.gains[1]=clamp(j.candidate.gains[1]*(speed>.12 and .7 or 1.25),.0001,.25)
-          j.candidate.gains[2]=j.candidate.gains[1]*.02
-          j.candidate.gains[3]=math.min(4,2.8*math.sqrt(j.candidate.gains[1]))
-        end
-        if speed>.12 or math.sqrt(dx*dx+dz*dz)>2 then
-          j.candidate.maxSpeed=j.candidate.maxSpeed*.85
-          j.candidate.responseScale=math.min(4,(j.candidate.responseScale or 1)*1.25)
-        end
-        j.leg=1; j.at=s.t; j.stable=nil; j.verifyWindow=nil; j.legStart={x=s.x,z=s.z}; j.overshoot=0; self:reset(j.heading)
+        return retryLeg(self,j,s,("%stimeout %.1fm %.2fm/s yaw %.2f"):format(j.returning and "return " or "",math.sqrt(dx*dx+dz*dz),speed,math.abs(f.yaw)),false,speed)
       end
-      return commands,("AUTO TEST %d/5 | %.2fm %.2fm/s | pass %d/5"):format(math.min(j.leg,5),math.sqrt(dx*dx+dz*dz),math.sqrt(f.vx^2+f.vz^2),j.retry+1)
+      return commands,("%s %d/5 try %d/5%s | %.2fm %.2fm/s"):format(j.returning and "RETURN" or "AUTO TEST",math.min(j.leg,5),j.retry+1,j.lastRetry and " | "..j.lastRetry or "",math.sqrt(dx*dx+dz*dz),math.sqrt(f.vx^2+f.vz^2))
     end
     local commands={}
     if j.phase=="WARMUP" or j.phase=="PULSE" then
@@ -786,8 +802,9 @@ local flightRecording
 local function recordFlight(s,goal,profile,commands,stage)
   if not Autopilot.validSample(s) then return end
   local r=flightRecording
+  if r and stage:match("^CAL_") and r.stage~=stage then r=nil end
   if r and (r.failed or r.count>=180 or s.t-r.at<.5) then return end
-  r=r or {t=s.t,x=s.x,z=s.z,at=s.t-.5,count=0}
+  r=r or {t=s.t,x=s.x,z=s.z,at=s.t-.5,count=0,stage=stage}
   flightRecording=r
   local file
   local ok,err=pcall(function()
@@ -1224,7 +1241,7 @@ local function updateFlight(gpsFresh)
     local commands,message,completed=navController:calibrate(sample)
     autopilotCommands=commands or {}
     local job=navController.job
-    if job and job.phase=="VERIFY" then recordFlight(sample,job.goals[job.leg],job.candidate,commands,"CAL_"..job.leg.."_PASS_"..(job.retry+1)) end
+    if job and job.phase=="VERIFY" then recordFlight(sample,job.returning and job.legStart or job.goals[job.leg],job.candidate,commands,"CAL_"..job.leg.."_TRY_"..(job.retry+1)..(job.returning and "_RETURN" or "")) end
     if job and job.phase=="VERIFY" and (not pendingAutopilot or pendingRetry~=job.persistRevision) then
       local saved,err=pcall(savePendingAutopilot,job.candidate)
       if saved then pendingAutopilot=job.candidate; pendingRetry=job.persistRevision

@@ -144,6 +144,10 @@ do
   assert(legacyResume:resumeVerification(s,legacy) and legacy.maxSpeed==recovered,"Resume must recover speed from the old 8 b/s cap using measured acceleration and drag")
   legacy.maxSpeed=2
   assert(legacyResume:resumeVerification(s,legacy) and legacy.maxSpeed==2,"New controller must preserve its own failed-braking speed reduction")
+  local ratcheted={}; for k,v in pairs(profiles[1]) do ratcheted[k]=v end
+  ratcheted.validationVersion=nil; ratcheted.maxSpeed=2; ratcheted.responseScale=2
+  assert(A.new(names):resumeVerification(s,ratcheted) and ratcheted.maxSpeed==A.cruiseSpeed(ratcheted) and ratcheted.responseScale==1,
+    "Upgrade must reuse the survey and discard speed cuts caused by the old retry loop")
   legacy.gpsVersion=nil
   assert(not legacyResume:resumeVerification(s,legacy),"Unchecked-GPS measurements must not resume as a validated new survey")
   s.t=10.2; s.yaw=1
@@ -319,14 +323,78 @@ do
   local p=candidate.gains[1]
   s.t=2
   local commands,message=controller:calibrate(s)
-  assert(commands and message:match("Retuning") and candidate.gains[1]==p and candidate.responseScale>1 and not candidate.validated,
-    "Braking retuning must adjust stopping response without weakening position hold")
+  assert(commands and message:match("overshoot") and candidate.gains[1]==p and candidate.responseScale>1 and not candidate.validated,
+    "Braking retuning must explain the failure without weakening position hold")
+  assert(j.leg==5 and j.returning and candidate.maxSpeed==old.maxSpeed,"Only the failed leg must repeat; cruising estimate must not be ratcheted down")
+  j.returning=nil
   j.retry,j.leg,j.stable,j.overshoot=4,5,2,1
   j.verifyWindow={{t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85,tilt=0}}
   s.t=4
   commands,message=controller:calibrate(s)
-  assert(not commands and message:match("overshoots") and controller.profile==old,"Excessive overshoot must never replace the working profile")
+  assert(not commands and message:match("overshoot") and controller.profile==old,"Excessive overshoot must never replace the working profile")
   print("PASS: overshoot triggers automatic retuning and rejects failed validation")
+end
+
+do
+  local old=profiles[1]
+  local function fixture()
+    local candidate={}; for k,v in pairs(old) do candidate[k]=v end
+    candidate.gains={table.unpack(old.gains)}; candidate.validated=nil
+    local controller=A.new(names,old)
+    local s={t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
+    assert(controller:resumeVerification(s,candidate))
+    local j=controller.job
+    j.goals={{x=10,z=0},{x=20,z=0},{x=30,z=0},{x=40,z=0},{x=0,z=0}}
+    controller.navigate=function(_,sample,goal)
+      j.lastGoal=goal
+      return {},false
+    end
+    return controller,j,s,candidate
+  end
+  local function settle(controller,j,s,x)
+    s.x=x; s.vx=0; s.t=s.t+2
+    j.at=s.t; j.stable=s.t-2
+    j.verifyWindow={{t=s.t-4,x=x,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}}
+    return controller:calibrate(s)
+  end
+  local c,j,s,candidate=fixture()
+  j.leg=3; j.legStart={x=20,z=0}; j.overshoot=.8
+  local _,reason=settle(c,j,s,30)
+  assert(j.leg==3 and j.returning and j.retry==1 and reason:match('overshoot'),'Overshoot must repeat test 3, not reset completed tests 1 and 2')
+  settle(c,j,s,20)
+  assert(not j.returning and j.leg==3 and j.overshoot==0 and j.legStart.x==20,'Retry must return to its original start before testing braking again')
+  _,reason=settle(c,j,s,30)
+  assert(j.leg==4 and j.retry==0 and j.maxOvershoot==0,'A successful retry must advance and reset the per-test attempt counter')
+  settle(c,j,s,40)
+  local _,_,saved=settle(c,j,s,0)
+  assert(saved==candidate and saved.verification.tests==5 and saved.verification.retries==1 and not c.job,'Passing test 5 must finish once, not start another pass')
+
+  c,j,s,candidate=fixture(); j.leg=3; j.legStart={x=20,z=0}
+  local speed,response,p=candidate.maxSpeed,candidate.responseScale,candidate.gains[1]
+  s.t=200; s.x=22; s.vx=.19; j.previous.t=199.8
+  j.verifyWindow={{t=196,x=21.24,z=0,vx=.19,vz=0,heading=0,yaw=0,pressure=.85}}
+  local _,message=c:calibrate(s)
+  assert(j.leg==3 and j.returning and j.retry==1 and message:match('timeout'),'Slow arrival must show a timeout and retry the current test')
+  assert(candidate.maxSpeed==speed and candidate.responseScale==response and candidate.gains[1]>p,'Slow arrival must strengthen hold without cutting cruise speed')
+  s.t=200.2
+  _,message=c:calibrate(s)
+  assert(message:match('RETURN 3/5') and message:match('timeout'),'The retry reason must remain visible during the return flight')
+
+  c,j,s=fixture()
+  s.t=.2; s.x=10.6; c:calibrate(s)
+  assert(j.overshoot<=.5,'One small GPS wobble must not fail the whole calibration')
+  s.t=.4; s.x=10; c:calibrate(s)
+  s.t=.6; s.x=10.6; c:calibrate(s)
+  s.t=1; c:calibrate(s)
+  assert(j.overshoot>.5,'Sustained overshoot must still fail validation')
+  c,j,s=fixture(); s.t=.2; s.x=12.1; c:calibrate(s)
+  assert(j.overshoot>2,'A large overshoot must be retained even from one sample')
+  c,j,s=fixture(); s.t=.2; s.x=10.6; c:calibrate(s)
+  s.t=9; c:calibrate(s)
+  assert(j.overAt==nil and j.legStart.x==0,'A navigation gap must preserve run-up geometry but reset the overshoot duration evidence')
+  s.t=9.2; c:calibrate(s)
+  assert(j.overshoot<=.5,'Time without navigation samples must not count as sustained overshoot')
+  print('PASS: per-test retries retain completed legs, repeat the full run-up, finish once, keep cruise speed, and reject sustained overshoot')
 end
 
 for i,profile in ipairs(profiles) do
@@ -590,5 +658,7 @@ do
   local report=table.concat(lines,'\n')
   assert(not report:find('123456',1,true) and not report:find('654321',1,true),"Flight report exposed absolute GPS coordinates")
   assert(lines[4]:find('0,CAL_1_PASS_4,0,0,20,-10',1,true),"Flight report must retain relative target and movement")
+  record(s,goal,profiles[1],{},"CAL_2_TRY_1")
+  assert(closed==181 and #lines==4 and lines[4]:find('CAL_2_TRY_1',1,true),"A new test or retry must replace the old report without accumulating more files")
   print("PASS: bounded flight report includes model and commands without absolute GPS coordinates")
 end
