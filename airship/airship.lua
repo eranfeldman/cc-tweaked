@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.4.0"
+local AIRSHIP_BUILD = "1.4.1"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -810,13 +810,15 @@ local function locate()
   local x, y, z = gps.locate(.5, false)
   now=os.clock()
   if x then
+    local centerX,centerZ=x,z
+    if shipHeading then centerX,centerZ=x+2*math.sin(shipHeading),z+2*math.cos(shipHeading) end
     if previousPosition and previousSample then
       sampleDt = clamp(now - previousSample, .01, 1.5)
-      velocity.x = velocity.x * .5 + ((x - previousPosition.x) / sampleDt) * .5
+      velocity.x = velocity.x * .5 + ((centerX - previousPosition.x) / sampleDt) * .5
       if not altitudeSensorReady then velocity.y = velocity.y * .5 + ((y - previousPosition.y) / sampleDt) * .5 end
-      velocity.z = velocity.z * .5 + ((z - previousPosition.z) / sampleDt) * .5
+      velocity.z = velocity.z * .5 + ((centerZ - previousPosition.z) / sampleDt) * .5
     end
-    position = {x=x, y=altitudeSensorReady and altitudeSensorHeight or y, z=z}
+    position = {x=centerX, y=altitudeSensorReady and altitudeSensorHeight or y, z=centerZ}
     previousPosition, previousSample = position, now
     lastGpsAt = now
     if not altitude then altitude = math.floor(position.y + .5) end
