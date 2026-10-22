@@ -349,6 +349,9 @@ do
   assert(env.navController.profile==previous and env.autopilotNotice:match("could not save"),"Save failure replaced the working profile")
   env.mode,env.target="AUTOPILOT",{x=10,z=0}; sample.tilt=nil
   updateFn(true)
-  assert(env.mode=="NAV LOST - RE-ENGAGE" and next(env.autopilotCommands)==nil and env.autopilotNotice:match("gravity"),"Missing gravity must stop fast navigation visibly")
+  assert(env.mode=="AUTOPILOT","Gyro-handled tilt must not stop navigation")
+  sample.yaw=nil
+  updateFn(true)
+  assert(env.mode=="NAV LOST - RE-ENGAGE" and next(env.autopilotCommands)==nil and env.autopilotNotice:match("yaw"),"Missing yaw rate must stop navigation visibly")
   print("PASS: controller button, fixed burner output, calibration completion and failed-save rollback")
 end

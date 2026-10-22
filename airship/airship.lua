@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.5.2"
+local AIRSHIP_BUILD = "1.5.3"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -338,21 +338,32 @@ end)()
 print("Discovering peripherals...")
 local monitor = peripheral.find("monitor")
 local directGpu, directDisplay, directWidth, directHeight, directGpuError
-local directGpuEnabled = true
+local directGpuEnabled = (...) ~= "--no-gpu"
 local findAvionics
-local function setupDirectGpu()
+local gpuSetupStage
+local function gpuSetupProgress(stage)
+  gpuSetupStage = stage
+  print("GPU: " .. stage)
+  local file = fs.open("airship-gpu.log", "a")
+  if file then file.writeLine(stage); file.close() end
+end
+local function configureDirectGpu()
+  gpuSetupProgress("find peripheral")
   local gpuFound = peripheral.wrap("directgpu_5") or peripheral.find("directgpu")
   yieldComputer()
   if not gpuFound then directGpuError = "DirectGPU peripheral not found"; return false end
+  gpuSetupProgress("listDisplays")
   local listOk, displays = pcall(gpuFound.listDisplays)
   yieldComputer()
   local display = listOk and type(displays) == "table" and displays[1]
   local function getInfo(id)
     if id == nil then return nil, "no display ID returned" end
+    gpuSetupProgress("getDisplayInfo " .. tostring(id))
     local ok, info = pcall(gpuFound.getDisplayInfo, id)
     yieldComputer()
     if not ok then return nil, tostring(info) end
-    if not info or type(info.pixelWidth) ~= "number" or type(info.pixelHeight) ~= "number" then
+    if type(info) ~= "table" or type(info.pixelWidth) ~= "number" or type(info.pixelHeight) ~= "number"
+      or not (info.pixelWidth > 0 and info.pixelWidth < math.huge and info.pixelHeight > 0 and info.pixelHeight < math.huge) then
       return nil, "display info has no pixel dimensions"
     end
     return info
@@ -360,12 +371,14 @@ local function setupDirectGpu()
   local info, infoError = getInfo(display)
   local setupError
   if not info then
+    gpuSetupProgress("create display at resolution 1")
     local created, newDisplay = pcall(gpuFound.autoDetectAndCreateDisplayWithResolution, 1)
     yieldComputer()
     if created then display = newDisplay; info, infoError = getInfo(display)
     else setupError = "create display: " .. tostring(newDisplay) end
   end
   if info then
+    gpuSetupProgress("enableMouseEvents")
     local mouseOk, mouseError = pcall(gpuFound.enableMouseEvents, display, true, false)
     yieldComputer()
     if not mouseOk then
@@ -376,8 +389,10 @@ local function setupDirectGpu()
     directGpu, directDisplay = gpuFound, display
     directWidth, directHeight = info.pixelWidth, info.pixelHeight
     directGpuError = nil
+    gpuSetupProgress("ready")
     return true
   else
+    gpuSetupProgress("autoDetectMonitor")
     local scanOk, monitorInfo = pcall(gpuFound.autoDetectMonitor)
     yieldComputer()
     if not scanOk then
@@ -391,6 +406,25 @@ local function setupDirectGpu()
     directGpu = nil
     return false
   end
+end
+local function setupDirectGpu()
+  local ready, failure
+  local file = fs.open("airship-gpu.log", "w")
+  if file then file.close() end
+  -- pcall catches errors; parallel also bounds peripheral calls that wait for events.
+  local finished = parallel.waitForAny(function()
+    local ok, result = pcall(configureDirectGpu)
+    ready = ok and result
+    if not ok then failure = tostring(result) end
+  end, function() sleep(8) end)
+  if finished ~= 1 then failure = "Timed out at " .. tostring(gpuSetupStage) end
+  if not ready then
+    directGpu, directDisplay = nil, nil
+    directGpuEnabled = false
+    directGpuError = failure or directGpuError or "Display setup failed"
+    gpuSetupProgress(directGpuError .. "; using CC monitor")
+  end
+  return ready or false
 end
 -- Resolve devices behind the Malahit hub nested behind the wired peripheral hub.
 findAvionics = function(kind)
@@ -501,6 +535,7 @@ local navigationTable = findAvionics("navigation_table")
 local gimbalSensor = findAvionics("gimbal_sensor")
 print("Setting up display...")
 if directGpuEnabled then setupDirectGpu() else directGpuError = "DirectGPU paused for stability; using CC monitor" end
+print("Building controls...")
 local frame = basalt.getMainFrame()
 local monitorFrame
 frame.background = colors.black
@@ -1732,6 +1767,7 @@ local ok, err = pcall(function()
       end
     end
   end)
+  print("Starting flight panel...")
   basalt.run()
 end)
 running = false

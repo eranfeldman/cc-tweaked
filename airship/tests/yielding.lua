@@ -70,8 +70,9 @@ for _, reused in ipairs({false, true}) do
   }
   env.require = function() return {} end
   env.peripheral = {find=function() end, wrap=function() return gpu end}
+  env.fs = {open=function() return {writeLine=function() end,close=function() end} end}
   local setup = assert(source:match("^(.-)%-%- Resolve devices"))
-  local ok, ready = run(assert(load(setup .. "return setupDirectGpu()", "@display-setup", "t", env)))
+  local ok, ready = run(assert(load(setup .. "return configureDirectGpu()", "@display-setup", "t", env)))
   assert(ok and ready and enabled, "New and reused displays must enable mouse input")
 end
 
@@ -148,6 +149,7 @@ local function renderFixture(tab)
   env.position, env.velocity, env.altitude = {x=1,y=70,z=2}, {y=.1}, 75
   env.learnedHover, env.gpuButtons = {}, {{x=1,y=1,w=60,h=35,label="FLIGHT",color={1,2,3}}}
   env.savedHoverPoints = function() return {} end
+  env.navigationReadout = function() return 0, nil, "--" end
   local render = assert(load(helper .. "\n" .. layout .. "\n" .. renderer .. "\nreturn renderDirectMonitor", "@renderer", "t", env))()
   return env, run, render, counts
 end
