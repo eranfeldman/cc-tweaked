@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.4.1"
+local AIRSHIP_BUILD = "1.4.2"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -23,7 +23,7 @@ local Autopilot = (function()
   local function wrap(v) return (v+math.pi)%(2*math.pi)-math.pi end
   local function body(x,z,h) local c,s=math.cos(h),math.sin(h); return c*x-s*z,s*x+c*z end
   local function copy(s)
-    return {t=s.t,x=s.x,z=s.z,vx=s.vx,vz=s.vz,heading=s.heading,yaw=s.yaw,pressure=s.pressure,tilt=s.tilt}
+    return {t=s.t,x=s.x,z=s.z,vx=s.vx,vz=s.vz,heading=s.heading,yaw=s.yaw,pressure=s.pressure}
   end
   local function observation(a,b)
     local dt=b.t-a.t
@@ -53,7 +53,7 @@ local Autopilot = (function()
   function A.validSample(s)
     if type(s)~="table" then return false end
     for _,key in ipairs({"t","x","z","vx","vz","heading","yaw","pressure"}) do if not finite(s[key]) then return false end end
-    return s.pressure>=0 and (s.tilt==nil or finite(s.tilt) and s.tilt>=0 and s.tilt<=math.pi)
+    return s.pressure>=0
   end
   function A.headingRate(rates,gravity)
     if type(rates)~="table" or not finite(rates[2]) then return nil end
@@ -64,7 +64,7 @@ local Autopilot = (function()
     local ux,uy,uz=-gravity[1]/length,-gravity[2]/length,-gravity[3]/length
     -- Heading is the projected local +Z direction; body Y rate alone mixes tilt into yaw.
     if 1-uz*uz<.1 then return nil end
-    return (rates[1]*ux+rates[2]*uy)/(1-uz*uz),math.acos(clamp(uy,-1,1))
+    return (rates[1]*ux+rates[2]*uy)/(1-uz*uz)
   end
   function A.validProfile(p,names)
     if type(p)~="table" or p.version~=1 or p.validated~=true or type(p.names)~="table" or #p.names~=#names or type(p.channels)~="table" or #p.channels~=#names*4 then return false end
@@ -75,7 +75,6 @@ local Autopilot = (function()
       if not finite(p.drag[i]) or p.drag[i]<0 or p.drag[i]>3 or not finite(p.gains[i]) or p.gains[i]<0 then return false end
     end
     if p.gains[1]<.0001 or p.gains[1]>1 or p.gains[2]>.05 or p.gains[3]>4 then return false end
-    if p.tiltReference~=nil and (not finite(p.tiltReference) or p.tiltReference<0 or p.tiltReference>math.pi) then return false end
     if p.maxThrottle~=nil and (not finite(p.maxThrottle) or p.maxThrottle<.1 or p.maxThrottle>1) then return false end
     local gram={{0,0,0},{0,0,0},{0,0,0}}
     for i,ch in ipairs(p.channels) do
@@ -134,7 +133,7 @@ local Autopilot = (function()
   end
   function A:navigate(s,goal,p)
     p=p or self.profile
-    if not p or not A.validSample(s) or p.tiltReference~=nil and s.tilt==nil then return nil,false end
+    if not p or not A.validSample(s) then return nil,false end
     local key=goal.x..":"..goal.z
     if self.goalKey~=key then self.integral={0,0}; self.goalKey=key end
     self.headingTarget=self.headingTarget or s.heading
@@ -168,11 +167,9 @@ local Autopilot = (function()
     local distance,speed=math.sqrt(dx*dx+dz*dz),math.sqrt(f.vx^2+f.vz^2)
     local ex,ez=body(dx,dz,s.heading)
     local vx,vz=body(f.vx,f.vz,s.heading)
-    local balance=1
-    if s.tilt and p.tiltReference then balance=clamp(1-(s.tilt-p.tiltReference-.1)/.3,.15,1) end
-    local maxAccel=p.maxAccel*balance
+    local maxAccel=p.maxAccel
     local braking=math.sqrt(2*maxAccel*math.max(0,distance-.2-speed*p.delay))
-    local speedLimit=math.min(p.maxSpeed*math.sqrt(balance),braking)
+    local speedLimit=math.min(p.maxSpeed,braking)
     local drive=proportional*distance
     if derivative>0 then drive=math.min(drive,derivative*speedLimit) end
     local acceleration={}
@@ -184,7 +181,7 @@ local Autopilot = (function()
     end
     local yaw=clamp(.22*wrap(self.headingTarget-s.heading)-1.8*s.yaw,-.12,.12)+p.drag[3]*ratio*s.yaw
     local desired={acceleration[1]-self.trim[1],acceleration[2]-self.trim[2],yaw-self.trim[3]}
-    local commands,residual=self:allocate(p,desired,(p.maxThrottle or .35)*balance)
+    local commands,residual=self:allocate(p,desired)
     self.applied={desired[1]-(residual and residual[1] or 0),desired[2]-(residual and residual[2] or 0),desired[3]-(residual and residual[3]/p.yawWeight or 0)}
     self.previous=copy(s)
     return commands,distance<.35 and speed<.08 and math.abs(s.yaw)<.03 and math.abs(wrap(self.headingTarget-s.heading))<.03
@@ -192,7 +189,7 @@ local Autopilot = (function()
   function A:begin(s)
     if not A.validSample(s) or s.pressure<=.001 then return false,"Fresh GPS, heading, yaw rate and air pressure are required." end
     self:reset(s.heading)
-    self.job={phase="BASELINE",at=s.t,previous=copy(s),origin={x=s.x,z=s.z},heading=s.heading,tiltReference=s.tilt,
+    self.job={phase="BASELINE",at=s.t,previous=copy(s),origin={x=s.x,z=s.z},heading=s.heading,
       index=1,channels={},measurements={},window={copy(s)},coasts={},pressure=0,samples=0,dt=0,retry=0}
     return true
   end
@@ -207,7 +204,7 @@ local Autopilot = (function()
     return result
   end
   function A:fit(job)
-    local p={version=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8,tiltReference=job.tiltReference,maxThrottle=job.tiltReference and throttleLimit or .35}
+    local p={version=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8,maxThrottle=throttleLimit}
     for index,m in ipairs(job.measurements) do
       local response={}
       for i=1,3 do
@@ -255,7 +252,6 @@ local Autopilot = (function()
     local j=self.job
     if not j then return nil,"Calibration is not running." end
     if not A.validSample(s) or s.t<=j.previous.t or s.t-j.previous.t>2 then self.job=nil; return nil,"Calibration stopped: stale or invalid navigation readings." end
-    if j.tiltReference~=nil and s.tilt==nil then self.job=nil; return nil,"Calibration stopped: gimbal gravity reading lost." end
     local dt=s.t-j.previous.t
     j.dt=j.dt+dt; j.samples=j.samples+1; j.pressure=j.pressure+s.pressure
     j.previous=copy(s)
@@ -280,24 +276,7 @@ local Autopilot = (function()
         self:reset(j.heading)
       else j.phase="WARMUP"; j.at=s.t end
     end
-    if j.phase=="RECOVER" then
-      if s.tilt<=j.candidate.tiltReference+.1 then
-        j.phase="VERIFY"; j.at=s.t; j.legStart={x=s.x,z=s.z}
-      elseif s.t-j.at>30 then self.job=nil; return nil,"Rocking did not settle with thrusters off; previous calibration kept."
-      else return {},"Letting rocking settle before testing reduced thrust." end
-    end
     if j.phase=="VERIFY" then
-      if s.tilt and j.candidate.tiltReference and s.tilt>j.candidate.tiltReference+.35 then
-        if j.retry>=4 then self.job=nil; return nil,"Too much rocking at tested power; previous calibration kept." end
-        j.retry=j.retry+1
-        j.candidate.maxThrottle=math.max(.1,j.candidate.maxThrottle*.65)
-        j.candidate.maxAccel=j.candidate.maxAccel*.65
-        j.candidate.maxSpeed=j.candidate.maxSpeed*.8
-        j.goals=travelGoals(j)
-        j.phase="RECOVER"; j.leg=1; j.at=s.t; j.stable=nil; j.verifyWindow=nil; j.legStart={x=s.x,z=s.z}; j.overshoot=0
-        self:reset(j.heading)
-        return {},"Reducing thrust for rocking; repeating fast travel tests."
-      end
       local goal=j.goals[j.leg]
       local gx,gz=goal.x-j.legStart.x,goal.z-j.legStart.z
       local length=math.sqrt(gx*gx+gz*gz)
@@ -571,7 +550,6 @@ local learnedHover = {}
 local altitudeSensorPressure
 local shipHeading
 local yawRate
-local shipTilt
 local measuredThrust = 0
 local status, pidSummary, posText, altText, sysText, navText, xInput, heightInput, pidInput, calibrateButton
 -- Conservative starting gains; GPS velocity feedback compensates for variable sample timing.
@@ -700,7 +678,7 @@ local pressureAt, headingAt, yawAt
 local function navigationSample()
   local now=os.clock()
   if not position or not lastGpsAt or now-lastGpsAt>2 or not pressureAt or now-pressureAt>2 or not headingAt or now-headingAt>2 or not yawAt or now-yawAt>2 then return nil end
-  return {t=now,x=position.x,z=position.z,vx=velocity.x,vz=velocity.z,heading=shipHeading,yaw=yawRate,pressure=altitudeSensorPressure,tilt=shipTilt}
+  return {t=now,x=position.x,z=position.z,vx=velocity.x,vz=velocity.z,heading=shipHeading,yaw=yawRate,pressure=altitudeSensorPressure}
 end
 local readoutSamples,readoutSampleAt,readoutGoalKey={},nil,nil
 local function navigationReadout()
@@ -804,10 +782,10 @@ local function locate()
     local gravityOk,gravity=pcall(gimbalSensor.getGravity)
     yieldComputer()
     local headingRate
-    if ok then headingRate,shipTilt=Autopilot.headingRate(rates,gravityOk and gravity or nil) end
+    if ok then headingRate=Autopilot.headingRate(rates,gravityOk and gravity or nil) end
     if headingRate then yawRate=headingRate; yawAt=os.clock() end
   end
-  local x, y, z = gps.locate(.5, false)
+  local x, y, z = gps.locate(1, false)
   now=os.clock()
   if x then
     local centerX,centerZ=x,z
@@ -885,8 +863,8 @@ local function updateFlight(gpsFresh)
     vectorX,vectorY,power=0,0,0
     if not gpsFresh then autopilotCommands={}; return end
     local sample=navigationSample()
-    if not Autopilot.validSample(sample) or navController.profile and navController.profile.tiltReference~=nil and sample.tilt==nil then
-      autopilotCommands={}; mode="NAV LOST - RE-ENGAGE"; autopilotNotice="Fresh heading, yaw, gravity and pressure required; re-engage AUTO."
+    if not Autopilot.validSample(sample) then
+      autopilotCommands={}; mode="NAV LOST - RE-ENGAGE"; autopilotNotice="Fresh heading, yaw rate and pressure required; re-engage AUTO."
       autopilotNoticeColor=colors.red
       return
     end
@@ -1207,7 +1185,6 @@ local function engageAutopilot()
   local sample=navigationSample()
   if not Autopilot.validSample(sample) then refuse("AUTO needs fresh GPS, heading, yaw rate and air pressure."); return end
   if not navController.profile then refuse("Run FULL AUTO CAL in the calibration menu first.")
-  elseif navController.profile.tiltReference~=nil and sample.tilt==nil then refuse("AUTO needs a fresh gimbal gravity reading.")
   elseif not position or not target then refuse("GPS fix and destination are required.")
   else setFlightMode("AUTOPILOT"); navController:reset(sample.heading); autopilotNotice=nil; status.text = "Autopilot engaged"; status.foreground = colors.lime end
 end

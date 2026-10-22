@@ -241,24 +241,16 @@ end
 do
   local controller=A.new(names,profiles[1])
   local s={t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85,tilt=0}
-  assert(controller:begin(s))
-  local j=controller.job
-  j.phase,j.candidate,j.leg,j.overshoot="VERIFY",profiles[1],1,0
-  j.goals={{x=100,z=0}}
-  s.t=.2; s.tilt=.5
-  local previousThrottle=profiles[1].maxThrottle
-  -- Use a separate candidate; failed calibration must never edit the loaded profile.
-  local candidate={}; for key,value in pairs(profiles[1]) do candidate[key]=value end
-  candidate.gains={table.unpack(profiles[1].gains)}; j.candidate=candidate
-  local commands=controller:calibrate(s)
-  assert(commands and j.phase=="RECOVER" and j.retry==1 and candidate.maxThrottle<previousThrottle)
-  s.t=.4
-  controller:calibrate(s)
-  assert(j.phase=="RECOVER" and j.retry==1,"The same rocking episode must not consume repeated retries")
-  s.t=.6; s.tilt=nil
-  local _,message=controller:calibrate(s)
-  assert(not controller.job and message:match("gravity") and controller.profile==profiles[1])
-  assert(controller:navigate(s,{x=1,z=0})==nil,"High power needs fresh gravity/tilt readings")
+  local level=controller:navigate(s,{x=10,z=0})
+  local tilted=A.new(names,profiles[1])
+  s.t,s.tilt=.2,.5
+  local commands=tilted:navigate(s,{x=10,z=0})
+  assert(commands and level,"Autopilot must not require tilt readings")
+  for _,name in ipairs(names) do
+    assert(math.abs(commands[name].power-level[name].power)<1e-9,"Pitch/roll must not reduce commanded thrust")
+  end
+  s.t=.4; s.tilt=nil
+  assert(tilted:navigate(s,{x=1,z=0}),"Autopilot must continue without tilt readings")
   local invalid={}; for key,value in pairs(profiles[1]) do invalid[key]=value end
   invalid.maxThrottle=2
   assert(not A.validProfile(invalid,names),"Out-of-range saved throttle must be rejected")
@@ -267,7 +259,7 @@ do
   assert(A.validProfile(legacy,names),"Old saved calibrations must remain readable")
   local oldCommands=controller:allocate(legacy,{10,10,.1})
   for _,out in pairs(oldCommands) do assert(out.power<=.350001,"Old profiles must retain their original throttle limit") end
-  print("PASS: one rocking episode consumes one retry, gravity loss preserves saved model, invalid power is rejected")
+  print("PASS: tilt does not limit flight thrust or require a reading; invalid power is rejected")
 end
 
 do
