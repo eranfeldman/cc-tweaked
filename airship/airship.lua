@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.6.5"
+local AIRSHIP_BUILD = "1.6.6"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -742,7 +742,7 @@ if monitorFrame then monitorFrame.background = colors.black end
 local screenWidth, screenHeight
 screenWidth, screenHeight = term.getSize()
 local compact = screenWidth < 49 or screenHeight < 19
-local position, target, altitude, mode, arrivalHeading = nil, nil, nil, "STARTING", nil
+local position, target, altitude, mode = nil, nil, nil, "STARTING"
 local function nearestCardinalHeading(heading)
   local quarterTurn = math.pi / 2
   return (math.floor(heading / quarterTurn + .5) % 4) * quarterTurn
@@ -1221,7 +1221,7 @@ local function updateFlight(gpsFresh)
     autopilotCommands=commands or {}
     recordFlight(sample,target,navController.profile,commands,mode)
     if arrived and mode=="AUTOPILOT" then
-      navController:setHeadingTarget(arrivalHeading or nearestCardinalHeading(sample.heading))
+      navController:setHeadingTarget(nearestCardinalHeading(sample.heading))
       mode="FINAL TURN"
     elseif wasFinalTurn then mode=arrived and "DESTINATION REACHED" or "FINAL TURN"
     elseif wasReached then mode="DESTINATION REACHED"
@@ -1518,7 +1518,7 @@ end
 local function holdHere()
   if position then
     local canceledCalibration = calibrationRunning
-    altitude = math.floor(position.y + .5); target,arrivalHeading = nil,nil; setFlightMode("HOLDING ALTITUDE")
+    altitude = math.floor(position.y + .5); target = nil; setFlightMode("HOLDING ALTITUDE")
     if canceledCalibration then status.text = "Direction calibration canceled; holding altitude."; status.foreground = colors.orange end
   end
 end
@@ -1533,9 +1533,6 @@ local function engageAutopilot()
   if not navController.profile then refuse("Run FULL AUTO CAL in the calibration menu first.")
   elseif not position or not target then refuse("GPS fix and destination are required.")
   else
-    local dx,dz=target.x-position.x,target.z-position.z
-    local routeHeading=dx*dx+dz*dz>.25 and math.atan(dx,dz) or sample.heading
-    arrivalHeading=nearestCardinalHeading(routeHeading)
     setFlightMode("AUTOPILOT"); navController:reset(sample.heading); autopilotNotice=nil; flightRecording=nil
     status.text = "Autopilot engaged; final heading is cardinal"; status.foreground = colors.lime
   end
@@ -1564,7 +1561,7 @@ local function startFullCalibration()
     end
     pendingRetry=nil
     manualBurner,burnerCommand=burner,burner
-    vectorX,vectorY,power,target=0,0,0,nil; arrivalHeading=nil
+    vectorX,vectorY,power,target=0,0,0,nil
     autopilotCommands={}; fullCalibration,calibrationRunning=true,true
     mode="FULL AUTO CAL"; autopilotNotice="Resuming auto tests from saved thruster measurements."
     autopilotNoticeColor=colors.orange; status.text=autopilotNotice; status.foreground=colors.orange
@@ -1572,7 +1569,7 @@ local function startFullCalibration()
   end
   navController:cancel()
   manualBurner,burnerCommand=burner,burner
-  vectorX,vectorY,power,target=0,0,0,nil; arrivalHeading=nil
+  vectorX,vectorY,power,target=0,0,0,nil
   autopilotCommands={}; fullCalibration,calibrationRunning=true,true
   mode="FULL AUTO CAL"; autopilotNotice="Measuring, then long cruise tests; HOLD cancels."
   autopilotNoticeColor=colors.orange
@@ -1722,7 +1719,7 @@ if compact then
     local xText, zText = xInput.text:match("^%s*(%S+)%s+(%S+)%s*$")
     local x, z = tonumber(xText), tonumber(zText)
     if not x or not z then status.text = "Enter X and Z coordinates"; status.foreground = colors.red; return end
-    target = {x=x, z=z}; arrivalHeading=nil; setFlightMode("HOLDING ALTITUDE"); frame:setFocused(nil)
+    target = {x=x, z=z}; setFlightMode("HOLDING ALTITUDE"); frame:setFocused(nil)
     status.text = ("Destination %.0f, %.0f set"):format(x, z)
   end
   frame:addButton({x=screenWidth-16, y=6, width=14, height=1, text="SET DEST", background=colors.blue}):onClick(setDestination)
@@ -1796,7 +1793,6 @@ local function setDestination()
   local x, z = tonumber(xText), tonumber(zText)
   if not x or not z then status.text = "Enter numeric X and Z coordinates first."; status.foreground = colors.red; return end
   target = {x=x, z=z}
-  arrivalHeading=nil
   setFlightMode("HOLDING ALTITUDE")
   status.text = ("Destination set: X %.0f, Z %.0f"):format(x, z)
   status.foreground = colors.lime

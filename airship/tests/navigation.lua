@@ -515,9 +515,15 @@ do
   assert(env.mode=="AUTOPILOT","Gyro-handled tilt must not stop navigation")
   local destination=env.target
   env.navController.navigate=function() return {},true end
-  env.nearestCardinalHeading=function() return 0 end
+  local headingCode=assert(source:match('(local function nearestCardinalHeading%b()%s*.-\nend)'))
+  env.nearestCardinalHeading=assert(load(headingCode..'\nreturn nearestCardinalHeading',"@nearest-heading"))()
+  for _,case in ipairs({{1,0},{44,0},{46,90},{179,180},{269,270},{359,0},{-1,0},{-91,270},{721,0}}) do
+    assert(math.abs(env.nearestCardinalHeading(math.rad(case[1]))-math.rad(case[2]))<1e-9,"Final heading must round to the nearest quarter turn across 0/360")
+  end
+  env.arrivalHeading=math.pi; sample.heading=math.rad(83)
   updateFn(true)
   assert(env.mode=="FINAL TURN" and env.target==destination,"Arrival turn must preserve the requested destination")
+  assert(math.abs(env.navController.headingTarget-math.pi/2)<1e-9,"Final turn must choose 90 degrees from actual heading 83, rather than a saved route heading")
   sample.yaw=nil
   updateFn(true)
   assert(env.mode=="NAV LOST - RE-ENGAGE" and next(env.autopilotCommands)==nil and env.autopilotNotice:match("yaw"),"Missing yaw rate must stop navigation visibly")
