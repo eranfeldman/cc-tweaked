@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing eight-thruster ship.
-local AIRSHIP_BUILD = "1.3.6"
+local AIRSHIP_BUILD = "1.3.7"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1354,6 +1354,7 @@ if compact then
   status = frame:addLabel({x=2, y=2, width=screenWidth-2, height=1, text="Starting...", foreground=colors.yellow})
   posText = frame:addLabel({x=2, y=3, width=screenWidth-2, height=1, text="GPS --", foreground=colors.white})
   altText = frame:addLabel({x=2, y=4, width=screenWidth-2, height=1, text="ALT -- / TARGET --", foreground=colors.lightBlue})
+  navText = frame:addLabel({x=2, y=14, width=screenWidth-3, height=1, text="SPD --  DIST --  ETA --", foreground=colors.lightBlue})
   frame:addLabel({x=2, y=5, width=12, height=1, text="DESTINATION X Z", foreground=colors.lightBlue})
   xInput = frame:addInput({x=2, y=6, width=screenWidth-19, height=1, placeholder="X Z", background=colors.white, foreground=colors.black})
   local function setDestination()
@@ -1535,7 +1536,7 @@ local function refresh()
     sysText.text = ("Burner %d/15\nThrust %.1f/15\nHeading %s°"):format(burner, measuredThrust, shipHeading and ("%.0f"):format(math.deg(shipHeading)) or "--")
   end
   local speed,distance,eta=navigationReadout()
-  navText.text=("SPEED %.1f b/s   DISTANCE %s   ETA %s"):format(speed,distance and ("%.1f"):format(distance) or "--",eta)
+  if navText then navText.text=(compact and "SPD %.1f  D %s  ETA %s" or "SPEED %.1f b/s   DISTANCE %s   ETA %s"):format(speed,distance and ("%.1f"):format(distance) or "--",eta) end
   if not isFocused(heightInput) then heightInput.text = altitude and tostring(math.floor(altitude + .5)) or "" end
   if not isFocused(pidInput) then showGainValues() end
   if #savedAltitudeButtons > 0 then

@@ -4,7 +4,7 @@ CC:Tweaked controller for eight Create Propulsion liquid vector thrusters. GPS, 
 
 ## Install
 
-Controller v1.3.6 tunes for fast cruise using measured thrust, drag, and gimbal tilt. FLIGHT shows live horizontal speed, remaining distance, and a closing-speed ETA on the computer, CC monitor, and DirectGPU monitor; speed and ETA use a rolling four-second GPS window. Heading hold damps yaw more firmly and keeps the autopilot's captured heading through arrival and position hold. Focus clearing uses Basalt 2.5's root frame API. FULL AUTO CAL can test up to 100% thruster power and lowers the ceiling when the craft rocks too much. The existing updater installs it without extra dependencies. GPU rendering retains cooperative yields, a 20 Hz refresh target, and native monitor/GPU click support.
+Controller v1.3.7 tunes for fast cruise using measured thrust, drag, and gimbal tilt. FLIGHT shows live horizontal speed, remaining distance, and a closing-speed ETA on the computer, CC monitor, and DirectGPU monitor; speed and ETA use a rolling four-second GPS window. Heading hold damps yaw more firmly and keeps the autopilot's captured heading through arrival and position hold. Focus clearing uses Basalt 2.5's root frame API. The compact computer screen also has the navigation readout. FULL AUTO CAL can test up to 100% thruster power and lowers the ceiling when the craft rocks too much. The existing updater installs it without extra dependencies. GPU rendering retains cooperative yields, a 20 Hz refresh target, and native monitor/GPU click support.
 
 In the computer terminal, install Basalt 2.5, download the updated controller beside it, and run it:
 
