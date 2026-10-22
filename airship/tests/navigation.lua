@@ -346,12 +346,14 @@ do
   local update=assert(source:match("(local function updateFlight%b()%s*.-)\nlocal function savedHoverPoints"))
   local startFn,updateFn=assert(load(start.."\n"..update.."\nreturn startFullCalibration,updateFlight","@integration","t",env))()
   startFn()
-  assert(env.fullCalibration and env.calibrationRunning and env.manualBurner==6 and env.navController.job)
+  assert(env.fullCalibration and env.calibrationRunning and env.manualBurner==6 and not env.navController.job)
   sample.t=.2
   updateFn(true)
-  assert(env.burner==6 and env.burnerCommand==6,"Calibration changed burner output")
+  assert(env.navController.job,"Calibration should start from the next fresh control-loop sample")
   env.navController.calibrate=function() return {},nil,profile end
+  sample.t=.4
   updateFn(true)
+  assert(env.burner==6 and env.burnerCommand==6,"Calibration changed burner output")
   assert(env.saved==profile and env.navController.profile==profile and env.applied==profile.gains)
   assert(not env.fullCalibration and not env.calibrationRunning and env.burner==6,"Completion must leave height control alone")
   startFn()
@@ -359,6 +361,9 @@ do
   local previous=env.navController.profile
   local failedCandidate={gains={.01,0,.3},validated=true}
   env.navController.calibrate=function() return {},nil,failedCandidate end
+  sample.t=.6
+  updateFn(true)
+  sample.t=.8
   updateFn(true)
   assert(env.navController.profile==previous and env.autopilotNotice:match("could not save"),"Save failure replaced the working profile")
   env.mode,env.target="AUTOPILOT",{x=10,z=0}; sample.tilt=nil

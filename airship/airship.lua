@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.5.5"
+local AIRSHIP_BUILD = "1.5.6"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -187,7 +187,8 @@ local Autopilot = (function()
     return commands,distance<.35 and speed<.08 and math.abs(s.yaw)<.03 and math.abs(wrap(self.headingTarget-s.heading))<.03
   end
   function A:begin(s)
-    if not A.validSample(s) or s.pressure<=.001 then return false,"Fresh GPS, heading, yaw rate and air pressure are required." end
+    if not A.validSample(s) then return false,"Waiting for fresh GPS, heading, yaw rate and pressure readings." end
+    if s.pressure<=.001 then return false,"Air pressure reading is zero; check the Avionics altitude sensor." end
     self:reset(s.heading)
     self.job={phase="BASELINE",at=s.t,previous=copy(s),origin={x=s.x,z=s.z},heading=s.heading,
       index=1,channels={},measurements={},window={copy(s)},coasts={},pressure=0,samples=0,dt=0,retry=0}
@@ -889,7 +890,15 @@ local function updateFlight(gpsFresh)
   if fullCalibration then
     vectorX,vectorY,power=0,0,0
     if not gpsFresh then autopilotCommands={}; return end
-    local commands,message,completed=navController:calibrate(navigationSample())
+    local sample=navigationSample()
+    if not navController.job then
+      local started,message=navController:begin(sample)
+      autopilotCommands={}
+      autopilotNotice=started and "Navigation ready; starting calibration." or message
+      autopilotNoticeColor=colors.orange
+      return
+    end
+    local commands,message,completed=navController:calibrate(sample)
     autopilotCommands=commands or {}
     if completed then
       local saved,err=pcall(saveAutopilotProfile,completed)
@@ -1245,9 +1254,12 @@ local function startFullCalibration()
     status.text,status.foreground=autopilotNotice,autopilotNoticeColor
     return
   end
-  local sample=navigationSample()
-  local ok,err=navController:begin(sample)
-  if not ok then autopilotNotice,autopilotNoticeColor=err,colors.red; status.text=err; status.foreground=colors.red; return end
+  if not position then
+    autopilotNotice,autopilotNoticeColor="Wait for a GPS fix before FULL AUTO CAL.",colors.orange
+    status.text,status.foreground=autopilotNotice,autopilotNoticeColor
+    return
+  end
+  navController:cancel()
   manualBurner,burnerCommand=burner,burner
   vectorX,vectorY,power,target=0,0,0,nil; arrivalHeading=nil
   autopilotCommands={}; fullCalibration,calibrationRunning=true,true
