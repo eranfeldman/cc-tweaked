@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.25"
+local AIRSHIP_BUILD = "1.7.26"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1178,10 +1178,10 @@ seatControl.runCommand = function(command, username)
     if not clearance then reply(failure, false); return end
     distance = math.floor(clearance - 2)
     if distance < 1 then reply(("Closest ground reading is %.2f blocks; seats will not move."):format(clearance), false); return end
-    modifier = 1
+    modifier = 2
   else
     if not seatControl.loweredBy then reply("No saved seat lowering distance; use `seat down` first.", false); return end
-    distance, modifier = seatControl.loweredBy, -1
+    distance, modifier = seatControl.loweredBy, -2
   end
   seatControl.busy = true
   local moveOk, moveError = pcall(seatControl.gearshift.move, distance, modifier)
