@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.6.12"
+local AIRSHIP_BUILD = "1.7.0"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -59,7 +59,7 @@ local Autopilot = (function()
   local function wrap(v) return (v+math.pi)%(2*math.pi)-math.pi end
   local function body(x,z,h) local c,s=math.cos(h),math.sin(h); return c*x-s*z,s*x+c*z end
   local function copy(s)
-    return {t=s.t,x=s.x,z=s.z,vx=s.vx,vz=s.vz,heading=s.heading,yaw=s.yaw,pressure=s.pressure}
+    return {t=s.t,x=s.x,y=s.y,z=s.z,vx=s.vx,vz=s.vz,rawVx=s.rawVx,rawVz=s.rawVz,heading=s.heading,yaw=s.yaw,pressure=s.pressure}
   end
   local function observation(a,b)
     local dt=b.t-a.t
@@ -121,6 +121,7 @@ local Autopilot = (function()
     if p.gains[1]<.0001 or p.gains[1]>1 or p.gains[2]>.05 or p.gains[3]>4 then return false end
     if p.maxThrottle~=nil and (not finite(p.maxThrottle) or p.maxThrottle<.1 or p.maxThrottle>1) then return false end
     if p.responseScale~=nil and (not finite(p.responseScale) or p.responseScale<1 or p.responseScale>4) then return false end
+    if p.braking~=nil and not A.validBraking(p.braking) then return false end
     local gram={{0,0,0},{0,0,0},{0,0,0}}
     for i,ch in ipairs(p.channels) do
       if type(ch)~="table" or ch.name~=names[math.floor((i-1)/4)+1] or type(ch.b)~="table" then return false end
@@ -176,9 +177,18 @@ local Autopilot = (function()
     for _,out in pairs(commands) do if out.power>1e-6 then out.x=out.x/out.power; out.y=out.y/out.power else out.x,out.y,out.power=0,0,0 end end
     return commands,residual
   end
+  function A:reverseCommands(s,dx,dz,p,fraction)
+    local strength=p.maxAccel*2*(fraction or 1)
+    local bx,bz=body(-dx*strength,-dz*strength,s.heading)
+    local yaw=clamp(.12*wrap((self.headingTarget or s.heading)-s.heading)-2.8*s.yaw,-.12,.12)
+    local desired={bx,bz,yaw}
+    local commands,residual=self:allocate(p,desired)
+    return commands,residual,desired
+  end
   function A:navigate(s,goal,p)
     p=p or self.profile
     if not p or not A.validSample(s) then return nil,false end
+    if p.braking and finite(s.rawVx) and finite(s.rawVz) then s=copy(s); s.vx,s.vz=s.rawVx,s.rawVz end
     local key=goal.x..":"..goal.z
     if self.goalKey~=key then
       self.integral={0,0}; self.goalKey=key
@@ -231,8 +241,41 @@ local Autopilot = (function()
     end
     local cruiseLimit=modern and math.huge or p.maxSpeed
     local targetAlong=plannedSpeed(remaining,cruiseLimit,3+9*caution)
+    local rx,rz=body(r.tx,r.tz,s.heading)
+    local closing=s.vx*r.tx+s.vz*r.tz
+    local travelSign=math.abs(closing)>.2 and (closing<0 and -1 or 1) or (remaining<0 and -1 or 1)
+    local measured=A.brakeModel(p,rx*travelSign,rz*travelSign,s.pressure,self.previous and s.t-self.previous.t or dt)
+    if measured then
+      dx,dz=goal.x-s.x,goal.z-s.z
+      distance,speed=math.sqrt(dx*dx+dz*dz),math.sqrt(s.vx^2+s.vz^2)
+      vx,vz=body(s.vx,s.vz,s.heading)
+      remaining=dx*r.tx+dz*r.tz; alongSpeed=closing
+      cross=(s.x-r.x)*(-r.tz)+(s.z-r.z)*r.tx
+      crossSpeed=-s.vx*r.tz+s.vz*r.tx
+    end
+    local stopping=measured and A.stoppingDistance(measured,math.abs(closing)) or 0
+    local measuredApproach=measured and (distance>3 or math.abs(closing)>1.5)
+    if measuredApproach then
+      remaining=(goal.x-s.x)*r.tx+(goal.z-s.z)*r.tz
+      local stopLimit=A.stoppingSpeed(measured,math.max(0,math.abs(remaining)-.35))
+      local linearLimit=math.abs(remaining)*.6
+      targetAlong=(remaining<0 and -1 or 1)*math.min(stopLimit,linearLimit)
+      local error=(closing-targetAlong)*(closing<0 and -1 or 1)
+      if math.abs(closing)>.1 and error>-.15 then
+        local speed=math.sqrt(s.vx^2+s.vz^2)
+        local targetSpeed=math.abs(targetAlong)
+        local slope=linearLimit<stopLimit and .6 or 1/(measured.delay+targetSpeed/(measured.force+measured.drag*targetSpeed))
+        local decel=math.abs(closing)*slope+error/math.max(.5,dt*2)
+        local fraction=clamp((decel-measured.drag*math.abs(closing))/measured.fullForce,0,1)
+        local commands,residual,desired=self:reverseCommands(s,s.vx/speed,s.vz/speed,p,fraction)
+        self.applied={desired[1]-residual[1],desired[2]-residual[2],desired[3]-residual[3]/p.yawWeight}
+        self.trace={cross=cross,remaining=remaining,targetAlong=targetAlong,targetCross=0,desired=desired,stoppingDistance=stopping,braking="REVERSE"}
+        self.previous=copy(s)
+        return commands,false
+      end
+    end
     -- Keep the high-speed stopping margin from creating a dead zone before arrival.
-    if modern then
+    if modern and not measuredApproach then
       local approach=clamp((20-distance)/14,0,1)
       local approachSpeed=plannedSpeed(remaining,cruiseLimit,.15,p.delay)
       local approachGain=.2-.08*caution
@@ -263,7 +306,7 @@ local Autopilot = (function()
     local desired={acceleration[1]-self.trim[1],acceleration[2]-self.trim[2],yaw-self.trim[3]}
     local commands,residual=self:allocate(p,desired)
     self.applied={desired[1]-(residual and residual[1] or 0),desired[2]-(residual and residual[2] or 0),desired[3]-(residual and residual[3]/p.yawWeight or 0)}
-    self.trace={cross=cross,remaining=remaining,targetAlong=targetAlong,targetCross=targetCross,desired=desired}
+    self.trace={cross=cross,remaining=remaining,targetAlong=targetAlong,targetCross=targetCross,desired=desired,stoppingDistance=stopping,braking=measuredApproach and "TRACK" or "FALLBACK"}
     self.previous=copy(s)
     return commands,distance<.35 and speed<.08 and math.abs(s.yaw)<.03 and math.abs(wrap(self.headingTarget-s.heading))<.03
   end
@@ -288,6 +331,151 @@ local Autopilot = (function()
   function A.cruiseSpeed(p)
     -- Estimate validation-leg length; cruise itself is limited by stopping distance and available thrust.
     return math.min(math.sqrt(96*p.maxAccel),p.maxAccel*.9/math.max(.02,p.drag[1],p.drag[2]))
+  end
+  function A.validBraking(b)
+    if type(b)~="table" or b.version~=1 or not finite(b.pressure) or b.pressure<=.001 or b.pressure>2
+      or not finite(b.height) or type(b.directions)~="table" or #b.directions~=4 then return false end
+    for _,d in ipairs(b.directions) do
+      if type(d)~="table" then return false end
+      for _,key in ipairs({"force","drag","delay","maxSpeed","sampleDt"}) do if not finite(d[key]) then return false end end
+      if d.force<.01 or d.force>200 or d.drag<0 or d.drag>10 or d.delay<.05 or d.delay>10
+        or d.maxSpeed<=0 or d.maxSpeed>1000 or d.sampleDt<=0 or d.sampleDt>8 then return false end
+    end
+    return true
+  end
+  function A.brakeModel(p,dx,dz,pressure,period)
+    local b=p.braking
+    if not A.validBraking(b) then return nil end
+    local x=b.directions[dx>=0 and 1 or 2]
+    local z=b.directions[dz>=0 and 3 or 4]
+    local wx,wz=math.abs(dx),math.abs(dz)
+    local sum=wx+wz
+    if sum<.001 then return nil end
+    local delay=math.max(wx>1e-6 and x.delay or 0,wz>1e-6 and z.delay or 0)
+    local sampleDt=math.min(wx>1e-6 and x.sampleDt or math.huge,wz>1e-6 and z.sampleDt or math.huge)
+    return {force=.9/(wx/x.force+wz/z.force),fullForce=(wx*x.force+wz*z.force)/sum,drag=(wx*x.drag+wz*z.drag)/sum*clamp(pressure/b.pressure,0,3),
+      delay=delay+math.max(0,(period or 0)-sampleDt)}
+  end
+  function A.stoppingDistance(m,speed)
+    local u=m.drag*speed/m.force
+    local distance
+    if u<.001 then distance=speed^2/(2*m.force)*(1-2*u/3+u^2/2)
+    else distance=m.force/m.drag^2*(u-math.log(1+u)) end
+    return speed*m.delay+distance
+  end
+  function A.stoppingSpeed(m,distance)
+    local lo,hi=0,math.max(0,distance)/m.delay
+    for _=1,20 do
+      local mid=(lo+hi)/2
+      if A.stoppingDistance(m,mid)>distance then hi=mid else lo=mid end
+    end
+    return lo
+  end
+  function A:beginBraking(s)
+    if not A.validProfile(self.profile,self.names) then return false,"BRAKE CAL needs a completed autopilot calibration first." end
+    if self.profile.gpsVersion~=2 then return false,"BRAKE CAL needs a GPS-checked thruster survey first." end
+    if not A.validSample(s) or not finite(s.y) or s.pressure<=.001 then return false,"BRAKE CAL needs fresh GPS, height, heading, yaw and pressure." end
+    local p={}; for k,v in pairs(self.profile) do p[k]=v end; p.braking=nil
+    self:reset(s.heading)
+    self.job={kind="BRAKES",phase="SETTLE",at=s.t,previous=copy(s),origin={x=s.x,z=s.z},hold={x=s.x,z=s.z},heading=s.heading,
+      candidate=p,index=1,runs={},pressure=s.pressure,height=s.y,heightMin=s.y,heightMax=s.y}
+    return true
+  end
+  local function fitBraking(j)
+    local b={version=1,pressure=j.pressure,height=j.height,heightMin=j.heightMin,heightMax=j.heightMax,directions={}}
+    for direction=1,4 do
+      local n,x,y,period,cxx,cxy=0,0,0,0,0,0
+      for i=(direction-1)*2+1,direction*2 do
+        for _,s in ipairs(j.runs[i].coast) do cxx=cxx+s.x^2; cxy=cxy+s.x*s.y end
+        for _,s in ipairs(j.runs[i].samples) do
+          n=n+1; x=x+s.x; y=y+s.y; period=period+s.dt
+        end
+      end
+      if n<2 or cxx<.001 then return nil,"Too few braking samples; previous calibration kept." end
+      local drag=clamp(cxy/cxx,0,10)
+      local force=(y-drag*x)/n
+      if not finite(force) or force<.01 or force>200 then return nil,"Measured reverse thrust is invalid; previous calibration kept." end
+      local d={force=force,drag=drag,delay=.05,maxSpeed=0,sampleDt=period/n,runs={}}
+      for i=(direction-1)*2+1,direction*2 do
+        local r=j.runs[i]
+        local physical=A.stoppingDistance({force=force,drag=drag*r.pressure/j.pressure,delay=0},r.speed)
+        d.delay=math.max(d.delay,(r.distance-physical)/r.speed+d.sampleDt*.5)
+        d.maxSpeed=math.max(d.maxSpeed,r.speed)
+        d.runs[#d.runs+1]={speed=r.speed,distance=r.distance,pressure=r.pressure,height=r.height}
+      end
+      b.directions[direction]=d
+    end
+    if not A.validBraking(b) then return nil,"Braking model failed validation; previous calibration kept." end
+    return b
+  end
+  function A:calibrateBraking(s)
+    local j=self.job
+    if not A.validSample(s) or not finite(s.y) then return {},"BRAKE CAL waiting for fresh navigation and height." end
+    if finite(s.rawVx) and finite(s.rawVz) then s=copy(s); s.vx,s.vz=s.rawVx,s.rawVz end
+    if s.t<=j.previous.t then return {},"BRAKE CAL waiting for a new sample." end
+    if s.t-j.previous.t>8 or j.interrupted then
+      j.interrupted=nil; j.phase="SETTLE"; j.at=s.t; j.stable=nil; j.hold={x=s.x,z=s.z}; j.run=nil; self:reset(j.heading)
+    end
+    local dt=s.t-j.previous.t
+    j.previous=copy(s); j.heightMin=math.min(j.heightMin,s.y); j.heightMax=math.max(j.heightMax,s.y)
+    if math.abs(s.yaw)>.8 or s.pressure<=.001 then self.job=nil; return nil,"BRAKE CAL interrupted: yaw or pressure invalid; previous profile kept." end
+    local speed=math.sqrt(s.vx^2+s.vz^2)
+    if j.phase=="SETTLE" then
+      local commands=self:navigate(s,j.hold,j.candidate)
+      j.stable=speed<.2 and math.abs(s.yaw)<.03 and (j.stable or s.t) or nil
+      if j.stable and s.t-j.stable>=2 then
+        if j.index>8 then
+          local b,err=fitBraking(j)
+          if not b then self.job=nil; return nil,err end
+          j.candidate.braking=b; self.job=nil; return {},nil,j.candidate
+        end
+        local directions={{1,0},{-1,0},{0,1},{0,-1}}
+        local d=directions[math.ceil(j.index/2)]
+        local c,ss=math.cos(j.heading),math.sin(j.heading)
+        j.dx,j.dz=c*d[1]+ss*d[2],-ss*d[1]+c*d[2]
+        j.goal={x=s.x+j.dx*10000,z=s.z+j.dz*10000}
+        j.targetSpeed=math.max(2,A.cruiseSpeed(j.candidate)*(j.index%2==1 and 1 or 2))
+        j.phase="ACCEL"; j.at=s.t; j.history={}; self:reset(j.heading)
+      elseif s.t-j.at>60 then self.job=nil; return nil,"BRAKE CAL could not settle; previous profile kept." end
+      return commands,("BRAKE CAL %d/8 settling | %.2f b/s"):format(math.min(j.index,8),speed)
+    end
+    local along=s.vx*j.dx+s.vz*j.dz
+    if j.phase=="ACCEL" or j.phase=="REACCEL" then
+      j.history[#j.history+1]={t=s.t,v=along}
+      while #j.history>2 and s.t-j.history[2].t>4 do table.remove(j.history,1) end
+      local old=j.history[1]
+      local plateau=s.t-old.t>=3.5 and along>=old.v*.98 and along<=old.v*1.03 and along>=2
+      if along>=j.targetSpeed or plateau or s.t-j.at>=30 then
+        if along<2 then self.job=nil; return nil,"BRAKE CAL could not build measurable speed; previous profile kept." end
+        if j.phase=="ACCEL" then
+          j.phase="COAST"; j.at=s.t; j.coast={}; j.coastV=along; j.coastPressure=s.pressure
+        else
+          j.run={at=s.t,x=s.x,z=s.z,speed=along,previousV=along,previousPressure=s.pressure,distance=0,pressure=s.pressure,height=s.y,samples={},coast=j.coast}
+          j.phase="BRAKE"; j.at=s.t; self:reset(j.heading)
+        end
+      else return self:navigate(s,j.goal,j.candidate),("BRAKE CAL %d/8 accelerate | %.1f / %.1f b/s"):format(j.index,along,j.targetSpeed) end
+    end
+    if j.phase=="COAST" then
+      if s.t-j.at>.8 and along>.5 then
+        j.coast[#j.coast+1]={x=(j.coastV+along)/2*(j.coastPressure+s.pressure)/(2*j.pressure),y=(j.coastV-along)/dt}
+      end
+      j.coastV,j.coastPressure=along,s.pressure
+      if s.t-j.at>=3 then j.phase="REACCEL"; j.at=s.t; j.history={} end
+      return {},("BRAKE CAL %d/8 measuring drag | %.1f b/s"):format(j.index,along)
+    end
+    local r=j.run
+    r.distance=math.max(r.distance,(s.x-r.x)*j.dx+(s.z-r.z)*j.dz)
+    if s.t-r.at>math.max(.8,dt*1.5) and along>.5 and r.previousV>along then
+      r.samples[#r.samples+1]={x=(r.previousV+along)/2*(r.previousPressure+s.pressure)/(2*j.pressure),y=(r.previousV-along)/dt,dt=dt}
+    end
+    r.previousV,r.previousPressure=along,s.pressure
+    if along<=.15 then
+      j.runs[j.index]=r; j.index=j.index+1; j.hold={x=s.x,z=s.z}; j.phase="SETTLE"; j.at=s.t; j.stable=nil
+      self:reset(j.heading)
+      return {},("BRAKE CAL %d/8 recorded | %.1f b/s stopped in %.1f blocks"):format(j.index-1,r.speed,r.distance)
+    end
+    if s.t-j.at>30 then self.job=nil; return nil,"BRAKE CAL could not stop; previous profile kept." end
+    return self:reverseCommands(s,j.dx,j.dz,j.candidate),("BRAKE CAL %d/8 full reverse | %.1f b/s | %.1f blocks"):format(j.index,along,r.distance)
   end
   function A:fit(job)
     local p={version=1,gpsVersion=2,cruiseVersion=3,validationVersion=2,responseScale=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8,maxThrottle=throttleLimit}
@@ -377,6 +565,7 @@ local Autopilot = (function()
   function A:calibrate(s)
     local j=self.job
     if not j then return nil,"Calibration is not running." end
+    if j.kind=="BRAKES" then return self:calibrateBraking(s) end
     if not A.validSample(s) then return {},"Waiting for fresh GPS, heading, yaw rate and pressure readings." end
     if s.t<=j.previous.t then return {},"Waiting for a new navigation sample." end
     if s.t-j.previous.t>8 or j.interrupted then
@@ -862,7 +1051,7 @@ local function recordFlight(s,goal,profile,commands,stage)
     if r.count==0 then
       file.writeLine("# Airship v"..AIRSHIP_BUILD.."; relative X/Z only; first 180 samples at no more than 2 Hz")
       file.writeLine("# profile "..textutils.serialize(profile,{compact=true}))
-      local columns="time,stage,x,z,goal_x,goal_z,vx,vz,heading,yaw,pressure,cross,remaining,target_along,target_cross,requested_ax,requested_az,requested_yaw,allocated_ax,allocated_az,allocated_yaw"
+      local columns="time,stage,x,z,goal_x,goal_z,vx,vz,heading,yaw,pressure,cross,remaining,target_along,target_cross,requested_ax,requested_az,requested_yaw,allocated_ax,allocated_az,allocated_yaw,stop_distance,braking,raw_vx,raw_vz"
       for _,name in ipairs(navNames) do columns=columns..","..name.."_x,"..name.."_y,"..name.."_power" end
       file.writeLine(columns)
     end
@@ -870,7 +1059,7 @@ local function recordFlight(s,goal,profile,commands,stage)
     local desired,applied=trace.desired or {},navController.applied or {}
     local values={s.t-r.t,stage,s.x-r.x,s.z-r.z,goal.x-r.x,goal.z-r.z,s.vx,s.vz,s.heading,s.yaw,s.pressure,
       trace.cross or 0,trace.remaining or 0,trace.targetAlong or 0,trace.targetCross or 0,
-      desired[1] or 0,desired[2] or 0,desired[3] or 0,applied[1] or 0,applied[2] or 0,applied[3] or 0}
+      desired[1] or 0,desired[2] or 0,desired[3] or 0,applied[1] or 0,applied[2] or 0,applied[3] or 0,trace.stoppingDistance or 0,trace.braking or "FALLBACK",s.rawVx or s.vx,s.rawVz or s.vz}
     for _,name in ipairs(navNames) do
       local command=commands and commands[name] or {}
       values[#values+1]=command.x or 0; values[#values+1]=command.y or 0; values[#values+1]=command.power or 0
@@ -1065,6 +1254,7 @@ if pendingAutopilot then
   autopilotNoticeColor=colors.orange
 end
 local velocity = {x=0, y=0, z=0}
+local intervalVelocity = {x=0,z=0}
 local previousPosition, previousSample
 local gpsFilter={}
 local sampleDt = .5
@@ -1075,7 +1265,7 @@ local pressureAt, headingAt, yawAt
 local function navigationSample()
   local now=os.clock()
   if not position or not lastGpsAt or now-lastGpsAt>2 or not pressureAt or now-pressureAt>2 or not headingAt or now-headingAt>2 or not yawAt or now-yawAt>2 then return nil end
-  return {t=now,x=position.x,z=position.z,vx=velocity.x,vz=velocity.z,heading=shipHeading,yaw=yawRate,pressure=altitudeSensorPressure}
+  return {t=now,x=position.x,y=position.y,z=position.z,vx=velocity.x,vz=velocity.z,rawVx=intervalVelocity.x,rawVz=intervalVelocity.z,heading=shipHeading,yaw=yawRate,pressure=altitudeSensorPressure}
 end
 local readoutSamples,readoutSampleAt,readoutGoalKey={},nil,nil
 local function navigationReadout()
@@ -1220,6 +1410,7 @@ local function locate()
     local centerX,centerZ=x,z
     if previousPosition and previousSample then
       sampleDt = math.max(.01, now - previousSample)
+      intervalVelocity.x,intervalVelocity.z=(centerX-previousPosition.x)/sampleDt,(centerZ-previousPosition.z)/sampleDt
       velocity.x = velocity.x * .5 + ((centerX - previousPosition.x) / sampleDt) * .5
       if not altitudeSensorReady then velocity.y = velocity.y * .5 + ((y - previousPosition.y) / sampleDt) * .5 end
       velocity.z = velocity.z * .5 + ((centerZ - previousPosition.z) / sampleDt) * .5
@@ -1234,6 +1425,7 @@ local function locate()
     position = nil
     previousPosition, previousSample = nil, nil
     velocity = {x=0, y=0, z=0}
+    intervalVelocity = {x=0,z=0}
     lastGpsAt = nil
     gpsFilter={}
     if mode ~= "STOPPED" then
@@ -1288,10 +1480,12 @@ local function updateFlight(gpsFresh)
       autopilotNoticeColor=colors.orange
       return
     end
+    local brakingCalibration=navController.job.kind=="BRAKES"
     local commands,message,completed=navController:calibrate(sample)
     autopilotCommands=commands or {}
     local job=navController.job
     if job and job.phase=="VERIFY" then recordFlight(sample,job.returning and job.legStart or job.goals[job.leg],job.candidate,commands,"CAL_"..job.leg.."_TRY_"..(job.retry+1)..(job.returning and "_RETURN" or "")) end
+    if job and job.kind=="BRAKES" then recordFlight(sample,job.goal or job.hold,job.candidate,commands,"CAL_BRAKE_"..job.index.."_"..job.phase) end
     if job and job.phase=="VERIFY" and (not pendingAutopilot or pendingRetry~=job.persistRevision) then
       local saved,err=pcall(savePendingAutopilot,job.candidate)
       if saved then pendingAutopilot=job.candidate; pendingRetry=job.persistRevision
@@ -1299,7 +1493,12 @@ local function updateFlight(gpsFresh)
     end
     if completed then
       local saved,err=pcall(saveAutopilotProfile,completed)
-      if saved then clearPendingAutopilot(); pendingAutopilot=nil; pendingRetry=nil; navController.profile=completed; applyGainValues(completed.gains); autopilotNotice=("FULL AUTO CAL saved: %.1f b/s peak, %.0f%% thrust."):format(completed.verification and completed.verification.peakSpeed or completed.maxSpeed,(completed.maxThrottle or .35)*100); autopilotNoticeColor=colors.lime
+      if saved then
+        if not brakingCalibration then clearPendingAutopilot(); pendingAutopilot=nil; pendingRetry=nil end
+        navController.profile=completed; applyGainValues(completed.gains)
+        autopilotNotice=brakingCalibration and ("BRAKE CAL saved at Y %.0f, pressure %.3f; 4 directions."):format(completed.braking.height,completed.braking.pressure)
+          or ("FULL AUTO CAL saved: %.1f b/s peak, %.0f%% thrust."):format(completed.verification and completed.verification.peakSpeed or completed.maxSpeed,(completed.maxThrottle or .35)*100)
+        autopilotNoticeColor=colors.lime
       else autopilotNotice="Calibration passed but could not save: "..tostring(err); autopilotNoticeColor=colors.red end
     elseif not commands then autopilotNotice=message; autopilotNoticeColor=colors.red
     else autopilotNotice=message; autopilotNoticeColor=colors.orange end
@@ -1678,6 +1877,18 @@ local function startFullCalibration()
   autopilotNoticeColor=colors.orange
   status.text=autopilotNotice; status.foreground=colors.orange
 end
+local function startBrakingCalibration()
+  if calibrationRunning or burnerSweep then status.text="Finish or cancel the current calibration first."; return end
+  if mode=="STOPPED" then status.text="Set a stable burner level before BRAKE CAL."; return end
+  local started,message=navController:beginBraking(navigationSample())
+  if not started then status.text=message; autopilotNotice=message; autopilotNoticeColor=colors.orange; return end
+  altitude=altitude or position.y
+  manualBurner,burnerCommand=burner,burner
+  vectorX,vectorY,power,target=0,0,0,nil
+  autopilotCommands={}; fullCalibration,calibrationRunning=true,true; flightRecording=nil
+  mode="BRAKE CAL"; autopilotNotice="BRAKE CAL: 8 automatic stops; current burner held. H cancels."
+  autopilotNoticeColor=colors.orange; status.text=autopilotNotice; status.foreground=colors.orange
+end
 local function testVector(x, y, label)
   calibrationRunning = false
   autopilotNotice=nil
@@ -1749,7 +1960,9 @@ local function createGpuButtons()
     addGpuButton(math.floor(l.w*.5),l.contentY+math.max(18,math.floor(l.h*.032))+4,
       math.floor(l.w*.5)-l.margin,math.max(24,math.floor(l.h*.045)),"FULL AUTO CAL",{46,107,130},startFullCalibration)
     if fullCalibration then addGpuButton(l.margin,l.contentY+math.max(18,math.floor(l.h*.032))+4,
-      math.floor(l.w*.45)-l.margin,math.max(24,math.floor(l.h*.045)),"CANCEL AUTO CAL",{100,75,35},holdHere) end
+      math.floor(l.w*.45)-l.margin,math.max(24,math.floor(l.h*.045)),"CANCEL AUTO CAL",{100,75,35},holdHere)
+    else addGpuButton(l.margin,l.contentY+math.max(18,math.floor(l.h*.032))+4,
+      math.floor(l.w*.45)-l.margin,math.max(24,math.floor(l.h*.045)),"BRAKE CAL",{46,107,130},startBrakingCalibration) end
     buttonRow({
       {"FWD",nil,{70,82,96},function() testVector(0,.2,"TEST Y+") end},
       {"BACK",nil,{70,82,96},function() testVector(0,-.2,"TEST Y-") end},
@@ -1796,6 +2009,7 @@ local function createMonitorUi()
   monitorFrame:addButton({x=25, y=7, width=8, height=1, text="STOP", background=colors.red}):onClick(stop)
   monitorFrame:addButton({x=2, y=8, width=12, height=1, text="TEST FWD", background=colors.gray}):onClick(function() testVector(0, .2, "TEST Y+") end)
   monitorFrame:addButton({x=15, y=8, width=12, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
+  monitorFrame:addButton({x=29, y=8, width=14, height=1, text="BRAKE CAL F6", background=colors.blue}):onClick(startBrakingCalibration)
   monitorCalibrateButton = monitorFrame:addButton({x=2, y=9, width=14, height=1, text="DIR CHECK", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
   monitorFrame:addButton({x=18, y=9, width=20, height=1, text="FULL AUTO CAL", background=colors.blue}):onClick(startFullCalibration)
   monitorFrame:addButton({x=2, y=10, width=14, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
@@ -1868,6 +2082,7 @@ if compact then
   if directGpuError then compactGpuNotice = frame:addLabel({x=2, y=13, width=screenWidth-3, height=2, text="DirectGPU: " .. directGpuError, foreground=colors.orange}) end
   frame:addButton({x=screenWidth-12, y=15, width=10, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
   frame:addButton({x=2, y=15, width=20, height=1, text="FULL AUTO CAL  R", background=colors.blue}):onClick(startFullCalibration)
+  frame:addButton({x=24, y=15, width=12, height=1, text="BRAKE CAL F6", background=colors.blue}):onClick(startBrakingCalibration)
 else
 frame:addLabel({x=2, y=1, width=30, height=1, text="AIRSHIP v" .. AIRSHIP_BUILD, foreground=colors.white, background=colors.blue})
 status = frame:addLabel({x=2, y=2, width=screenWidth-3, height=1, text="Starting controller...", foreground=colors.yellow})
@@ -1967,6 +2182,7 @@ calibrationButton(26, 6, 22, "Y- / BACK", colors.gray, function() testVector(0, 
 calibrateButton = calibrationPage:addButton({x=2, y=9, width=14, height=1, text="DIR CHECK", background=calibrated and colors.green or colors.orange}):onClick(confirmCalibration)
 calibrationPage:addButton({x=18, y=9, width=12, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
 calibrationPage:addButton({x=32, y=9, width=15, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
+calibrationPage:addButton({x=2, y=10, width=20, height=1, text="BRAKE CAL  F6", background=colors.blue}):onClick(startBrakingCalibration)
 calibrationButton(2, 12, 16, "SWEEP 15-5", colors.orange, startBurnerSweep)
 calibrationPage:addLabel({x=20, y=12, width=13, height=1, text="Sweep saves stable heights", foreground=colors.lightGray})
 calibrationPage:addButton({x=35, y=12, width=14, height=1, text="CLEAR HEIGHTS", background=colors.red}):onClick(clearHoverMap)
@@ -2193,6 +2409,7 @@ local ok, err = pcall(function()
         elseif key == keys.s then stop()
         elseif key == keys.c then confirmCalibration()
         elseif key == keys.r then startFullCalibration()
+        elseif key == keys.f6 then startBrakingCalibration()
         elseif key == keys.f8 then uploadFlightReport()
         end
       end

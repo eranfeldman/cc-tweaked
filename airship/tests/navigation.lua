@@ -5,7 +5,7 @@ local core=assert(source:match("%-%- BEGIN AUTOPILOT CORE\n(.-)\n%-%- END AUTOPI
 local A=assert(load(core:gsub('  function A.validSample','  A.testWindow=window\n  function A.validSample',1).."\nreturn Autopilot","@autopilot-core"))()
 local names={"t0","t1","t2","t3","t4","t5","t6","t7"}
 do
-  local env=setmetatable({previousPosition={x=0,y=20,z=0},previousSample=0,velocity={x=0,y=0,z=0}},{__index=_G})
+  local env=setmetatable({previousPosition={x=0,y=20,z=0},previousSample=0,velocity={x=0,y=0,z=0},intervalVelocity={}},{__index=_G})
   env.os={clock=function() return 3 end}
   env.FreshGPS={locate=function() return 6,20,-3 end,accept=function() return true end}
   env.navController={}; env.gpsFilter={}
@@ -14,6 +14,7 @@ do
   local locate=assert(load(locating..'\nreturn locate',"@slow-gps-velocity","t",env))()
   assert(locate() and env.sampleDt==3 and env.velocity.x==1 and env.velocity.z==-.5,
     "Slow peripheral cycles must use actual GPS elapsed time instead of inflating velocity")
+  assert(env.intervalVelocity.x==2 and env.intervalVelocity.z==-1,"Braking must retain GPS interval velocity without the additional EMA delay")
   env.os.clock=function() return 10 end
   env.FreshGPS.locate=function() return nil end; env.FreshGPS.error="GPS host ranges disagree"
   env.burner,env.burnerCommand,env.mode=6,6,"AUTOPILOT"
@@ -55,7 +56,7 @@ local function plant(mass,period,noise,uneven)
   function p:gpsZ() return self.z-self.rock+self.noise*math.sin(self.t*4.1) end
   for _,name in ipairs(names) do p.actuators[name]={x=0,y=0,power=0} end
   function p:sample()
-    return {t=self.t,x=self:gpsX(),z=self:gpsZ(),vx=self.filteredX,vz=self.filteredZ,
+    return {t=self.t,x=self:gpsX(),y=self.y or 227,z=self:gpsZ(),vx=self.filteredX,vz=self.filteredZ,rawVx=self.rawX or 0,rawVz=self.rawZ or 0,
       heading=self.heading,yaw=self.yaw+self.noise*.1*math.sin(self.t*.6),pressure=self.pressure,tilt=math.abs(self.rock)}
   end
   function p:advance(commands)
@@ -92,8 +93,9 @@ local function plant(mass,period,noise,uneven)
       self.x,self.z=self.x+self.vx*dt,self.z+self.vz*dt
       self.t=self.t+dt
     end
-    self.filteredX=.5*self.filteredX+.5*(self:gpsX()-oldX)/self.period
-    self.filteredZ=.5*self.filteredZ+.5*(self:gpsZ()-oldZ)/self.period
+    self.rawX,self.rawZ=(self:gpsX()-oldX)/self.period,(self:gpsZ()-oldZ)/self.period
+    self.filteredX=.5*self.filteredX+.5*self.rawX
+    self.filteredZ=.5*self.filteredZ+.5*self.rawZ
   end
   return p
 end
@@ -267,6 +269,27 @@ do
   assert(peak>13,"A stored cruise estimate must not cap available flight speed")
   assert(cross<6,"Sideways initial velocity caused a curved or divergent route")
   print(("PASS: 24 thrusters, diagonal, initial sideways drift, changing pressure; %.2fm/s peak, %.2fm cross-track, %.1fs"):format(peak,cross,p.t))
+  assert(controller:beginBraking(p:sample()))
+  local commands,measured={},nil
+  for _=1,5000 do
+    p:advance(commands)
+    local message
+    commands,message,measured=controller:calibrate(p:sample())
+    assert(commands,message)
+    if measured then break end
+  end
+  assert(measured and #measured.channels==96 and A.validBraking(measured.braking),'24-thruster braking must reuse the complete measured channel layout')
+  local flight=plant(3,.65,.01); flight.pressure=.85; flight.heading=1.3
+  local pilot=A.new(names,measured); pilot:reset(flight.heading)
+  local goal={x=800,z=600}; local done,over=false,0
+  for _=1,3000 do
+    if .8*flight.x+.6*flight.z>400 then flight.pressure=.3; flight.y=300 end
+    local out,reached=pilot:navigate(flight:sample(),goal); flight:advance(out)
+    over=math.max(over,.8*flight.x+.6*flight.z-1000)
+    if reached then done=true; break end
+  end
+  print(('BRAKING SIM 24 thrusters, 0.65s polls, diagonal, pressure/height change: arrived %s overshoot %.2f time %.1fs'):format(tostring(done),over,flight.t))
+  assert(done and over<.5,'24-thruster measured braking must handle diagonal travel, slower polling and live pressure changes')
   names,mounts=oldNames,oldMounts
 end
 
@@ -469,6 +492,121 @@ do
     assert(excursion<.75,"Faster final turn must keep the destination in place")
     print(("PASS: final turn %d to %d degrees, %.1fs vs %.1fs; %.3fm drift"):format(angles[1],angles[2],fast,slow,excursion))
   end
+end
+
+local brakingProfiles={}
+for i=1,3 do
+  local p=plant(table.unpack(scenarios[i])); p.y=227; p.pressure=i==3 and .3 or .85
+  local controller=A.new(names,profiles[i]); assert(controller:beginBraking(p:sample()))
+  local commands,completed={},nil
+  for _=1,5000 do
+    p:advance(commands)
+    local message
+    commands,message,completed=controller:calibrate(p:sample())
+    assert(commands,message)
+    if completed then break end
+  end
+  assert(completed and A.validBraking(completed.braking),'Eight automatic stopping tests must produce a valid measured model')
+  assert(completed.braking.height==227 and completed.braking.pressure==p.pressure,'Brake calibration must retain live height and pressure')
+  assert(controller.profile==profiles[i] and profiles[i].braking==nil,'Measuring brakes must not overwrite the working profile before persistence succeeds')
+  for _,d in ipairs(completed.braking.directions) do assert(#d.runs==2 and d.force>0 and d.delay>=.05) end
+  brakingProfiles[i]=completed
+  print(('PASS: measured 8 stops mass %.1f pressure %.2f, %.1fs; force %.2f drag %.3f delay %.2f'):format(scenarios[i][1],p.pressure,p.t,completed.braking.directions[1].force,completed.braking.directions[1].drag,completed.braking.directions[1].delay))
+end
+
+do
+  local p=brakingProfiles[1]
+  local dense=A.brakeModel(p,1,0,.85,.2)
+  local thin=A.brakeModel(p,1,0,.3,.2)
+  local slow=A.brakeModel(p,1,0,.85,1)
+  assert(A.stoppingDistance(thin,15)>A.stoppingDistance(dense,15),'Lower pressure must increase learned stopping distance when drag is positive')
+  assert(A.stoppingDistance(slow,15)>A.stoppingDistance(dense,15),'Slower navigation polling must increase the stopping allowance')
+  for _,v in ipairs({1,5,15,40}) do
+    local distance=A.stoppingDistance(dense,v)
+    assert(math.abs(A.stoppingSpeed(dense,distance)-v)<.001,'Stopping speed must invert the learned physical stopping distance')
+  end
+  assert(math.abs(A.stoppingDistance({force=4,drag=0,delay=.5},10)-17.5)<1e-8,'Zero-drag stopping must use v*delay + v^2/(2*a)')
+  for direction,d in ipairs(p.braking.directions) do
+    local axes={{1,0},{-1,0},{0,1},{0,-1}}
+    for _,r in ipairs(d.runs) do
+      local m=A.brakeModel(p,axes[direction][1],axes[direction][2],r.pressure,d.sampleDt)
+      assert(A.stoppingDistance(m,r.speed)>=r.distance,'The saved predictor must cover each actual recorded stop')
+    end
+  end
+  local c=A.new(names,p); local s={t=0,x=0,y=227,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
+  local _,_,partial=c:reverseCommands(s,1,0,p,.3)
+  local _,_,full=c:reverseCommands(s,1,0,p)
+  assert(math.abs(partial[1]/full[1]-.3)<1e-9,'Reverse thrust must support proportional braking rather than just zero or full power')
+  assert(c:beginBraking(s)); local j=c.job
+  j.index=2; j.runs[1]={saved=true}; j.phase='BRAKE'; j.interrupted=true; s.t=.2
+  assert(c:calibrate(s) and j.phase=='SETTLE' and j.index==2 and j.runs[1].saved,'GPS interruption must restart only the current stopping test')
+  c:cancel(); assert(c.profile==p and not c.job,'Canceling brake calibration must retain the previous saved braking profile')
+  assert(A.new(names,p).profile.braking==p.braking,'Saved braking data must be accepted when reloading the autopilot profile')
+  print('PASS: pressure, polling latency, stopping-distance inversion, observed-stop coverage, interrupted measurement, cancellation and reload')
+end
+
+do
+  local s={t=0,x=0,y=227,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
+  local old=profiles[1]
+  local env=setmetatable({navController=A.new(names,old),status={},mode='HOLDING ALTITUDE',burner=6,burnerCommand=6,position={x=0,y=227,z=0},
+    sampleDt=.2,burnerSlewPerSecond=6,pendingAutopilot={keep=true},Autopilot=A,shipHeading=0}, {__index=_G})
+  env.colors={red=1,orange=2,lime=3}
+  env.navigationSample=function() return s end
+  env.clamp=function(v,a,b) return math.max(a,math.min(b,v)) end
+  env.recordFlight=function() end
+  env.clearPendingAutopilot=function() error('Brake calibration must not remove a pending 96-test survey') end
+  env.applyGainValues=function() end
+  env.saveAutopilotProfile=function(p) assert(p==brakingProfiles[1]); env.saved=p end
+  local start=assert(source:match('(local function startBrakingCalibration%b()%s*.-)\nlocal function testVector'))
+  local update=assert(source:match('(local function updateFlight%b()%s*.-)\nlocal function savedHoverPoints'))
+  local begin,tick=assert(load(start..'\n'..update..'\nreturn startBrakingCalibration,updateFlight','@brake-ui','t',env))()
+  begin()
+  assert(env.fullCalibration and env.navController.job.kind=='BRAKES' and env.manualBurner==6 and env.altitude==227,'Brake button must begin eight-stop measurement with the current burner held even without a prior height selection')
+  env.navController.calibrate=function() env.navController.job=nil; return {},nil,brakingProfiles[1] end
+  s.t=.2; tick(true)
+  assert(env.saved and env.navController.profile==brakingProfiles[1] and env.pendingAutopilot.keep and env.burner==6 and env.autopilotNotice:match('BRAKE CAL saved'),'Completed brake calibration must save its profile and preserve lift and the thruster checkpoint')
+  begin(); env.saveAutopilotProfile=function() error('disk full') end
+  s.t=.4; tick(true)
+  assert(env.navController.profile==brakingProfiles[1] and env.burner==6 and env.autopilotNotice:match('could not save'),'A failed brake-profile write must keep the previous working profile and burner')
+  print('PASS: brake button, held burner, successful save, checkpoint preservation and disk-full rollback')
+end
+
+for i,profile in ipairs(brakingProfiles) do
+  for _,pressure in ipairs({.85,.3}) do
+    local p=plant(table.unpack(scenarios[i])); p.pressure=pressure; p.heading=1.1
+    local controller=A.new(names,profile); controller:reset(p.heading)
+    local goal={x=1000,z=0}
+    local peak,over,atFifteen,atThree=0,0,nil,nil
+    local arrived=false
+    for _=1,5000 do
+      local commands,done=controller:navigate(p:sample(),goal)
+      p:advance(commands)
+      peak=math.max(peak,math.sqrt(p.vx^2+p.vz^2)); over=math.max(over,p.x-goal.x)
+      if not atFifteen and p.x>=985 then atFifteen=p.t end
+      if not atThree and p.x>=997 then atThree=p.t end
+      if done then arrived=true; break end
+    end
+    print(('BRAKING SIM mass %.1f pressure %.2f: arrived %s, peak %.2f, overshoot %.2f, final 15-to-3 %.1fs'):format(scenarios[i][1],pressure,tostring(arrived),peak,over,atThree and atThree-atFifteen or -1))
+    assert(arrived,'Measured braking must reach the destination')
+    assert(over<.5,'Measured braking must stay within half a block of overshoot')
+    assert(atFifteen and atThree and atThree-atFifteen<15,'Measured braking must not crawl from fifteen to three blocks')
+    controller:setHeadingTarget(math.floor(p.heading/(math.pi/2)+.5)*(math.pi/2))
+    for _=1,300 do p:advance(controller:navigate(p:sample(),goal)) end
+    assert(math.sqrt((p.x-goal.x)^2+p.z^2)<.75,'Measured braking must continue holding position through final cardinal alignment')
+  end
+end
+
+for i,goal in ipairs({{x=1000,z=0},{x=-1000,z=0},{x=0,z=1000},{x=0,z=-1000}}) do
+  local p=plant(1.4,.65,.05); p.pressure=.3; p.heading=1.1
+  local controller=A.new(names,brakingProfiles[3]); controller:reset(p.heading)
+  local over,arrived=0,false
+  for _=1,5000 do
+    local commands,done=controller:navigate(p:sample(),goal); p:advance(commands)
+    over=math.max(over,(p.x*goal.x+p.z*goal.z)/1000-1000)
+    if done then arrived=true; break end
+  end
+  assert(arrived and over<.5,'Measured brakes must handle each world direction with noisier, slower GPS')
+  print(('PASS: measured brakes direction %d, 0.65s noisy GPS, overshoot %.3f, time %.1fs'):format(i,over,p.t))
 end
 
 for i,profile in ipairs(profiles) do

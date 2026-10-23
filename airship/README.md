@@ -4,7 +4,7 @@ CC:Tweaked controller for 24 Create Propulsion liquid vector thrusters. It disco
 
 ## Install
 
-Controller v1.6.12 follows a fixed straight route with independent sideways correction and a stopping-distance speed plan. It accelerates as available thrust and stopping distance allow on long routes, brakes before the destination, and blends into precise position hold for arrival. Measured thrust, drag, yaw response, and sensor delay determine its commands. The saved cruise estimate sizes validation flights; modern profiles have no fixed forward cruise cap. FLIGHT shows live horizontal speed, remaining distance, and a closing-speed ETA on the computer, CC monitor, and DirectGPU monitor; speed and ETA use a rolling four-second GPS window. GPS is corrected from the computer's position to the ship center using its reported two-block aft offset and live heading. During travel the controller holds its starting heading; on arrival it turns in place to the nearest cardinal heading (north, south, east, or west), then holds position and altitude. The final heading is the closest of 0, 90, 180, or 270 degrees to the actual heading at arrival. Pitch/roll do not reduce throttle, speed, or the calibrated power ceiling; keep the physical gyro powered. The controller does not perform an automatic descent or touchdown. FULL AUTO CAL waits for a fresh control-loop sample, checkpoints the fitted model after the 96 thruster/nozzle tests, and saves the final profile only after auto validation. GPU redraw targets 40 Hz, with cooperative yields and native monitor/GPU click support; actual rate depends on display and server performance.
+Controller v1.7.0 follows a fixed straight route with independent sideways correction and a stopping-distance speed plan. It accelerates as available thrust and stopping distance allow on long routes, brakes before the destination, and blends into precise position hold for arrival. Measured thrust, drag, yaw response, and sensor delay determine its commands. **BRAKE CAL / F6** adds eight stopping measurements to an existing completed autopilot calibration, adjusting stopping distance for live pressure and polling time. Until that succeeds, the previous braking planner remains active. The saved cruise estimate sizes validation flights; modern profiles have no fixed forward cruise cap. FLIGHT shows live horizontal speed, remaining distance, and a closing-speed ETA on the computer, CC monitor, and DirectGPU monitor; speed and ETA use a rolling four-second GPS window. GPS is corrected from the computer's position to the ship center using its reported two-block aft offset and live heading. During travel the controller holds its starting heading; on arrival it turns in place to the nearest cardinal heading (north, south, east, or west), then holds position and altitude. The final heading is the closest of 0, 90, 180, or 270 degrees to the actual heading at arrival. Pitch/roll do not reduce throttle, speed, or the calibrated power ceiling; keep the physical gyro powered. The controller does not perform an automatic descent or touchdown. FULL AUTO CAL waits for a fresh control-loop sample, checkpoints the fitted model after the 96 thruster/nozzle tests, and saves the final profile only after auto validation. GPU redraw targets 40 Hz, with cooperative yields and native monitor/GPU click support; actual rate depends on display and server performance.
 
 In the computer terminal, install Basalt 2.5, download the updated controller beside it, and run it:
 
@@ -35,6 +35,35 @@ On the full-size computer UI, use **FLIGHT** for navigation and **CALIBRATION** 
 Put a Create Redstone Link transmitter against the computer's **front** (monitor side). Put `create:analog_lever` in both frequency slots on this transmitter and the burner receiver, in the same order. The app sends analog power 0–15 out the computer's front face to control the burners.
 
 ## Cruise controller and upgrades
+
+### v1.7.0 measured braking and faster approach
+
+The old planner can demand very low speed well before arrival when a saved profile has accumulated conservative response settings. The new optional braking calibration measures reverse acceleration, coasting drag, and effective stopping delay in each ship direction. Its stopping model integrates `dv/dt = -force - drag * speed`, including distance traveled during the measured delay. Live air pressure scales the measured drag; current navigation polling time adds an allowance if readings arrive slower than during calibration. Height and the observed height range are saved with the pressure reference. There is no altitude PID or automatic burner sweep.
+
+Navigation inverts that stopping curve to choose speed from remaining distance. Reverse thrust is proportional, with feedforward for the deceleration needed to follow the curve, rather than switching only between full power and zero. The last three blocks at low speed return to the existing precise hold. Calibrated braking uses velocity from the latest GPS interval: the previous extra velocity smoothing delayed corrections and caused a limit cycle in the 24-thruster, slow-polling simulation. Display speed/ETA smoothing remains unchanged. There is no fixed cruise speed cap.
+
+#### Calibration order
+
+1. **FULL AUTO CAL** first: the 96 thruster/nozzle tests, then the five flight validation tests automatically. If this already finished successfully for the current thruster layout, skip it. If only the 96 measurements finished, use FULL AUTO CAL to resume the saved model's flight tests.
+2. At a stable burner level and normal cruising height, open **CALIBRATION → BRAKE CAL**, or press **F6** on the computer with no text box focused. The ship moves automatically in four directions, accelerating, coasting, accelerating again, then reversing to stop at two speeds per direction. Use clear air with hundreds of blocks of room in every horizontal direction and enough fuel. The current burner amount is held; the program does not change height to take measurements. The eight-stop routine took 260–335 simulated seconds; real time depends on the ship, GPS/hub sampling and settling. It does not return to its starting coordinates. **H / HOLD** cancels. A navigation interruption restarts the current measurement while retaining completed stops in memory; restarting the program requires restarting the eight-stop routine.
+3. Wait for **BRAKE CAL saved**, then enter a destination a few hundred blocks away and press **AUTO**. No second 96-test survey or burner sweep is required. Successful measurements are saved inside `airship-autopilot.cfg`, survive restart, and apply automatically to later flights. Failure or cancellation keeps the working profile; a save failure also leaves it installed. The separate pending 96-test checkpoint and saved burner heights are preserved.
+
+Run BRAKE CAL again after a load or propulsion change; changed thruster layout/names requires FULL AUTO CAL first. Pressure compensation uses a linear drag model measured at the calibration height, not a guarantee at every height, speed, fuel state or server delay. Testing at a substantially different height is still needed. The saved data contains eight small run summaries, not an accumulating raw recording. F8 flight reports now include predicted stopping distance, braking phase, and GPS interval velocity.
+
+#### Simulation results
+
+These tests run the controller and its automatic eight-stop calibration against simulated nozzle response, inertia, drag, GPS noise and polling delay. They are not measurements of the Minecraft ship. Six 1,000-block flights with three load cases and two pressures all arrived, held position through final cardinal alignment, and stayed below half a block of longitudinal overshoot:
+
+| Relative load | Pressure | Peak blocks/s | Overshoot blocks | Time from 15 to 3 blocks remaining |
+| --- | --- | --- | --- | --- |
+| 1.0 | 0.85 | 22.83 | 0.04 | 2.8 s |
+| 1.0 | 0.30 | 50.15 | 0.39 | 3.0 s |
+| 1.8 | 0.85 | 12.72 | 0.11 | 3.2 s |
+| 1.8 | 0.30 | 32.69 | 0.48 | 3.1 s |
+| 1.4 | 0.85 | 16.27 | 0.04 | 2.7 s |
+| 1.4 | 0.30 | 39.32 | 0.42 | 3.0 s |
+
+A separate 24-thruster test uses 0.65-second navigation samples, a diagonal route, and a mid-flight change from pressure 0.85 to 0.30 and height 227 to 300. It arrived in 63 simulated seconds with 0.01 blocks of overshoot. Four additional flights with 0.65-second samples and greater GPS noise, one in each world direction, arrived with 0.31–0.44 blocks of overshoot. These numbers are regression targets, not promised ship speed or precision. Checks also cover pressure scaling, slower polling, zero drag, observed stopping-distance coverage, proportional reverse thrust, cancellation, interrupted measurements, reload, held burners, pending-survey preservation and failed saves. Existing GPS, GPU startup, touch handling and cooperative-yield regressions remain enabled.
 
 ### v1.6.12 slightly later, stronger braking
 

@@ -240,9 +240,10 @@ end
 
 do
   local env=fixture()
-  local started,canceled=false,false
+  local started,canceled,braking=false,false,false
   env.directWidth,env.directHeight,env.gpuTab=656,492,"CALIBRATION"
   env.startFullCalibration=function() started=true end
+  env.startBrakingCalibration=function() braking=true end
   env.holdHere=function() canceled=true end
   local add=assert(source:match("(local function addGpuButton%b()%s*.-)\nlocal function renderDirectMonitor"))
   local menu=assert(source:match("(local function createGpuButtons%(%)%s*.-)\ncreateGpuButtons%(%)"))
@@ -251,8 +252,10 @@ do
   for _,button in ipairs(env.gpuButtons) do
     assert(button.x>=0 and button.y>=0 and button.x+button.w<=656 and button.y+button.h<=492,"Calibration control does not fit 4x3 monitor")
     if button.label=="FULL AUTO CAL" then button.action() end
+    if button.label=="BRAKE CAL" then button.action() end
   end
   assert(started,"Full calibration button is missing from the monitor menu")
+  assert(braking and source:find('key == keys.f6 then startBrakingCalibration()',1,true),"Brake calibration needs its clickable monitor button and F6 hotkey")
   env.fullCalibration=true; build()
   for _,button in ipairs(env.gpuButtons) do if button.label=="CANCEL AUTO CAL" then button.action() end end
   assert(canceled,"Running calibration must have a monitor cancel control")
