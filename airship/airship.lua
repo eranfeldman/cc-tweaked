@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.22"
+local AIRSHIP_BUILD = "1.7.23"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -958,12 +958,16 @@ local seatControl = {}
 do
 local function findAvionicsAll(kind)
   local found = {}
+  local directNames = {}
   local function add(name, device)
     if device and not found[name] then found[name] = device end
   end
   for _, name in ipairs(peripheral.getNames()) do
     for _, remoteKind in ipairs({peripheral.getType(name)}) do
-      if remoteKind == kind then add(name, peripheral.wrap(name)) end
+      if remoteKind == kind then
+        directNames[name] = true
+        add(name, peripheral.wrap(name))
+      end
     end
     local root = peripheral.wrap(name)
     if root and type(root.getNamesRemote) == "function" then
@@ -980,7 +984,11 @@ local function findAvionicsAll(kind)
             return function(...) return hub.callRemote(childName, method, ...) end
           end})
           for _, remoteKind in ipairs(types) do
-            if remoteKind == kind then add(path .. "/" .. childName, child)
+            if remoteKind == kind then
+              if not directNames[childName] then
+                directNames[childName] = true
+                add(path .. "/" .. childName, child)
+              end
             elseif (remoteKind == "peripheral_hub" or remoteKind == "malahit_hub") and depth < 2 then
               scan(child, path .. "/" .. childName, depth + 1)
             end
@@ -1094,7 +1102,7 @@ if fs.exists("airship-seat-distance.cfg") then
   if saved and saved > 0 and saved == math.floor(saved) then seatControl.loweredBy = saved end
 end
 seatControl.getGroundClearance = function()
-  if #seatControl.sensors ~= 3 then return nil, "need 3 Simulated optical sensors; found " .. #seatControl.sensors end
+  if #seatControl.sensors < 3 then return nil, "need at least 3 Simulated optical sensors; found " .. #seatControl.sensors end
   local nearest
   for i, sensor in ipairs(seatControl.sensors) do
     local hitOk, hasHit = pcall(sensor.hasHit)
