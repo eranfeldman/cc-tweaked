@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.19"
+local AIRSHIP_BUILD = "1.7.20"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -954,6 +954,45 @@ findAvionics = function(kind)
     end
   end
 end
+local function findAvionicsAll(kind)
+  local found = {}
+  local function add(name, device)
+    if device and not found[name] then found[name] = device end
+  end
+  for _, name in ipairs(peripheral.getNames()) do
+    for _, remoteKind in ipairs({peripheral.getType(name)}) do
+      if remoteKind == kind then add(name, peripheral.wrap(name)) end
+    end
+    local root = peripheral.wrap(name)
+    if root and type(root.getNamesRemote) == "function" then
+      local function scan(hub, path, depth)
+        if depth > 2 then return end
+        local ok, names = pcall(hub.getNamesRemote)
+        yieldComputer()
+        if not ok or type(names) ~= "table" then return end
+        for _, childName in ipairs(names) do
+          local typeOk, remoteType = pcall(hub.getTypeRemote, childName)
+          yieldComputer()
+          local types = type(remoteType) == "table" and remoteType or {remoteType}
+          local child = setmetatable({}, {__index=function(_, method)
+            return function(...) return hub.callRemote(childName, method, ...) end
+          end})
+          for _, remoteKind in ipairs(types) do
+            if remoteKind == kind then add(path .. "/" .. childName, child)
+            elseif (remoteKind == "peripheral_hub" or remoteKind == "malahit_hub") and depth < 2 then
+              scan(child, path .. "/" .. childName, depth + 1)
+            end
+          end
+        end
+      end
+      scan(root, name, 1)
+    end
+    yieldComputer()
+  end
+  local devices = {}
+  for _, device in pairs(found) do devices[#devices + 1] = device end
+  return devices
+end
 monitor = monitor or findAvionics("monitor")
 local monitorName
 if monitor then
@@ -1016,11 +1055,12 @@ print("Discovering avionics...")
 local altitudeSensor = findAvionics("altitude_sensor")
 local navigationTable = findAvionics("navigation_table")
 local gimbalSensor = findAvionics("gimbal_sensor")
-local redstoneLinkBridge = findAvionics("redstone_link_bridge")
+local sequencedGearshift = findAvionics("Create_SequencedGearshift") or findAvionics("sequenced_gearshift")
+local groundSensors = findAvionicsAll("laser_sensor")
 local chatBox = peripheral.find("chat_box") or peripheral.find("chatBox") or findAvionics("chat_box") or findAvionics("chatBox")
 if not chatBox then print("Chat commands unavailable: connect an Advanced Peripherals chat box") end
-if not redstoneLinkBridge then print("Seat commands unavailable: connect a CC Redstone Link Bridge") end
-print("Chat Box: " .. (chatBox and "found" or "missing") .. " | Redstone Link Bridge: " .. (redstoneLinkBridge and "found" or "missing"))
+if not sequencedGearshift then print("Seat commands unavailable: connect a Create Sequenced Gearshift") end
+print(("Chat Box: %s | Sequenced Gearshift: %s | Ground laser sensors: %d"):format(chatBox and "found" or "missing", sequencedGearshift and "found" or "missing", #groundSensors))
 print("Setting up display...")
 if directGpuEnabled then setupDirectGpu() else directGpuError = "DirectGPU paused for stability; using CC monitor" end
 print("Building controls...")
@@ -1043,6 +1083,84 @@ local burnerCommand, vectorX, vectorY, power = burner, 0, 0, 0
 local burnerSlewPerSecond = 6
 local calibrated = fs.exists("airship-calibrated")
 local running, manualBurner, burnerSweep, calibrationRunning = true, nil, nil, false
+local seatMoveBusy, seatLoweredBy = false, nil
+if fs.exists("airship-seat-distance.cfg") then
+  local file = fs.open("airship-seat-distance.cfg", "r")
+  local saved = file and tonumber(file.readAll())
+  if file then file.close() end
+  if saved and saved > 0 and saved == math.floor(saved) then seatLoweredBy = saved end
+end
+local function getGroundClearance()
+  if #groundSensors ~= 3 then return nil, "need 3 laser sensors; found " .. #groundSensors end
+  local nearest
+  for i, sensor in ipairs(groundSensors) do
+    local ok, distance = pcall(sensor.getClosestHitDistance)
+    yieldComputer()
+    if not ok or type(distance) ~= "number" or distance ~= distance or distance < 0 or distance == math.huge then
+      return nil, "laser sensor " .. i .. " has no valid ground hit"
+    end
+    nearest = nearest and math.min(nearest, distance) or distance
+  end
+  return nearest
+end
+local function runSeatCommand(command, username)
+  local function reply(message, ok)
+    chatNotice = (ok and "CHAT OK: " or "CHAT ERROR: ") .. message
+    chatNoticeUntil = os.clock() + 8
+    if chatBox and type(chatBox.sendMessageToPlayer) == "function" then
+      pcall(chatBox.sendMessageToPlayer, message, username, "AIRSHIP")
+      yieldComputer()
+    end
+  end
+  if seatMoveBusy then reply("Seat pulley is already moving.", false); return end
+  if not sequencedGearshift then reply("Connect the Create Sequenced Gearshift to the peripheral hub.", false); return end
+  if fullCalibration or (mode ~= "HOLDING ALTITUDE" and mode ~= "DESTINATION REACHED") then
+    reply("Hold the ship stationary before moving the seats.", false); return
+  end
+  local isOk, moving = pcall(sequencedGearshift.isRunning)
+  yieldComputer()
+  if not isOk or moving then reply("Sequenced Gearshift is busy or unavailable.", false); return end
+  local distance, modifier, clearance
+  if command == "seat down" then
+    if seatLoweredBy then reply("Seats are already lowered; use `seat up` first.", false); return end
+    local failure
+    clearance, failure = getGroundClearance()
+    if not clearance then reply(failure, false); return end
+    distance = math.floor(clearance - 2)
+    if distance < 1 then reply(("Closest ground reading is %.2f blocks; seats will not move."):format(clearance), false); return end
+    modifier = 1
+  else
+    if not seatLoweredBy then reply("No saved seat lowering distance; use `seat down` first.", false); return end
+    distance, modifier = seatLoweredBy, -1
+  end
+  seatMoveBusy = true
+  local moveOk, moveError = pcall(sequencedGearshift.move, distance, modifier)
+  yieldComputer()
+  if not moveOk then seatMoveBusy = false; reply("Gearshift move failed: " .. tostring(moveError), false); return end
+  while running do
+    local checkOk, stillMoving = pcall(sequencedGearshift.isRunning)
+    yieldComputer()
+    if not checkOk then seatMoveBusy = false; reply("Could not read gearshift status: " .. tostring(stillMoving), false); return end
+    if not stillMoving then break end
+    sleep(.1)
+  end
+  if not running then seatMoveBusy = false; return end
+  if command == "seat down" then
+    seatLoweredBy = distance
+    local file = fs.open("airship-seat-distance.cfg", "w")
+    if file then
+      file.write(tostring(distance)); file.close()
+      reply(("Seats lowered %d blocks; nearest sensor started at %.2f blocks, leaving at least 2."):format(distance, clearance), true)
+    else
+      reply(("Seats lowered %d blocks, but the return distance could not be saved; keep the controller running."):format(distance), false)
+    end
+  else
+    seatLoweredBy = nil
+    if fs.exists("airship-seat-distance.cfg") then fs.delete("airship-seat-distance.cfg") end
+    reply(("Seats raised %d blocks."):format(distance), true)
+  end
+  seatMoveBusy = false
+end
 local navNames={}; for name in pairs(thrusters) do navNames[#navNames+1]=name end; table.sort(navNames)
 local navController=Autopilot.new(navNames)
 local autopilotCommands, fullCalibration, autopilotNotice, brakeCalibrationActive
@@ -2663,28 +2781,10 @@ local ok, err = pcall(function()
       end
       local command = type(message) == "string" and message:gsub("^%s*%$", ""):match("^%s*(.-)%s*$"):lower() or ""
       if type(username) == "string" and username:lower() == "pro_hacker_noob" then
-        local signal, reply
-        if command == "seat up" then signal, reply = 15, "Seat up command sent."
-        elseif command == "seat down" then signal, reply = 0, "Seat down command sent." end
-        if signal == nil then
-          chatNotice, chatNoticeUntil = "CHAT RX: use `seat up` or `seat down`", os.clock() + 8
+        if command == "seat up" or command == "seat down" then
+          runSeatCommand(command, username)
         else
-          redstoneLinkBridge = redstoneLinkBridge or findAvionics("redstone_link_bridge")
-          if not chatBox then chatBox = peripheral.find("chat_box") or peripheral.find("chatBox") or findAvionics("chat_box") or findAvionics("chatBox") end
-        end
-        if signal ~= nil then
-          local sent, failure
-          if redstoneLinkBridge then
-            sent, failure = pcall(redstoneLinkBridge.sendLinkSignal, "minecraft:stick", "minecraft:oak_button", signal)
-          else failure = "Redstone Link Bridge unavailable" end
-          yieldComputer()
-          if not sent then reply = "Seat command failed: " .. tostring(failure) end
-          chatNotice = sent and ("CHAT OK: " .. command .. " (signal " .. signal .. ")") or ("CHAT ERROR: " .. tostring(failure))
-          chatNoticeUntil = os.clock() + 8
-          if chatBox and type(chatBox.sendMessageToPlayer) == "function" then
-            pcall(chatBox.sendMessageToPlayer, reply, username, "AIRSHIP")
-            yieldComputer()
-          end
+          chatNotice, chatNoticeUntil = "CHAT RX: use `seat up` or `seat down`", os.clock() + 8
         end
       end
     end
