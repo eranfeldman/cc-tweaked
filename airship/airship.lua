@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.3"
+local AIRSHIP_BUILD = "1.7.4"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -429,7 +429,7 @@ local Autopilot = (function()
   end
   function A:calibrateBraking(s)
     local j=self.job
-    if not A.validSample(s) or not finite(s.y) then return {},"BRAKE CAL waiting for fresh navigation and height." end
+    if not A.validSample(s) or not finite(s.y) then j.interrupted=true; return {},"BRAKE CAL waiting for fresh navigation and height." end
     if finite(s.rawVx) and finite(s.rawVz) then s=copy(s); s.vx,s.vz=s.rawVx,s.rawVz end
     if s.t<=j.previous.t then return {},"BRAKE CAL waiting for a new sample." end
     if s.t-j.previous.t>8 or j.interrupted then
@@ -1164,6 +1164,7 @@ local sweepConfirmAt
 local sweepSummary
 local sweepSummaryUntil
 local gpuButtons = {}
+local gpuVisibleButtons = {}
 local gpuTab, gpuHeightPage = "FLIGHT", 1
 local gpuRenderRevision = 0
 local learnedHover = {}
@@ -1478,13 +1479,22 @@ local function locate()
         sweepSummaryUntil = os.clock() + 15
       end
       burnerSweep, manualBurner = nil, burner
-      if fullCalibration then autopilotNotice="GPS invalid: "..tostring(FreshGPS.error).."; calibration stopped, burner held."; autopilotNoticeColor=colors.red
-      else autopilotNotice="GPS invalid: "..tostring(FreshGPS.error or "no fix").."; re-engage AUTO."; autopilotNoticeColor=colors.orange end
-      navController:cancel(); autopilotCommands,fullCalibration=nil,nil; calibrationRunning=false
+      local brakeJob=fullCalibration and navController.job and navController.job.kind=="BRAKES" and navController.job
+      if brakeJob then
+        brakeJob.interrupted=true; autopilotCommands={}
+        autopilotNotice=("GPS paused; %d/8 brake stops kept. Waiting for a valid fix."):format(brakeJob.index-1)
+        autopilotNoticeColor=colors.orange
+      else
+        if fullCalibration then autopilotNotice="GPS invalid: "..tostring(FreshGPS.error).."; calibration stopped, burner held."; autopilotNoticeColor=colors.red
+        else autopilotNotice="GPS invalid: "..tostring(FreshGPS.error or "no fix").."; re-engage AUTO."; autopilotNoticeColor=colors.orange end
+        navController:cancel(); autopilotCommands,fullCalibration=nil,nil; calibrationRunning=false
+      end
       mode = mode == "AUTOPILOT" and "GPS LOST - RE-ENGAGE" or "WAITING FOR GPS"
     end
   elseif FreshGPS.error and (fullCalibration or mode=="AUTOPILOT" or not position) then
-    autopilotNotice="GPS paused: "..FreshGPS.error; autopilotNoticeColor=colors.orange
+    local brakeJob=fullCalibration and navController.job and navController.job.kind=="BRAKES" and navController.job
+    autopilotNotice=brakeJob and ("GPS paused; %d/8 brake stops kept: "):format(brakeJob.index-1)..FreshGPS.error or "GPS paused: "..FreshGPS.error
+    autopilotNoticeColor=colors.orange
   end
   return false
 end
@@ -1524,6 +1534,7 @@ local function updateFlight(gpsFresh)
       return
     end
     local brakingCalibration=navController.job.kind=="BRAKES"
+    if brakingCalibration then mode="BRAKE CAL" end
     local brakingPending=brakingCalibration and navController.job.pending
     local flightJob=navController.job.phase=="VERIFY" and navController.job
     local flightGoal=flightJob and (flightJob.returning and flightJob.legStart or flightJob.goals[flightJob.leg])
@@ -1746,6 +1757,7 @@ local function renderDirectMonitor()
   if not directGpu then return end
   local gpu, display = directGpu, directDisplay
   local revision = gpuRenderRevision
+  local buttons=gpuButtons
   local function yieldFrame()
     yieldComputer()
     if revision ~= gpuRenderRevision then error("DirectGPU frame superseded", 0) end
@@ -1835,13 +1847,14 @@ local function renderDirectMonitor()
     txt(("SAVED ALTITUDES   %d POINTS   PAGE %d / %d"):format(#heights,gpuHeightPage,pages),l.margin,contentY,math.max(18,math.floor(h*.032)),ink,"bold")
     if #heights==0 then txt("No saved calibration heights yet.",l.margin,contentY+math.floor(h*.09),math.max(16,math.floor(h*.026)),muted) end
   end
-  for _,b in ipairs(gpuButtons) do
+  for _,b in ipairs(buttons) do
     rect(b.x,b.y,b.w,b.h,b.color)
     local textSize=math.max(13,math.floor(h*.022))
     local tx=b.align=="left" and b.x+12 or b.x+math.max(6,math.floor((b.w-#b.label*textSize*.55)/2))
     txt(b.label,tx,b.y+math.floor((b.h-textSize)/2),textSize,ink,"bold")
   end
   gpu.updateDisplay(display)
+  gpuVisibleButtons=buttons
   yieldComputer()
 end
 local monitorStatus, monitorPos, monitorAlt, monitorSystem, monitorCalibrateButton, monitorGpuNotice, compactGpuNotice
@@ -1871,10 +1884,15 @@ local function stepSavedAltitude(delta)
   selectSavedAltitude(index)
 end
 local function holdHere()
-  if position then
-    local canceledCalibration = calibrationRunning
-    altitude = math.floor(position.y + .5); target = nil; setFlightMode("HOLDING ALTITUDE")
-    if canceledCalibration then status.text = "Direction calibration canceled; holding altitude."; status.foreground = colors.orange end
+  local canceledCalibration=calibrationRunning
+  if position or canceledCalibration then
+    if position then altitude=math.floor(position.y+.5) end
+    target=nil; setFlightMode(position and "HOLDING ALTITUDE" or "WAITING FOR GPS")
+    if canceledCalibration then
+      manualBurner,burnerCommand=burner,burner
+      autopilotNotice="Calibration canceled; burner held."
+      autopilotNoticeColor=colors.orange; status.text=autopilotNotice; status.foreground=colors.orange
+    end
   end
 end
 local function engageAutopilot()
@@ -2010,12 +2028,12 @@ local function createGpuButtons()
       {"STOP",nil,{125,48,56},stop},
     },l.buttonY)
   elseif gpuTab=="CALIBRATION" then
-    addGpuButton(math.floor(l.w*.5),l.contentY+math.max(18,math.floor(l.h*.032))+4,
-      math.floor(l.w*.5)-l.margin,math.max(24,math.floor(l.h*.045)),"FULL AUTO CAL",{46,107,130},startFullCalibration)
-    if fullCalibration then addGpuButton(l.margin,l.contentY+math.max(18,math.floor(l.h*.032))+4,
-      math.floor(l.w*.45)-l.margin,math.max(24,math.floor(l.h*.045)),"CANCEL AUTO CAL",{100,75,35},holdHere)
-    else addGpuButton(l.margin,l.contentY+math.max(18,math.floor(l.h*.032))+4,
-      math.floor(l.w*.45)-l.margin,math.max(24,math.floor(l.h*.045)),"BRAKE CAL",{46,107,130},startBrakingCalibration) end
+    local bw=math.floor((l.w-2*l.margin-2*l.gap)/3)
+    local y=l.contentY+math.max(18,math.floor(l.h*.032))+4
+    local bh=math.max(24,math.floor(l.h*.045))
+    addGpuButton(l.margin,y,bw,bh,"BRAKE CAL",{46,107,130},startBrakingCalibration)
+    addGpuButton(l.margin+bw+l.gap,y,bw,bh,"FULL AUTO CAL",{46,107,130},startFullCalibration)
+    addGpuButton(l.margin+2*(bw+l.gap),y,bw,bh,"CANCEL",{100,75,35},holdHere)
     buttonRow({
       {"FWD",nil,{70,82,96},function() testVector(0,.2,"TEST Y+") end},
       {"BACK",nil,{70,82,96},function() testVector(0,-.2,"TEST Y-") end},
@@ -2320,9 +2338,9 @@ end
 local lastGpuClick
 local function clickGpuButton(x, y, source)
   if not directGpu or type(x) ~= "number" or type(y) ~= "number" then return end
-  for _, button in ipairs(gpuButtons) do
+  for _, button in ipairs(gpuVisibleButtons) do
     if x >= button.x and x < button.x + button.w and y >= button.y and y < button.y + button.h then
-      local key = button.label .. ":" .. button.x .. ":" .. button.y
+      local key = button.x .. ":" .. button.y .. ":" .. button.w .. ":" .. button.h
       local now = os.clock()
       if lastGpuClick and lastGpuClick.key == key and lastGpuClick.source ~= source and now - lastGpuClick.at < .15 then return end
       lastGpuClick = {key=key, source=source, at=now}

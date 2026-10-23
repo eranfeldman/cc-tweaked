@@ -563,7 +563,7 @@ for _,settings in ipairs({{.3,.25},{.65,.8},{1,1.2}}) do
   local p=plant(1.4,settings[1],.01); p.actuatorDelay=settings[2]
   local c=A.new(names,profiles[3]); assert(c:beginBraking(p:sample()))
   local commands,completed={},nil
-  local recorded,rebound,low=0,0,false
+  local recorded,rebound,low,interrupted=0,0,false,false
   for _=1,4000 do
     p:advance(commands)
     local s=p:sample(); local speed=math.sqrt(s.rawVx^2+s.rawVz^2)
@@ -577,6 +577,13 @@ for _,settings in ipairs({{.3,.25},{.65,.8},{1,1.2}}) do
     if c.job and c.job.index>index then
       assert(speed<=.2,'Brake calibration must not record a stop while sliding backward or sideways')
       recorded=recorded+1
+    end
+    if settings[1]==.65 and c.job and c.job.index==2 and not interrupted then
+      interrupted=true
+      local first=c.job.runs[1]
+      for _=1,16 do p:advance({}) end
+      c.job.interrupted=true
+      assert(c.job.runs[1]==first and c.job.index==2,'A navigation pause must retain the first actual recorded stop')
     end
     if completed then break end
   end
@@ -630,6 +637,42 @@ do
   assert(A.new(names,p).profile.braking==p.braking,'Saved braking data must be accepted when reloading the autopilot profile')
   assert(not c:beginBraking(s,{validated=false}),'An incomplete survey must not bypass braking calibration validation')
   print('PASS: pressure, polling latency, stopping-distance inversion, observed-stop coverage, interrupted measurement, cancellation and reload')
+end
+
+do
+  local now=7
+  local s={t=0,x=0,y=227,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
+  local c=A.new(names,profiles[1]); assert(c:beginBraking(s))
+  local job=c.job; job.index=2; job.runs[1]={saved=true}; job.phase='BRAKE'; job.run={partial=true}
+  local env=setmetatable({Autopilot=A,navController=c,fullCalibration=true,calibrationRunning=true,
+    position={x=0,y=227,z=0},previousPosition={x=0,y=227,z=0},previousSample=0,lastGpsAt=0,
+    altitude=227,shipHeading=0,velocity={x=0,y=0,z=0},intervalVelocity={x=0,z=0},gpsFilter={},
+    mode='BRAKE CAL',burner=6,burnerCommand=6,manualBurner=6,sampleDt=.2,burnerSlewPerSecond=6,status={},
+    pid={horizontalX={},horizontalZ={}}},{__index=_G})
+  env.os={clock=function() return now end}; env.colors={orange=1,red=2,lime=3}
+  env.FreshGPS={error='GPS jump rejected',locate=function() return nil end,accept=function() return true end}
+  env.fs={open=function() return nil end}; env.recordFlight=function() end
+  env.clamp=function(v,a,b) return math.max(a,math.min(b,v)) end
+  env.navigationSample=function()
+    return {t=now,x=env.position.x,y=env.position.y,z=env.position.z,vx=0,vz=0,rawVx=0,rawVz=0,heading=0,yaw=0,pressure=.85}
+  end
+  local locating=assert(source:match('(local function locate%(%)%s*.-)\nlocal function updateFlight'))
+  local update=assert(source:match('(local function updateFlight%b()%s*.-)\nlocal function savedHoverPoints'))
+  local mode=assert(source:match('(local function setFlightMode%b()%s*.-)\nlocal gpsReportAt'))
+  local hold=assert(source:match('(local function holdHere%b()%s*.-)\nlocal function engageAutopilot'))
+  local locate,tick,cancel=assert(load(mode..'\n'..locating..'\n'..update..'\n'..hold..'\nreturn locate,updateFlight,holdHere','@brake-gps-pause','t',env))()
+  assert(not locate()); tick(false)
+  assert(not env.position and env.fullCalibration and env.calibrationRunning and c.job==job and job.index==2 and job.runs[1].saved and job.interrupted,'GPS expiry must pause brake calibration without deleting completed stops')
+  assert(env.burner==6 and env.manualBurner==6 and env.power==0 and next(env.autopilotCommands)==nil,'GPS pause must cut horizontal commands and retain the burner')
+  now=8; assert(not locate() and env.autopilotNotice:match('1/8'),'Waiting for GPS must keep the recorded count visible')
+  now=9; env.FreshGPS.locate=function() return 10,227,20 end
+  assert(locate()); tick(true)
+  assert(c.job==job and job.index==2 and job.runs[1].saved and job.phase=='SETTLE' and job.run==nil and env.mode=='BRAKE CAL','GPS recovery must resume the same brake job and discard only its partial stop')
+  env.position=nil; cancel()
+  assert(not c.job and not env.fullCalibration and not env.calibrationRunning and env.manualBurner==6 and env.burner==6,'Cancel must work with no GPS and retain lift without starting another calibration')
+  now=10; assert(locate()); tick(true)
+  assert(not c.job and not env.fullCalibration,'GPS recovery after an explicit cancel must not restart calibration')
+  print('PASS: long GPS loss keeps completed brake stops, resumes the same job, cuts horizontal output, and permits cancellation without GPS')
 end
 
 do

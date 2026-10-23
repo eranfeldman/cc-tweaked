@@ -85,6 +85,7 @@ do
   events[#events+1] = {type="mouse_up",x=5,y=5}
   events[#events+1] = {type="mouse_click",x="bad",y=5}
   env.gpuButtons = {{x=0,y=0,w=10,h=10,label="CALIBRATION",action=function() clicked=clicked+1 end}}
+  env.gpuVisibleButtons=env.gpuButtons
   env.directDisplay, env.gpuRenderRevision = 1, 0
   env.directGpuEnabled = true
   env.createMonitorUi = function() fallback=true end
@@ -100,6 +101,7 @@ do
   touch("monitor_0", 1, 1)
   gpuMouse(1, "mouse_click", 5, 5)
   assert(clicked == 1, "One click reported through all three routes must run once")
+  env.gpuButtons={{x=0,y=0,w=10,h=10,label="NOT PRESENTED",action=function() error('Unpresented buttons must not receive clicks') end}}
   env.os.clock = function() return 1 end
   touch("monitor_9", 1, 1)
   gpuMouse(2, "mouse_click", 5, 5)
@@ -224,6 +226,7 @@ local function renderFixture(tab)
   env.mode, env.burner, env.measuredThrust = "HOLDING ALTITUDE", 6, 0
   env.position, env.velocity, env.altitude = {x=1,y=70,z=2}, {y=.1}, 75
   env.learnedHover, env.gpuButtons = {}, {{x=1,y=1,w=60,h=35,label="FLIGHT",color={1,2,3}}}
+  env.gpuVisibleButtons={}
   env.savedHoverPoints = function() return {} end
   env.navigationReadout = function() return 0, nil, "--" end
   env.calibrationReadout = function() return nil end
@@ -232,41 +235,52 @@ local function renderFixture(tab)
 end
 
 for _, tab in ipairs({"FLIGHT", "CALIBRATION", "HEIGHTS"}) do
-  local _, run, render, counts = renderFixture(tab)
-  local ok, err = run(render)
+  local env, run, render, counts = renderFixture(tab)
+  local previous=env.gpuVisibleButtons
+  local ok, err = run(render,function()
+    local _,presented=counts()
+    if presented==0 then assert(env.gpuVisibleButtons==previous,'Click targets must not change before their frame is presented') end
+  end)
   assert(ok, err)
   local calls, presented = counts()
   assert(calls > 5 and presented == 1, "Only a complete frame should be presented")
+  assert(env.gpuVisibleButtons==env.gpuButtons,'Presented buttons must become the click targets')
 end
 
 do
   local env=fixture()
-  local started,canceled,braking=false,false,false
+  local started,canceled,braking=0,0,0
   env.directWidth,env.directHeight,env.gpuTab=656,492,"CALIBRATION"
-  env.startFullCalibration=function() started=true end
-  env.startBrakingCalibration=function() braking=true end
-  env.holdHere=function() canceled=true end
+  env.startFullCalibration=function() started=started+1; env.fullCalibration=true end
+  env.startBrakingCalibration=function() braking=braking+1; env.fullCalibration=true end
+  env.holdHere=function() canceled=canceled+1; env.fullCalibration=false end
   local add=assert(source:match("(local function addGpuButton%b()%s*.-)\nlocal function renderDirectMonitor"))
   local menu=assert(source:match("(local function createGpuButtons%(%)%s*.-)\ncreateGpuButtons%(%)"))
   local build=assert(load(layout.."\n"..add.."\n"..menu.."\nreturn createGpuButtons","@calibration-menu","t",env))()
   build()
+  local positions,actions={},{}
   for _,button in ipairs(env.gpuButtons) do
     assert(button.x>=0 and button.y>=0 and button.x+button.w<=656 and button.y+button.h<=492,"Calibration control does not fit 4x3 monitor")
-    if button.label=="FULL AUTO CAL" then button.action() end
-    if button.label=="BRAKE CAL" then button.action() end
+    positions[button.label]={x=button.x,y=button.y}; actions[button.label]=button.action
   end
-  assert(started,"Full calibration button is missing from the monitor menu")
-  assert(braking and source:find('key == keys.f6 then startBrakingCalibration()',1,true),"Brake calibration needs its clickable monitor button and F6 hotkey")
-  env.fullCalibration=true; build()
-  for _,button in ipairs(env.gpuButtons) do if button.label=="CANCEL AUTO CAL" then button.action() end end
-  assert(canceled,"Running calibration must have a monitor cancel control")
+  actions['BRAKE CAL'](); assert(braking==1 and started==0,'BRAKE CAL must start directly from the idle menu')
+  actions.CANCEL(); assert(canceled==1 and not env.fullCalibration and braking==1,'Cancel must stop calibration without starting a new brake run')
+  actions['FULL AUTO CAL'](); build()
+  for _,button in ipairs(env.gpuButtons) do
+    assert(positions[button.label].x==button.x and positions[button.label].y==button.y,'Calibration buttons must keep the same positions and actions while running')
+    if button.label=='CANCEL' then button.action() end
+  end
+  assert(started==1 and canceled==2 and braking==1 and not env.fullCalibration,'FULL AUTO then CANCEL must not start BRAKE CAL')
+  assert(source:find('key == keys.f6 then startBrakingCalibration()',1,true),"Brake calibration needs its F6 hotkey")
 end
 
 do
   local env, run, render, counts = renderFixture("FLIGHT")
+  local previous=env.gpuVisibleButtons
   local ok, err = run(render, function() env.gpuRenderRevision = 1 end)
   assert(not ok and err == "DirectGPU frame superseded", tostring(err))
   local _, presented = counts()
   assert(presented == 0, "An interrupted frame must not be presented")
+  assert(env.gpuVisibleButtons==previous,'An interrupted frame must retain the visible buttons')
 end
 print("PASS: discovery, input setup, native monitor and GPU clicks, duplicate clicks, backlog, fallback, thrusters, all tabs, and interrupted frames")
