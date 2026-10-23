@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.17"
+local AIRSHIP_BUILD = "1.7.18"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -2634,7 +2634,13 @@ local ok, err = pcall(function()
   end)
   basalt.schedule(function()
     while running do
-      local _, username, message = os.pullEvent("chat")
+      -- Advanced Peripherals 0.8 sends (event, UUID, username, message, ...).
+      -- Older Chat Box versions sent (event, username, message, ...).
+      local _, first, second, third = os.pullEvent("chat")
+      local username, message = second, third
+      if type(first) == "string" and first:lower() == "pro_hacker_noob" then
+        username, message = first, second
+      end
       local command = type(message) == "string" and message:gsub("^%s*%$", ""):match("^%s*(.-)%s*$"):lower() or ""
       if type(username) == "string" and username:lower() == "pro_hacker_noob" then
         local signal, reply
