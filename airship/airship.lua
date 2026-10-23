@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.14"
+local AIRSHIP_BUILD = "1.7.15"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1819,6 +1819,15 @@ local function adjustManualBurner(delta)
   status.foreground = colors.orange
   return true
 end
+local function adjustBurnerHotkey(delta)
+  if mode == "STOPPED" or burnerSweep or calibrationRunning or fullCalibration then
+    status.text = "Burner hotkeys unavailable while stopped or calibrating."
+    status.foreground = colors.orange
+    return
+  end
+  if manualBurner == nil then manualBurner = burner end
+  adjustManualBurner(delta)
+end
 local function readThrusterPower()
   local total, count = 0, 0
   for _, thruster in pairs(thrusters) do
@@ -1881,7 +1890,7 @@ local function renderDirectMonitor()
     txt(position and ("%.1f m"):format(position.y) or "--",xs[1]+14,cardY+math.floor(cardH*.34),big,ink,"bold")
     local mappedLevel
     for _,sample in pairs(learnedHover) do if sample.height and altitude and math.abs(sample.height-altitude)<.01 then mappedLevel=sample.level; break end end
-    txt(("TARGET %s  |  BURNER %s"):format(altitude and ("%.0f"):format(altitude) or "--",mappedLevel and tostring(mappedLevel) or "--"),xs[1]+14,cardY+math.floor(cardH*.70),small,muted)
+    if altitude then txt(("TARGET %.0f  |  BURNER %s"):format(altitude,mappedLevel and tostring(mappedLevel) or "--"),xs[1]+14,cardY+math.floor(cardH*.70),small,muted) end
     txt("VERTICAL SPEED",xs[2]+14,cardY+12,small,muted,"bold")
     txt(("%.2f"):format(velocity.y),xs[2]+14,cardY+math.floor(cardH*.34),big,ink,"bold")
     txt("blocks / sec",xs[2]+14,cardY+math.floor(cardH*.70),small,muted)
@@ -2387,10 +2396,10 @@ local function refresh()
   end
   if compact then
     posText.text = position and ("X %.1f Y %.1f Z %.1f"):format(position.x, position.y, position.z) or "GPS not found"
-    altText.text = ("ALT %.1f / TARGET %.0f"):format(position and position.y or 0, altitude or 0)
+    altText.text = altitude and ("ALT %.1f / TARGET %.0f"):format(position and position.y or 0, altitude) or ("ALT %.1f"):format(position and position.y or 0)
   else
     posText.text = position and ("X " .. ("%.1f"):format(position.x) .. "  Y " .. ("%.1f"):format(position.y) .. "\nZ " .. ("%.1f"):format(position.z)) or "GPS not found"
-    altText.text = ("Now %s\nTarget %s"):format(position and ("%.1f"):format(position.y) or "--", altitude and ("%.0f"):format(altitude) or "--")
+    altText.text = altitude and ("Now %.1f\nTarget %.0f"):format(position and position.y or 0, altitude) or ("Now %s"):format(position and ("%.1f"):format(position.y) or "--")
     sysText.text = ("Burner %d/15\nThrust %.1f/15\nHeading %s°"):format(burner, measuredThrust, shipHeading and ("%.0f"):format(math.deg(shipHeading)) or "--")
   end
   local speed,distance,eta,elapsed=navigationReadout()
@@ -2430,7 +2439,7 @@ local function refresh()
   elseif sweepSummary then sweepSummary = nil end
   if monitorFrame then
     monitorPos.text = position and ("X %.1f Y %.1f Z %.1f"):format(position.x, position.y, position.z) or "GPS not found"
-    monitorAlt.text = ("ALT %.1f / T %.0f   D %s   ETA %s"):format(position and position.y or 0, altitude or 0,distance and ("%.0f"):format(distance) or "--",eta)
+    monitorAlt.text = (altitude and ("ALT %.1f / T %.0f") or "ALT %.1f"):format(position and position.y or 0, altitude or 0) .. ("   D %s   ETA %s"):format(distance and ("%.0f"):format(distance) or "--",eta)
     local savedCount = 0
     for _ in pairs(learnedHover) do savedCount = savedCount + 1 end
     monitorSystem.text = calibrationReadout() or ("TIME %s B%d SPD %.0f"):format(elapsed,burner,speed)
@@ -2567,38 +2576,52 @@ local ok, err = pcall(function()
       handleGpuMouse(display, kind, x, y)
     end
   end)
+  local leftAltHeld, rightAltHeld = false, false
   basalt.schedule(function()
     while running do
-      local _, key = os.pullEvent("key")
-      local typing = isFocused(xInput) or isFocused(heightInput) or isFocused(pidInput)
-      if typing then
-        if key == keys.escape then
-          frame:setFocused(nil)
-        end
+      local _, key, isHeld = os.pullEvent("key")
+      if key == keys.leftAlt then
+        leftAltHeld = true
+      elseif key == keys.rightAlt then
+        rightAltHeld = true
       else
-        if key == keys.up then if not adjustManualBurner(1) then adjustAltitude(1) end
-        elseif key == keys.down then if not adjustManualBurner(-1) then adjustAltitude(-1) end
-        elseif key == keys.left then testVector(-.2, 0, "TEST X-")
-        elseif key == keys.right then testVector(.2, 0, "TEST X+")
-        elseif key == keys.f then testVector(0, .2, "TEST Y+")
-        elseif key == keys.b then testVector(0, -.2, "TEST Y-")
-        elseif key == keys.g then xInput:focus()
-        elseif key == keys.y then heightInput:focus()
-        elseif key == keys.t then pidInput:focus()
-        elseif key == keys.h then holdHere()
-        elseif key == keys.p then selectAltitudePreset()
-        elseif key == keys.m then toggleManualBurner()
-        elseif key == keys.k then lockHoverLevel()
-        elseif key == keys.v then startBurnerSweep()
-        elseif key == keys.u then requestProgramUpdate()
-        elseif key == keys.a then engageAutopilot()
-        elseif key == keys.s then stop()
-        elseif key == keys.c then confirmCalibration()
-        elseif key == keys.r then startFullCalibration()
-        elseif key == keys.f6 then startBrakingCalibration()
-        elseif key == keys.f8 then saveFlightReport()
+        local typing = isFocused(xInput) or isFocused(heightInput) or isFocused(pidInput)
+        if (leftAltHeld or rightAltHeld) and not typing and not isHeld and (key == keys.equals or key == keys.numPadAdd) then adjustBurnerHotkey(1)
+        elseif (leftAltHeld or rightAltHeld) and not typing and not isHeld and (key == keys.minus or key == keys.numPadSubtract) then adjustBurnerHotkey(-1)
+        elseif typing then
+          if key == keys.escape then frame:setFocused(nil) end
+        else
+          if key == keys.up then if not adjustManualBurner(1) then adjustAltitude(1) end
+          elseif key == keys.down then if not adjustManualBurner(-1) then adjustAltitude(-1) end
+          elseif key == keys.left then testVector(-.2, 0, "TEST X-")
+          elseif key == keys.right then testVector(.2, 0, "TEST X+")
+          elseif key == keys.f then testVector(0, .2, "TEST Y+")
+          elseif key == keys.b then testVector(0, -.2, "TEST Y-")
+          elseif key == keys.g then xInput:focus()
+          elseif key == keys.y then heightInput:focus()
+          elseif key == keys.t then pidInput:focus()
+          elseif key == keys.h then holdHere()
+          elseif key == keys.p then selectAltitudePreset()
+          elseif key == keys.m then toggleManualBurner()
+          elseif key == keys.k then lockHoverLevel()
+          elseif key == keys.v then startBurnerSweep()
+          elseif key == keys.u then requestProgramUpdate()
+          elseif key == keys.a then engageAutopilot()
+          elseif key == keys.s then stop()
+          elseif key == keys.c then confirmCalibration()
+          elseif key == keys.r then startFullCalibration()
+          elseif key == keys.f6 then startBrakingCalibration()
+          elseif key == keys.f8 then saveFlightReport()
+          end
         end
       end
+    end
+  end)
+  basalt.schedule(function()
+    while running do
+      local _, key = os.pullEvent("key_up")
+      if key == keys.leftAlt then leftAltHeld = false
+      elseif key == keys.rightAlt then rightAltHeld = false end
     end
   end)
   print("Starting flight panel...")
