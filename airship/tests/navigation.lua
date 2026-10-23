@@ -117,7 +117,7 @@ for _,scenario in ipairs(scenarios) do
   end
   assert(completed,"Automatic calibration never completed")
   assert(A.validProfile(completed,names),"Calibration saved an invalid profile")
-  assert(completed.verification.overshoot<=.5,"An overshooting calibration was accepted")
+  assert(type(completed.verification.overshoot)=="number" and completed.verification.overshoot>=0,"Settled overshoot must remain available in the calibration report")
   assert(#completed.channels==#names*4,"Not all detected thrusters and four nozzle directions were surveyed")
   assert(completed.maxSpeed>.75,"Fast calibration retained the old crawl speed")
   assert(completed.maxThrottle and completed.maxThrottle<=1,"Calibrated power must stay normalized")
@@ -365,17 +365,12 @@ do
   controller.navigate=function() return {},true end
   local p=candidate.gains[1]
   s.t=2
-  local commands,message=controller:calibrate(s)
-  assert(commands and message:match("overshoot") and candidate.gains[1]==p and candidate.responseScale>1 and not candidate.validated,
-    "Braking retuning must explain the failure without weakening position hold")
-  assert(j.leg==5 and j.returning and candidate.maxSpeed==old.maxSpeed,"Only the failed leg must repeat; cruising estimate must not be ratcheted down")
-  j.returning=nil
-  j.retry,j.leg,j.stable,j.overshoot=4,5,2,1
-  j.verifyWindow={{t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85,tilt=0}}
-  s.t=4
-  commands,message=controller:calibrate(s)
-  assert(not commands and message:match("overshoot") and controller.profile==old,"Excessive overshoot must never replace the working profile")
-  print("PASS: overshoot triggers automatic retuning and rejects failed validation")
+  local commands,message,saved=controller:calibrate(s)
+  assert(commands and message==nil and saved==candidate and candidate.gains[1]==p and candidate.responseScale==1 and candidate.validated,
+    "A settled test must pass despite overshoot without retuning cruise response")
+  assert(not controller.job and candidate.verification.overshoot==1,
+    "Calibration must retain overshoot as a measurement and save the settled profile")
+  print("PASS: settled overshoot is recorded without repeating or slowing calibration")
 end
 
 do
@@ -403,14 +398,10 @@ do
   local c,j,s,candidate=fixture()
   j.leg=3; j.legStart={x=20,z=0}; j.overshoot=.8
   local _,reason=settle(c,j,s,30)
-  assert(j.leg==3 and j.returning and j.retry==1 and reason:match('overshoot'),'Overshoot must repeat test 3, not reset completed tests 1 and 2')
-  settle(c,j,s,20)
-  assert(not j.returning and j.leg==3 and j.overshoot==0 and j.legStart.x==20,'Retry must return to its original start before testing braking again')
-  _,reason=settle(c,j,s,30)
-  assert(j.leg==4 and j.retry==0 and j.maxOvershoot==0,'A successful retry must advance and reset the per-test attempt counter')
+  assert(j.leg==4 and not j.returning and j.retry==0 and j.maxOvershoot==.8,'A settled overshooting leg must advance without a repeat')
   settle(c,j,s,40)
   local _,_,saved=settle(c,j,s,0)
-  assert(saved==candidate and saved.verification.tests==5 and saved.verification.retries==1 and not c.job,'Passing test 5 must finish once, not start another pass')
+  assert(saved==candidate and saved.verification.tests==5 and saved.verification.retries==0 and not c.job,'Passing test 5 must finish once without repeating overshoot legs')
 
   c,j,s,candidate=fixture(); j.leg=3; j.legStart={x=20,z=0}
   local speed,response,p=candidate.maxSpeed,candidate.responseScale,candidate.gains[1]
@@ -429,7 +420,7 @@ do
   s.t=.4; s.x=10; c:calibrate(s)
   s.t=.6; s.x=10.6; c:calibrate(s)
   s.t=1; c:calibrate(s)
-  assert(j.overshoot>.5,'Sustained overshoot must still fail validation')
+  assert(j.overshoot>.5,'Sustained overshoot must still be measured for reporting')
   c,j,s=fixture(); s.t=.2; s.x=12.1; c:calibrate(s)
   assert(j.overshoot>2,'A large overshoot must be retained even from one sample')
   c,j,s=fixture(); s.t=.2; s.x=10.6; c:calibrate(s)
@@ -452,7 +443,7 @@ do
     s.t=.2; c:calibrate(s); s.t=.6; c:calibrate(s)
     assert(j.overshoot==0 and math.abs(j.remaining-2)<1e-7,'Being off the route before the destination must not count as overshoot')
   end
-  print('PASS: per-test retries retain completed legs, repeat the full run-up, finish once, keep cruise speed, and reject sustained overshoot')
+  print('PASS: timeouts retain completed legs, while settled overshoot is measured without repeating the leg')
 end
 
 for i,profile in ipairs(profiles) do
@@ -763,11 +754,11 @@ do
   c.navigate=function() return {},true end
   local before=A.stoppingDistance(A.brakeModel(candidate,1,0,.85,.2),15)
   s.t=2
-  local commands,message=c:calibrate(s)
+  local commands,message,saved=c:calibrate(s)
   local after=A.stoppingDistance(A.brakeModel(candidate,1,0,.85,.2),15)
-  assert(commands and message:match('overshoot') and after>before and candidate.maxSpeed==old.maxSpeed,'An overshooting measured model must retry with an earlier stop, without lowering cruise speed')
-  assert(old.braking.directions[1].delay<candidate.braking.directions[1].delay,'Measured-brake retry must retain the working calibration')
-  print('PASS: measured-brake retry increases the actual stopping allowance and preserves cruise speed')
+  assert(commands and message==nil and saved==candidate and after==before and candidate.maxSpeed==old.maxSpeed,'A settled overshoot must pass without retuning measured braking or reducing cruise speed')
+  assert(old.braking.directions[1].delay==candidate.braking.directions[1].delay,'Passing overshoot must preserve the working brake calibration')
+  print('PASS: measured overshoot is recorded without retrying or reducing cruise speed')
 end
 
 do

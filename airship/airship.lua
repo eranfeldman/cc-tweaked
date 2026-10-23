@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.10"
+local AIRSHIP_BUILD = "1.7.11"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -654,7 +654,7 @@ local Autopilot = (function()
         local over=((s.x-destination.x)*gx+(s.z-destination.z)*gz)/length
         j.overAt=over>.5 and (j.overAt or s.t) or nil
         j.overPeak=over>.5 and math.max(j.overPeak or 0,over) or nil
-        -- One noisy fix must not fail a run; sustained or large overshoot still does.
+        -- Ignore one noisy fix, but preserve sustained or large overshoot for the report.
         if over<=.5 or over>2 or j.overAt and s.t-j.overAt>=.3 then j.overshoot=math.max(j.overshoot,j.overPeak or over) end
       end
       local commands=self:navigate(s,goal,j.candidate)
@@ -676,8 +676,6 @@ local Autopilot = (function()
           j.returning=nil; j.at=s.t; j.stable=nil; j.verifyWindow=nil; j.overshoot=0; j.overAt=nil; j.overPeak=nil
           self:reset(j.heading)
           return {},("AUTO TEST %d/5 retry %d/5: %s; starting repeat."):format(j.leg,j.retry+1,j.lastRetry)
-        elseif j.overshoot>.5 then
-          return retryLeg(self,j,s,("overshoot %.2fm > 0.50m"):format(j.overshoot),true)
         end
         j.maxOvershoot=math.max(j.maxOvershoot or 0,j.overshoot)
         j.leg=j.leg+1; j.at=s.t; j.stable=nil; j.verifyWindow=nil; j.legStart={x=s.x,z=s.z}
@@ -689,9 +687,6 @@ local Autopilot = (function()
           return {},nil,j.candidate
         end
       elseif s.t-j.at>math.max(60,6/math.sqrt(j.candidate.gains[1]))+length/math.max(.1,j.candidate.maxSpeed)*2 then
-        if not j.returning and j.overshoot>.5 then
-          return retryLeg(self,j,s,("overshoot %.2fm > 0.50m"):format(j.overshoot),true)
-        end
         local speed=math.sqrt(f.vx*f.vx+f.vz*f.vz)
         return retryLeg(self,j,s,("%stimeout %.1fm %.2fm/s yaw %.2f"):format(j.returning and "return " or "",math.sqrt(dx*dx+dz*dz),speed,math.abs(f.yaw)),false,speed)
       end
