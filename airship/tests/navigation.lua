@@ -610,6 +610,19 @@ do
   s={t=.2,x=1.9,y=227,z=0,vx=9,vz=0,heading=0,yaw=0,pressure=.85}
   early:calibrate(s)
   assert(#earlyJob.run.samples==1,'A valid early reverse-deceleration sample must be recorded before the old 0.8-second gate')
+  local sparse=A.new(names,p); s={t=0,x=0,y=227,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
+  assert(sparse:beginBraking(s)); local sparseJob=sparse.job
+  sparseJob.index,sparseJob.phase,sparseJob.at,sparseJob.stable=9,'SETTLE',0,0
+  sparseJob.runs={}
+  for i=1,8 do
+    local speed=i<=4 and 8 or 16; local samples={{x=5,y=3,dt=.2}}
+    if i>1 then samples[2]={x=5,y=3,dt=.2} end
+    sparseJob.runs[i]={speed=speed,distance=i<=4 and 15 or 50,pressure=.85,height=227,samples=samples,
+      coast={{x=5,y=.1}}}
+  end
+  s={t=2.1,x=0,y=227,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
+  local _,_,sparseFit=sparse:calibrate(s)
+  assert(sparseFit and A.validBraking(sparseFit.braking),'A direction with one measured deceleration sample plus valid coast data must fit')
   local steering=A.new(names,p); steering:reset(0)
   local sample={t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85,rawVx=0,rawVz=0}
   steering:navigate(sample,{x=100,z=0})

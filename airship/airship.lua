@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.9"
+local AIRSHIP_BUILD = "1.7.10"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -410,7 +410,7 @@ local Autopilot = (function()
           n=n+1; x=x+s.x; y=y+s.y; period=period+s.dt
         end
       end
-      if n<2 then return nil,("Too few braking samples in direction %d (%d observed); previous calibration kept."):format(direction,n) end
+      if n<1 then return nil,("No braking samples in direction %d; previous calibration kept."):format(direction) end
       if cxx<.001 then return nil,("Too few coast samples in direction %d; previous calibration kept."):format(direction) end
       local drag=clamp(cxy/cxx,0,10)
       local force=(y-drag*x)/n
