@@ -666,6 +666,7 @@ do
   env.os={clock=function() return now end}; env.colors={orange=1,red=2,lime=3}
   env.FreshGPS={error='GPS jump rejected',locate=function() return nil end,accept=function() return true end}
   env.fs={open=function() return nil end}; env.recordFlight=function() end
+  env.clearBrakeCheckpoint=function() end
   env.clamp=function(v,a,b) return math.max(a,math.min(b,v)) end
   env.navigationSample=function()
     return {t=now,x=env.position.x,y=env.position.y,z=env.position.z,vx=0,vz=0,rawVx=0,rawVz=0,heading=0,yaw=0,pressure=.85}
@@ -687,6 +688,33 @@ do
   now=10; assert(locate()); tick(true)
   assert(not c.job and not env.fullCalibration,'GPS recovery after an explicit cancel must not restart calibration')
   print('PASS: long GPS loss keeps completed brake stops, resumes the same job, cuts horizontal output, and permits cancellation without GPS')
+end
+
+do
+  local helpers=assert(source:match('(local function clearBrakeCheckpoint%b()%s*.-)\nlocal pendingAutopilot'))
+  local files,objects={},{}
+  local env=setmetatable({brakeCheckpointPath='airship-brake-checkpoint.cfg',navNames=names,Autopilot=A,fs={},textutils={}}, {__index=_G})
+  env.textutils.serialize=function(value) local key=tostring(#objects+1); objects[key]=value; return key end
+  env.textutils.unserialize=function(key) return objects[key] end
+  env.fs.exists=function(path) return files[path]~=nil end
+  env.fs.open=function(path,mode)
+    if mode=='w' then return {write=function(value) files[path]=value end,close=function() end} end
+    return {readAll=function() return files[path] end,close=function() end}
+  end
+  env.fs.delete=function(path) files[path]=nil end
+  env.fs.move=function(from,to) assert(files[from]~=nil); files[to]=files[from]; files[from]=nil end
+  local clear,save,load=assert(load(helpers..'\nreturn clearBrakeCheckpoint,saveBrakeCheckpoint,loadBrakeCheckpoint','@brake-checkpoint','t',env))()
+  local run={speed=8,distance=12,pressure=.85,height=227,samples={{x=3,y=.5,dt=.2},{x=2,y=.4,dt=.2}},coast={{x=4,y=.1}}}
+  local job={candidate=profiles[1],pending=false,index=2,runs={[1]=run},pressure=.85,height=227,heightMin=226,heightMax=228,heading=.4}
+  save(job)
+  local restored=load(profiles[1],false)
+  assert(restored and restored.index==2 and restored.runs[1].distance==12,'A settled brake stop must survive serialization and restore with its count')
+  local changed={}; for k,v in pairs(profiles[1]) do changed[k]=v end
+  changed.channels={}; for i,ch in ipairs(profiles[1].channels) do local c={}; for k,v in pairs(ch) do c[k]=v end; c.b={ch.b[1],ch.b[2],ch.b[3]}; changed.channels[i]=c end
+  changed.channels[1].b[1]=changed.channels[1].b[1]+.01
+  assert(not load(changed,false),'Checkpoint from a different thruster model must not be reused')
+  clear(); assert(not env.fs.exists('airship-brake-checkpoint.cfg'),'Explicit cancellation must remove the brake checkpoint')
+  print('PASS: brake stop checkpoint saves, restores only for a matching thruster model, and clears on cancel')
 end
 
 do
@@ -722,6 +750,10 @@ do
     sampleDt=.2,burnerSlewPerSecond=6,Autopilot=A,shipHeading=0}, {__index=_G})
   env.colors={red=1,orange=2,lime=3}
   env.navigationSample=function() return s end
+  env.fs={exists=function() return false end}
+  env.brakeCheckpointPath='airship-brake-checkpoint.cfg'
+  env.loadBrakeCheckpoint=function() return nil end
+  env.clearBrakeCheckpoint=function() end
   env.clamp=function(v,a,b) return math.max(a,math.min(b,v)) end
   env.recordFlight=function() end
   env.clearPendingAutopilot=function() error('Brake calibration must not remove a pending 96-test survey') end
@@ -735,9 +767,21 @@ do
   env.navController.calibrate=function() env.navController.job=nil; return {},nil,brakingProfiles[1] end
   s.t=.2; tick(true)
   assert(env.saved and env.navController.profile==brakingProfiles[1] and env.burner==6 and env.autopilotNotice:match('BRAKE CAL saved'),'Completed brake calibration must save its profile and preserve lift')
+  local checkpoint={candidate=old,pending=false,index=3,runs={[1]={saved=true},[2]={saved=true}},pressure=.85,height=227,heightMin=226,heightMax=228,heading=.2}
+  env.loadBrakeCheckpoint=function() return checkpoint end
+  s.t=.3; begin()
+  assert(env.navController.job.index==3 and env.navController.job.runs[1].saved and env.navController.job.heading==.2 and env.navController.job.interrupted,'Brake start must resume completed checkpoint runs and restart only the unfinished stop')
+  env.saveBrakeCheckpoint=function(job) env.checkpointSaved=job.index end
+  local resumedJob=env.navController.job
+  env.navController.calibrate=function() resumedJob.runs[3]={saved=true}; resumedJob.index=4; return {},'recorded' end
+  s.t=.4; tick(true)
+  assert(env.checkpointSaved==4,'Every newly completed settled stop must be checkpointed immediately')
+  env.calibrationRunning,env.fullCalibration=false,false; env.navController.job=nil
+  env.loadBrakeCheckpoint=function() return nil end
+  env.navController.calibrate=function() env.navController.job=nil; return {},nil,brakingProfiles[1] end
   begin(); env.saveAutopilotProfile=function() error('disk full') end
   s.t=.4; tick(true)
-  assert(env.navController.profile==brakingProfiles[1] and env.burner==6 and env.autopilotNotice:match('could not save'),'A failed brake-profile write must keep the previous working profile and burner')
+  assert(env.navController.profile==brakingProfiles[1] and env.burner==6 and env.autopilotNotice:match('could not save'),'A failed brake-profile write must keep the previous working profile and burner: '..tostring(env.autopilotNotice))
   local pending={}; for k,v in pairs(brakingProfiles[3]) do pending[k]=v end; pending.validated=nil
   env.pendingAutopilot=pending; env.navController=A.new(names)
   env.savePendingAutopilot=function(p) assert(p==pending and A.validCandidate(p,names) and not p.validated); env.savedPending=p end

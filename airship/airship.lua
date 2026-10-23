@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.6"
+local AIRSHIP_BUILD = "1.7.7"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -1125,6 +1125,7 @@ local function saveAutopilotProfile(profile)
   if not ok then if previous then fs.move(path..".bak",path) end; error(err) end
 end
 local pendingAutopilotPath="airship-autopilot-pending.cfg"
+local brakeCheckpointPath="airship-brake-checkpoint.cfg"
 local function savePendingAutopilot(profile)
   assert(Autopilot.validCandidate(profile,navNames),"Invalid pending thruster model")
   local file=assert(fs.open(pendingAutopilotPath..".tmp","w"),"Cannot save pending thruster model")
@@ -1140,6 +1141,73 @@ local function clearPendingAutopilot()
   if fs.exists(pendingAutopilotPath) then fs.delete(pendingAutopilotPath) end
   if fs.exists(pendingAutopilotPath..".bak") then fs.delete(pendingAutopilotPath..".bak") end
   if fs.exists(pendingAutopilotPath..".tmp") then fs.delete(pendingAutopilotPath..".tmp") end
+end
+local function clearBrakeCheckpoint()
+  for _,path in ipairs({brakeCheckpointPath,brakeCheckpointPath..".bak",brakeCheckpointPath..".tmp"}) do
+    if fs.exists(path) then fs.delete(path) end
+  end
+end
+local function saveBrakeCheckpoint(job)
+  local checkpoint={version=1,names=job.candidate.names,channels=job.candidate.channels,candidate=job.candidate,pending=job.pending,
+    index=job.index,runs=job.runs,pressure=job.pressure,height=job.height,heightMin=job.heightMin,heightMax=job.heightMax,heading=job.heading}
+  local path=brakeCheckpointPath
+  local file=assert(fs.open(path..".tmp","w"),"Cannot checkpoint brake calibration")
+  file.write(textutils.serialize(checkpoint)); file.close()
+  if fs.exists(path..".bak") then fs.delete(path..".bak") end
+  local previous=fs.exists(path)
+  if previous then fs.move(path,path..".bak") end
+  local ok,err=pcall(fs.move,path..".tmp",path)
+  if not ok then if previous then fs.move(path..".bak",path) end; error(err) end
+end
+local function loadBrakeCheckpoint(model,isPending)
+  local function number(value) return type(value)=="number" and value==value and math.abs(value)<math.huge end
+  local function sameSurvey(saved,current)
+    if type(current)~="table" or #saved.names~=#current.names or #saved.channels~=#current.channels then return false end
+    for _,key in ipairs({"version","gpsVersion","pressure","yawWeight","maxAccel","maxSpeed","delay","maxThrottle","responseScale","cruiseVersion","validationVersion"}) do
+      if saved.candidate[key]~=current[key] then return false end
+    end
+    for i,name in ipairs(current.names) do if saved.names[i]~=name then return false end end
+    for i,channel in ipairs(current.channels) do
+      local other=saved.channels[i]
+      if type(other)~="table" or channel.name~=other.name or channel.x~=other.x or channel.y~=other.y or type(channel.b)~="table" or type(other.b)~="table" then return false end
+      for k=1,3 do if channel.b[k]~=other.b[k] then return false end end
+    end
+    for _,key in ipairs({"drag","gains"}) do
+      local a,b=saved.candidate[key],current[key]
+      if type(a)~="table" or type(b)~="table" or #a~=#b then return false end
+      for i=1,#a do if a[i]~=b[i] then return false end end
+    end
+    return true
+  end
+  for _,path in ipairs({brakeCheckpointPath,brakeCheckpointPath..".bak"}) do
+    if fs.exists(path) then
+      local ok,value=pcall(function()
+        local file=assert(fs.open(path,"r")); local data=textutils.unserialize(file.readAll()); file.close(); return data
+      end)
+      if ok and type(value)=="table" and type(model)=="table" and value.version==1 and value.pending==isPending
+        and number(value.index) and value.index==math.floor(value.index)
+        and value.index>=2 and value.index<=9 and type(value.runs)=="table" and type(value.names)=="table" and type(value.channels)=="table"
+        and Autopilot.validCandidate(value.candidate,navNames) and value.candidate.gpsVersion==2
+        and sameSurvey(value,model)
+        and number(value.pressure) and value.pressure>.001 and number(value.height) and number(value.heightMin) and number(value.heightMax)
+        and number(value.heading) then
+        local valid=true
+        for i=1,value.index-1 do
+          local run=value.runs[i]
+          if type(run)~="table" or not number(run.speed) or run.speed<=0 or not number(run.distance) or run.distance<0
+            or not number(run.pressure) or run.pressure<=.001 or not number(run.height) or type(run.samples)~="table" or #run.samples<2 or type(run.coast)~="table" or #run.coast==0 then valid=false; break end
+          for _,sample in ipairs(run.samples) do
+            if type(sample)~="table" or not number(sample.x) or sample.x<=0 or not number(sample.y) or sample.y<0 or not number(sample.dt) or sample.dt<=0 then valid=false; break end
+          end
+          for _,sample in ipairs(run.coast) do
+            if type(sample)~="table" or not number(sample.x) or not number(sample.y) then valid=false; break end
+          end
+          if not valid then break end
+        end
+        if valid then return value end
+      end
+    end
+  end
 end
 local pendingAutopilot,pendingRetry
 if fs.exists(pendingAutopilotPath) then
@@ -1549,12 +1617,18 @@ local function updateFlight(gpsFresh)
     local brakingCalibration=navController.job.kind=="BRAKES"
     if brakingCalibration then mode="BRAKE CAL" end
     local brakingPending=brakingCalibration and navController.job.pending
+    local brakeIndex=brakingCalibration and navController.job.index
     local flightJob=navController.job.phase=="VERIFY" and navController.job
     local flightGoal=flightJob and (flightJob.returning and flightJob.legStart or flightJob.goals[flightJob.leg])
     local flightStage=flightJob and ("CAL_"..flightJob.leg.."_TRY_"..(flightJob.retry+1)..(flightJob.returning and "_RETURN" or ""))
     local commands,message,completed=navController:calibrate(sample)
     autopilotCommands=commands or {}
     local job=navController.job
+    local checkpointError
+    if job and job.kind=="BRAKES" and job.index>brakeIndex then
+      local saved,err=pcall(saveBrakeCheckpoint,job)
+      if not saved then checkpointError=tostring(err) end
+    end
     if flightGoal then recordFlight(sample,flightGoal,flightJob.candidate,commands,flightStage) end
     if job and job.kind=="BRAKES" then recordFlight(sample,job.goal or job.hold,job.candidate,commands,"CAL_BRAKE_"..job.index.."_"..job.phase) end
     if job and job.phase=="VERIFY" and (not pendingAutopilot or pendingRetry~=job.persistRevision) then
@@ -1566,9 +1640,11 @@ local function updateFlight(gpsFresh)
       local saved,err=pcall(brakingPending and savePendingAutopilot or saveAutopilotProfile,completed)
       if saved then
         if brakingPending then
+          clearBrakeCheckpoint()
           pendingAutopilot=completed; pendingRetry=nil
           autopilotNotice="BRAKE CAL saved; press FULL AUTO CAL for the 5 flight tests."
         else
+          if brakingCalibration then clearBrakeCheckpoint() end
           if not brakingCalibration then clearPendingAutopilot(); pendingAutopilot=nil; pendingRetry=nil end
           navController.profile=completed; applyGainValues(completed.gains)
           autopilotNotice=brakingCalibration and ("BRAKE CAL saved at Y %.0f, pressure %.3f; 4 directions."):format(completed.braking.height,completed.braking.pressure)
@@ -1578,6 +1654,7 @@ local function updateFlight(gpsFresh)
       else autopilotNotice="Calibration passed but could not save: "..tostring(err); autopilotNoticeColor=colors.red end
     elseif not commands then autopilotNotice=message; autopilotNoticeColor=colors.red
     else autopilotNotice=message; autopilotNoticeColor=colors.orange end
+    if checkpointError then autopilotNotice="Stop kept in memory, but disk checkpoint failed: "..checkpointError; autopilotNoticeColor=colors.red end
     if completed or not commands then
       brakeCalibrationActive=false
       fullCalibration,calibrationRunning=false,false
@@ -1903,6 +1980,7 @@ local function holdHere()
     if position then altitude=math.floor(position.y+.5) end
     target=nil; setFlightMode(position and "HOLDING ALTITUDE" or "WAITING FOR GPS")
     if canceledCalibration then
+      clearBrakeCheckpoint()
       manualBurner,burnerCommand=burner,burner
       autopilotNotice="Calibration canceled; burner held."
       autopilotNoticeColor=colors.orange; status.text=autopilotNotice; status.foreground=colors.orange
@@ -1967,14 +2045,30 @@ end
 local function startBrakingCalibration()
   if calibrationRunning or burnerSweep then status.text="Finish or cancel the current calibration first."; return end
   if mode=="STOPPED" then status.text="Set a stable burner level before BRAKE CAL."; return end
-  local started,message=navController:beginBraking(navigationSample(),pendingAutopilot)
+  local sample=navigationSample()
+  local model=pendingAutopilot or navController.profile
+  local checkpoint=loadBrakeCheckpoint(model,pendingAutopilot~=nil)
+  local started,message=navController:beginBraking(sample,pendingAutopilot)
   if not started then status.text=message; autopilotNotice=message; autopilotNoticeColor=colors.orange; return end
+  if checkpoint then
+    local job=navController.job
+    job.candidate,job.pending=checkpoint.candidate,checkpoint.pending
+    job.index,job.runs=checkpoint.index,checkpoint.runs
+    job.pressure,job.height=checkpoint.pressure,checkpoint.height
+    job.heightMin,job.heightMax=checkpoint.heightMin,checkpoint.heightMax
+    job.heading,job.previous=checkpoint.heading,{}
+    for key,value in pairs(sample) do job.previous[key]=value end
+    job.hold,job.origin={x=sample.x,z=sample.z},{x=sample.x,z=sample.z}
+    job.phase,job.at,job.stable,job.run,job.interrupted="SETTLE",sample.t,nil,nil,true
+  elseif fs.exists(brakeCheckpointPath) or fs.exists(brakeCheckpointPath..".bak") then clearBrakeCheckpoint() end
   altitude=altitude or position.y
   manualBurner,burnerCommand=burner,burner
   vectorX,vectorY,power,target=0,0,0,nil
   autopilotCommands={}; fullCalibration,calibrationRunning=true,true; flightRecording=nil
   brakeCalibrationActive=true
-  mode="BRAKE CAL"; autopilotNotice="BRAKE CAL: 8 automatic stops; current burner held. H cancels."
+  mode="BRAKE CAL"
+  autopilotNotice=checkpoint and ("BRAKE CAL resumed: %d/8 completed stops kept; repeating only the unfinished stop."):format(checkpoint.index-1)
+    or "BRAKE CAL: 8 automatic stops; current burner held. H cancels."
   autopilotNoticeColor=colors.orange; status.text=autopilotNotice; status.foreground=colors.orange
 end
 local function testVector(x, y, label)
