@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.6.11"
+local AIRSHIP_BUILD = "1.6.12"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -225,7 +225,7 @@ local Autopilot = (function()
     local brakeAccel=maxAccel*(.55-.2*caution)
     local function plannedSpeed(error,limit,margin,delay)
       local gap=math.max(0,math.abs(error)-(margin or .04))
-      delay=delay or (modern and p.delay+.85*response+math.max(0,response-math.max(1.2,p.delay*.65)) or p.delay+response)
+      delay=delay or (modern and p.delay+.65*response+math.max(0,response-math.max(1.2,p.delay*.65)) or p.delay+response)
       local braking=math.sqrt((brakeAccel*delay)^2+2*brakeAccel*gap)-brakeAccel*delay
       return (error<0 and -1 or 1)*math.min(limit,braking,gap*.7/response)
     end
@@ -241,7 +241,7 @@ local Autopilot = (function()
     end
     local targetCross=plannedSpeed(-cross,math.max(1,p.maxSpeed*.35))
     local braking=modern and alongSpeed*(targetAlong-alongSpeed)<0
-    local ax=(targetAlong-alongSpeed)/(braking and distance>20 and response*.6 or response)
+    local ax=(targetAlong-alongSpeed)/(braking and distance>20 and response*.5 or response)
     local az=(targetCross-crossSpeed)/response
     -- Reserve thrust for sideways recovery rather than bending the route toward the current position.
     az=clamp(az,-maxAccel*.7,maxAccel*.7)

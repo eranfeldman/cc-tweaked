@@ -278,6 +278,14 @@ do
   local oldTarget=math.sqrt((6*.6*2)^2+2*6*.6*(60-4))-6*.6*2
   assert(controller.trace.targetAlong<13 and controller.trace.targetAlong>oldTarget*.75,
     "Braking must start earlier without replacing fast arrival with a crawl")
+  local previousDelay=2+.85*1.3
+  local previousTarget=math.sqrt((3.3*previousDelay)^2+2*3.3*(60-3))-3.3*previousDelay
+  assert(controller.trace.targetAlong>previousTarget,"Braking onset must move slightly later than v1.6.11")
+  controller:reset(0)
+  controller:navigate({t=0,x=0,z=0,vx=14,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=60,z=0})
+  local correction=controller.trace.desired[1]-profile.drag[1]*14
+  assert(math.abs(correction-(controller.trace.targetAlong-14)/(1.3*.5))<1e-6,
+    "Unsaturated high-speed braking must respond more strongly to the velocity error")
   controller:reset(0)
   controller:navigate({t=0,x=0,z=0,vx=13,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=10000,z=0})
   assert(controller.trace.targetAlong>13 and controller.trace.desired[1]>=profile.maxAccel,
