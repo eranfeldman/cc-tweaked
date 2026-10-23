@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.21"
+local AIRSHIP_BUILD = "1.7.22"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -995,7 +995,7 @@ local function findAvionicsAll(kind)
   for _, device in pairs(found) do devices[#devices + 1] = device end
   return devices
 end
-seatControl.sensors = findAvionicsAll("laser_sensor")
+seatControl.sensors = findAvionicsAll("optical_sensor")
 end
 monitor = monitor or findAvionics("monitor")
 local monitorName
@@ -1063,7 +1063,7 @@ seatControl.gearshift = findAvionics("Create_SequencedGearshift") or findAvionic
 local chatBox = peripheral.find("chat_box") or peripheral.find("chatBox") or findAvionics("chat_box") or findAvionics("chatBox")
 if not chatBox then print("Chat commands unavailable: connect an Advanced Peripherals chat box") end
 if not seatControl.gearshift then print("Seat commands unavailable: connect a Create Sequenced Gearshift") end
-print(("Chat Box: %s | Sequenced Gearshift: %s | Ground laser sensors: %d"):format(chatBox and "found" or "missing", seatControl.gearshift and "found" or "missing", #seatControl.sensors))
+print(("Chat Box: %s | Sequenced Gearshift: %s | Ground optical sensors: %d"):format(chatBox and "found" or "missing", seatControl.gearshift and "found" or "missing", #seatControl.sensors))
 print("Setting up display...")
 if directGpuEnabled then setupDirectGpu() else directGpuError = "DirectGPU paused for stability; using CC monitor" end
 print("Building controls...")
@@ -1094,13 +1094,14 @@ if fs.exists("airship-seat-distance.cfg") then
   if saved and saved > 0 and saved == math.floor(saved) then seatControl.loweredBy = saved end
 end
 seatControl.getGroundClearance = function()
-  if #seatControl.sensors ~= 3 then return nil, "need 3 laser sensors; found " .. #seatControl.sensors end
+  if #seatControl.sensors ~= 3 then return nil, "need 3 Simulated optical sensors; found " .. #seatControl.sensors end
   local nearest
   for i, sensor in ipairs(seatControl.sensors) do
-    local ok, distance = pcall(sensor.getClosestHitDistance)
+    local hitOk, hasHit = pcall(sensor.hasHit)
+    local ok, distance = pcall(sensor.getDistance)
     yieldComputer()
-    if not ok or type(distance) ~= "number" or distance ~= distance or distance < 0 or distance == math.huge then
-      return nil, "laser sensor " .. i .. " has no valid ground hit"
+    if not hitOk or not hasHit or not ok or type(distance) ~= "number" or distance ~= distance or distance < 0 or distance == math.huge then
+      return nil, "optical sensor " .. i .. " has no ground hit; point it down and check its range"
     end
     nearest = nearest and math.min(nearest, distance) or distance
   end
