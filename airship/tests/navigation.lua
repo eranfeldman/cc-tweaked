@@ -1058,23 +1058,26 @@ end
 
 do
   local lines,closed={},0
+  local created
   local env=setmetatable({Autopilot=A,navNames=names,navController={trace={},applied={}},AIRSHIP_BUILD="test"},{__index=_G})
   env.textutils={serialize=function(profile) assert(profile==profiles[1]); return "fixture profile" end}
+  env.os={date=function(format) assert(format=="%Y-%m-%d_%H-%M-%S" or format=="%Y-%m-%d %H:%M:%S"); return format:find("_") and "2026-10-23_12-34-56" or "2026-10-23 12:34:56" end}
   env.fs={open=function(path,mode)
-    assert(path=="airship-flight.log")
+    assert(path=="flight logs/flight-2026-10-23_12-34-56.csv")
     if mode=="w" then lines={} end
     return {writeLine=function(line) lines[#lines+1]=line end,close=function() closed=closed+1 end}
-  end}
+  end,makeDir=function(path) assert(path=="flight logs"); created=path end,exists=function() return false end}
   local recording=assert(source:match('(local flightRecording.-)\nlocal function saveAutopilotProfile'))
-  local record=assert(load(recording..'\nreturn recordFlight',"@flight-recorder","t",env))()
+  local record,getRecording=assert(load(recording..'\nreturn recordFlight,function() return flightRecording end',"@flight-recorder","t",env))()
   local s={t=0,x=123456,z=-654321,vx=0,vz=0,heading=0,yaw=0,pressure=.8}
   local goal={x=s.x+20,z=s.z-10}
-  for i=0,200 do s.t=i; record(s,goal,profiles[1],{},"CAL_1_PASS_4") end
-  assert(closed==180 and #lines==183,"Recorder must close each write and stop at 180 samples")
+  for i=0,1200 do s.t=i*.5; record(s,goal,profiles[1],{},"AUTOPILOT") end
+  assert(created=="flight logs" and closed==1200 and #lines==1203,"Recorder must create a per-flight directory and retain ten minutes at 2 Hz")
   local report=table.concat(lines,'\n')
   assert(not report:find('123456',1,true) and not report:find('654321',1,true),"Flight report exposed absolute GPS coordinates")
-  assert(lines[4]:find('0,CAL_1_PASS_4,0,0,20,-10',1,true),"Flight report must retain relative target and movement")
-  record(s,goal,profiles[1],{},"CAL_2_TRY_1")
-  assert(closed==181 and #lines==4 and lines[4]:find('CAL_2_TRY_1',1,true),"A new test or retry must replace the old report without accumulating more files")
-  print("PASS: bounded flight report includes model and commands without absolute GPS coordinates")
+  assert(lines[1]:find("started 2026%-10%-23 12:34:56") and lines[4]:find('0,AUTOPILOT,0,0,20,-10'),"Flight report must include a timestamp and relative target/movement")
+  assert(recording:find("maxFlightSamples=1200",1,true),"Flight report must be bounded at ten minutes")
+  record(s,goal,profiles[1],{},"AUTOPILOT")
+  assert(closed==1200 and getRecording().truncated,"Longer flights must stop recording at the stated cap without growing disk forever")
+  print("PASS: per-flight timestamped report retains ten minutes at 2 Hz without absolute GPS coordinates")
 end

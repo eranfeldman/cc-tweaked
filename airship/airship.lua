@@ -1,41 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.11"
-if (...) == "--upload-report" then
-  local previous,output=term.current(),{}
-  local capture=setmetatable({write=function(value)
-    output[#output+1]=tostring(value)
-    previous.write(value)
-  end},{__index=previous})
-  term.redirect(capture)
-  local ok,err=pcall(function()
-    local path="/airship-flight.log"
-    if fs.exists("/airship-gps.log") then
-      local parts={}
-      for _,name in ipairs({"/airship-flight.log","/airship-gps.log"}) do
-        if fs.exists(name) then
-          local file=assert(fs.open(name,"r")); parts[#parts+1]=file.readAll(); file.close()
-        end
-      end
-      path="/airship-report.log"
-      local file=assert(fs.open(path,"w")); file.write(table.concat(parts,"\n")); file.close()
-    end
-    return shell.run("pastebin","put",path)
-  end)
-  term.redirect(previous)
-  if not ok then printError(tostring(err)) end
-  local link=table.concat(output):match("https?://pastebin%.com/[%w]+")
-  if link then
-    local saved=pcall(function()
-      local file=assert(fs.open("/airship-upload-result.txt","w"))
-      file.writeLine(link); file.close()
-    end)
-    print("\nReport link: "..link)
-    if saved then print("Also saved in /airship-upload-result.txt") end
-  end
-  print("\nPress Enter to close this tab.")
-  read()
-  return
-end
+local AIRSHIP_BUILD = "1.7.12"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1075,18 +1039,36 @@ local navController=Autopilot.new(navNames)
 local autopilotCommands, fullCalibration, autopilotNotice, brakeCalibrationActive
 local autopilotNoticeColor=colors.orange
 local flightRecording
+local flightLogDirectory="flight logs"
+local maxFlightSamples=1200
+local function newFlightRecording(s)
+  local r={t=s.t,at=s.t-.5,count=0}
+  local ok,path=pcall(function()
+    fs.makeDir(flightLogDirectory)
+    local base=flightLogDirectory.."/flight-"..os.date("%Y-%m-%d_%H-%M-%S")
+    local candidate=base..".csv"
+    local suffix=1
+    while fs.exists(candidate) do
+      suffix=suffix+1
+      candidate=base..("-%02d.csv"):format(suffix)
+    end
+    return candidate
+  end)
+  if ok then r.path=path else r.failed=tostring(path) end
+  return r
+end
 local function recordFlight(s,goal,profile,commands,stage)
   if not Autopilot.validSample(s) then return end
-  local r=flightRecording
-  if r and stage:match("^CAL_") and r.stage~=stage then r=nil end
-  if r and (r.failed or r.count>=180 or s.t-r.at<.5) then return end
-  r=r or {t=s.t,x=s.x,z=s.z,at=s.t-.5,count=0,stage=stage}
+  local r=flightRecording or newFlightRecording(s)
   flightRecording=r
+  if r.failed or s.t-r.at<.5 then return end
+  if r.count>=maxFlightSamples then r.truncated=true; return end
+  r.x,r.z,r.stage=r.x or s.x,r.z or s.z,r.stage or stage
   local file
   local ok,err=pcall(function()
-    file=assert(fs.open("airship-flight.log",r.count==0 and "w" or "a"),"Cannot open flight report")
+    file=assert(fs.open(r.path,r.count==0 and "w" or "a"),"Cannot open flight report")
     if r.count==0 then
-      file.writeLine("# Airship v"..AIRSHIP_BUILD.."; relative X/Z only; first 180 samples at no more than 2 Hz")
+      file.writeLine("# Airship v"..AIRSHIP_BUILD.."; started "..os.date("%Y-%m-%d %H:%M:%S").."; relative X/Z only; max 1200 samples at no more than 2 Hz")
       file.writeLine("# profile "..textutils.serialize(profile,{compact=true}))
       local columns="time,stage,x,z,goal_x,goal_z,vx,vz,heading,yaw,pressure,cross,remaining,target_along,target_cross,requested_ax,requested_az,requested_yaw,allocated_ax,allocated_az,allocated_yaw,stop_distance,braking,raw_vx,raw_vz,test_remaining,test_cross,overshoot"
       for _,name in ipairs(navNames) do columns=columns..","..name.."_x,"..name.."_y,"..name.."_power" end
@@ -1423,15 +1405,22 @@ local function outputs(cooperative)
   -- These methods wait for server ticks; dispatch corners together instead of 48 serial waits.
   if #jobs>0 then parallel.waitForAll(table.unpack(jobs)) end
 end
-local function uploadFlightReport()
-  if fullCalibration or mode=="AUTOPILOT" or mode=="FINAL TURN" then status.text="Press H to hold before uploading the report."; return end
-  if not fs.exists("airship-flight.log") and not fs.exists("airship-gps.log") then status.text="No flight or GPS failure report yet."; return end
-  if not shell or type(shell.openTab)~="function" then status.text="In another shell: pastebin put /airship-gps.log or /airship-flight.log"; return end
-  local ok,tab=pcall(shell.openTab,shell.getRunningProgram(),"--upload-report")
-  if ok and tab then
-    status.text="Public report upload opened in another tab."
-    if type(shell.switchTab)=="function" then shell.switchTab(tab) end
-  else status.text="Cannot open report upload: "..tostring(tab) end
+local function saveFlightReport()
+  if fullCalibration or mode=="AUTOPILOT" or mode=="FINAL TURN" then status.text="Press H to hold before saving the flight log."; return end
+  local r=flightRecording
+  if not r or not r.path or r.count==0 then status.text="No flight log has been recorded yet."; return end
+  if r.failed then status.text="Flight log stopped after "..r.count.." samples: "..r.failed; return end
+  if r.saved then status.text=(r.truncated and "Log reached 1,200-sample limit: " or "Flight log saved: ")..r.path; return end
+  local file
+  local ok,err=pcall(function()
+    file=assert(fs.open(r.path,"a"),"Cannot open flight log")
+    file.writeLine(("# F8 saved; samples=%d; duration=%.1fs; truncated=%s"):format(r.count,math.max(0,r.at-r.t),tostring(r.truncated==true)))
+    file.close(); file=nil
+  end)
+  if file then pcall(file.close) end
+  if not ok then status.text="Flight log is at "..r.path.." but could not be finalized: "..tostring(err); return end
+  r.saved=true
+  status.text=(r.truncated and "Log reached 1,200-sample limit; saved " or "Flight log saved: ")..r.path
 end
 local function stop()
   calibrationRunning = false
@@ -2588,7 +2577,7 @@ local ok, err = pcall(function()
         elseif key == keys.c then confirmCalibration()
         elseif key == keys.r then startFullCalibration()
         elseif key == keys.f6 then startBrakingCalibration()
-        elseif key == keys.f8 then uploadFlightReport()
+        elseif key == keys.f8 then saveFlightReport()
         end
       end
     end

@@ -163,59 +163,19 @@ do
 end
 local layout = assert(source:match("(local function gpuLayout%(%)%s*.-)\nlocal function addGpuButton"))
 do
-  local opened,selected
-  local env=setmetatable({status={},mode="HOLDING ALTITUDE",fullCalibration=true,burner=6},{__index=_G})
-  env.fs={exists=function(path) return path=="airship-flight.log" end}
-  env.shell={getRunningProgram=function() return "/airship.lua" end,openTab=function(program,action)
-    assert(program=="/airship.lua" and action=="--upload-report")
-    opened=true; return 2
-  end,switchTab=function(tab) selected=tab end}
-  local code=assert(source:match('(local function uploadFlightReport%b()%s*.-)\nlocal function stop'))
-  local upload=assert(load(code..'\nreturn uploadFlightReport',"@report-upload","t",env))()
-  upload(); assert(not opened,"Active calibration must hold before report upload")
-  env.fullCalibration=false
-  upload(); assert(opened and selected==2 and env.burner==6,"Report upload must run in another tab without cutting burners")
-  opened=false; env.fs.exists=function(path) return path=="airship-gps.log" end
-  upload(); assert(opened,"GPS failure report must upload even before auto tests create a flight report")
-end
-for _,scenario in ipairs({"success","http_error","disk_full","gps_only","combined","report_disk_full"}) do
-  local saved,waited,failed
-  local reportText
-  local original={write=function() end}
-  local current=original
-  local env=setmetatable({print=function() end,printError=function() failed=true end},{__index=_G})
-  env.term={current=function() return current end,redirect=function(target) current=target end}
-  env.shell={run=function(program,action,path)
-    assert(program=="pastebin" and action=="put")
-    assert(path==((scenario=="gps_only" or scenario=="combined") and "/airship-report.log" or "/airship-flight.log"))
-    if scenario=="http_error" then error("HTTP disabled") end
-    current.write("Uploaded to https://pastebin."); current.write("com/AbCd1234")
-    return true
+  local footer,opened
+  local env=setmetatable({status={},mode="HOLDING ALTITUDE",fullCalibration=false,flightRecording={path="flight logs/flight-2026-10-23_12-34-56.csv",count=1200,t=0,at=599.5,truncated=true}},{__index=_G})
+  env.fs={open=function(path,mode)
+    assert(path==env.flightRecording.path and mode=="a")
+    return {writeLine=function(line) footer=line end,close=function() end}
   end}
-  env.fs={exists=function(path)
-    return path=="/airship-gps.log" and (scenario=="gps_only" or scenario=="combined" or scenario=="report_disk_full")
-      or path=="/airship-flight.log" and scenario~="gps_only"
-  end,open=function(path,mode)
-    if path=="/airship-gps.log" or path=="/airship-flight.log" then
-      return {readAll=function() return path=="/airship-gps.log" and "GPS failure details" or "Flight samples" end,close=function() end}
-    elseif path=="/airship-report.log" then
-      if scenario=="report_disk_full" then return nil end
-      assert(mode=="w"); return {write=function(value) reportText=value end,close=function() end}
-    end
-    assert(path=="/airship-upload-result.txt")
-    if scenario=="disk_full" then return nil end
-    return {writeLine=function(line) saved=line end,close=function() end}
-  end}
-  env.read=function() waited=true; return "" end
-  env.require=function() error("Upload wrapper started the flight UI") end
-  assert(load(source,"@persistent-report-tab","t",env))("--upload-report")
-  assert(waited and current==original,"Upload result or failure must stay open and restore the terminal")
-  if scenario=="success" then assert(saved=="https://pastebin.com/AbCd1234","Uploaded URL must survive a closed tab") end
-  if scenario=="http_error" or scenario=="report_disk_full" then assert(failed,"Upload errors must remain visible") end
-  if scenario=="gps_only" or scenario=="combined" then
-    assert(reportText:find("GPS failure details",1,true),"Upload must include GPS rejection evidence")
-    assert((reportText:find("Flight samples",1,true)~=nil)==(scenario=="combined"),"Upload must retain an existing flight report")
-  end
+  env.shell={openTab=function() opened=true end}
+  local code=assert(source:match('(local function saveFlightReport%b()%s*.-)\nlocal function stop'))
+  local save=assert(load(code..'\nreturn saveFlightReport',"@flight-report-save","t",env))()
+  env.mode="AUTOPILOT"; save(); assert(not footer and env.status.text:match("Press H"),"F8 must not finalize a live flight")
+  env.mode="HOLDING ALTITUDE"; save()
+  assert(footer:match("samples=1200") and footer:match("truncated=true") and env.status.text:find(env.flightRecording.path,1,true),"F8 must finalize the local timestamped report and show its path")
+  assert(not opened and env.flightRecording.saved,"F8 must save locally without opening an upload tab")
 end
 local renderer = assert(source:match("(local function renderDirectMonitor%(%)%s*.-)\nlocal monitorStatus"))
 local function renderFixture(tab)
