@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.0"
+local AIRSHIP_BUILD = "1.7.1"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -371,14 +371,16 @@ local Autopilot = (function()
     end
     return lo
   end
-  function A:beginBraking(s)
-    if not A.validProfile(self.profile,self.names) then return false,"BRAKE CAL needs a completed autopilot calibration first." end
-    if self.profile.gpsVersion~=2 then return false,"BRAKE CAL needs a GPS-checked thruster survey first." end
+  function A:beginBraking(s,candidate)
+    local model=candidate or self.profile
+    if not A.validCandidate(model,self.names) then return false,"BRAKE CAL needs the completed 96-test thruster survey first." end
+    if model.gpsVersion~=2 then return false,"BRAKE CAL needs a GPS-checked thruster survey first." end
     if not A.validSample(s) or not finite(s.y) or s.pressure<=.001 then return false,"BRAKE CAL needs fresh GPS, height, heading, yaw and pressure." end
-    local p={}; for k,v in pairs(self.profile) do p[k]=v end; p.braking=nil
+    local p={}; for k,v in pairs(model) do p[k]=v end; p.braking=nil
+    if candidate then p.validated=nil end
     self:reset(s.heading)
     self.job={kind="BRAKES",phase="SETTLE",at=s.t,previous=copy(s),origin={x=s.x,z=s.z},hold={x=s.x,z=s.z},heading=s.heading,
-      candidate=p,index=1,runs={},pressure=s.pressure,height=s.y,heightMin=s.y,heightMax=s.y}
+      candidate=p,pending=candidate~=nil,index=1,runs={},pressure=s.pressure,height=s.y,heightMin=s.y,heightMax=s.y}
     return true
   end
   local function fitBraking(j)
@@ -553,6 +555,9 @@ local Autopilot = (function()
     j.retry=j.retry+1; j.totalRetries=(j.totalRetries or 0)+1; j.persistRevision=(j.persistRevision or 0)+1
     if braking then
       j.candidate.responseScale=math.min(4,(j.candidate.responseScale or 1)*1.2)
+      if j.candidate.braking then
+        for _,d in ipairs(j.candidate.braking.directions) do d.delay=math.min(10,d.delay*1.2+.05) end
+      end
     else
       local gains=j.candidate.gains
       if speed>.35 then gains[3]=math.min(4,gains[3]*1.2)
@@ -1481,6 +1486,7 @@ local function updateFlight(gpsFresh)
       return
     end
     local brakingCalibration=navController.job.kind=="BRAKES"
+    local brakingPending=brakingCalibration and navController.job.pending
     local commands,message,completed=navController:calibrate(sample)
     autopilotCommands=commands or {}
     local job=navController.job
@@ -1492,12 +1498,17 @@ local function updateFlight(gpsFresh)
       else autopilotNotice="Thruster model is in memory but checkpoint failed: "..tostring(err); autopilotNoticeColor=colors.red end
     end
     if completed then
-      local saved,err=pcall(saveAutopilotProfile,completed)
+      local saved,err=pcall(brakingPending and savePendingAutopilot or saveAutopilotProfile,completed)
       if saved then
-        if not brakingCalibration then clearPendingAutopilot(); pendingAutopilot=nil; pendingRetry=nil end
-        navController.profile=completed; applyGainValues(completed.gains)
-        autopilotNotice=brakingCalibration and ("BRAKE CAL saved at Y %.0f, pressure %.3f; 4 directions."):format(completed.braking.height,completed.braking.pressure)
-          or ("FULL AUTO CAL saved: %.1f b/s peak, %.0f%% thrust."):format(completed.verification and completed.verification.peakSpeed or completed.maxSpeed,(completed.maxThrottle or .35)*100)
+        if brakingPending then
+          pendingAutopilot=completed; pendingRetry=nil
+          autopilotNotice="BRAKE CAL saved; press FULL AUTO CAL for the 5 flight tests."
+        else
+          if not brakingCalibration then clearPendingAutopilot(); pendingAutopilot=nil; pendingRetry=nil end
+          navController.profile=completed; applyGainValues(completed.gains)
+          autopilotNotice=brakingCalibration and ("BRAKE CAL saved at Y %.0f, pressure %.3f; 4 directions."):format(completed.braking.height,completed.braking.pressure)
+            or ("FULL AUTO CAL saved: %.1f b/s peak, %.0f%% thrust."):format(completed.verification and completed.verification.peakSpeed or completed.maxSpeed,(completed.maxThrottle or .35)*100)
+        end
         autopilotNoticeColor=colors.lime
       else autopilotNotice="Calibration passed but could not save: "..tostring(err); autopilotNoticeColor=colors.red end
     elseif not commands then autopilotNotice=message; autopilotNoticeColor=colors.red
@@ -1880,7 +1891,7 @@ end
 local function startBrakingCalibration()
   if calibrationRunning or burnerSweep then status.text="Finish or cancel the current calibration first."; return end
   if mode=="STOPPED" then status.text="Set a stable burner level before BRAKE CAL."; return end
-  local started,message=navController:beginBraking(navigationSample())
+  local started,message=navController:beginBraking(navigationSample(),pendingAutopilot)
   if not started then status.text=message; autopilotNotice=message; autopilotNoticeColor=colors.orange; return end
   altitude=altitude or position.y
   manualBurner,burnerCommand=burner,burner

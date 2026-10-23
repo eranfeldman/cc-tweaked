@@ -497,7 +497,11 @@ end
 local brakingProfiles={}
 for i=1,3 do
   local p=plant(table.unpack(scenarios[i])); p.y=227; p.pressure=i==3 and .3 or .85
-  local controller=A.new(names,profiles[i]); assert(controller:beginBraking(p:sample()))
+  local candidate
+  if i==3 then
+    candidate={}; for k,v in pairs(profiles[i]) do candidate[k]=v end; candidate.validated=nil
+  end
+  local controller=A.new(names,profiles[i]); assert(controller:beginBraking(p:sample(),candidate))
   local commands,completed={},nil
   for _=1,5000 do
     p:advance(commands)
@@ -510,8 +514,24 @@ for i=1,3 do
   assert(completed.braking.height==227 and completed.braking.pressure==p.pressure,'Brake calibration must retain live height and pressure')
   assert(controller.profile==profiles[i] and profiles[i].braking==nil,'Measuring brakes must not overwrite the working profile before persistence succeeds')
   for _,d in ipairs(completed.braking.directions) do assert(#d.runs==2 and d.force>0 and d.delay>=.05) end
-  brakingProfiles[i]=completed
   print(('PASS: measured 8 stops mass %.1f pressure %.2f, %.1fs; force %.2f drag %.3f delay %.2f'):format(scenarios[i][1],p.pressure,p.t,completed.braking.directions[1].force,completed.braking.directions[1].drag,completed.braking.directions[1].delay))
+  if candidate then
+    assert(not completed.validated and A.validCandidate(completed,names) and A.new(names,completed).profile==nil,'Brake calibration must accept the pending survey without enabling normal AUTO')
+    assert(candidate.braking==nil and #completed.channels==#candidate.channels,'Braking measurement must preserve the original survey until saved')
+    local braking=completed.braking
+    assert(controller:resumeVerification(p:sample(),completed) and controller.job.phase=='VERIFY')
+    completed=nil; commands={}
+    for _=1,10000 do
+      p:advance(commands)
+      local message
+      commands,message,completed=controller:calibrate(p:sample())
+      assert(commands,message)
+      if completed then break end
+    end
+    assert(completed and A.validProfile(completed,names) and completed.verification.tests==5 and completed.braking==braking,'All five flight tests must use the pending brake model and validate without repeating the survey')
+    print(('PASS: pending survey -> eight stops -> five flight tests, overshoot %.3f, retries %d'):format(completed.verification.overshoot,completed.verification.retries))
+  end
+  brakingProfiles[i]=completed
 end
 
 do
@@ -542,14 +562,41 @@ do
   assert(c:calibrate(s) and j.phase=='SETTLE' and j.index==2 and j.runs[1].saved,'GPS interruption must restart only the current stopping test')
   c:cancel(); assert(c.profile==p and not c.job,'Canceling brake calibration must retain the previous saved braking profile')
   assert(A.new(names,p).profile.braking==p.braking,'Saved braking data must be accepted when reloading the autopilot profile')
+  assert(not c:beginBraking(s,{validated=false}),'An incomplete survey must not bypass braking calibration validation')
   print('PASS: pressure, polling latency, stopping-distance inversion, observed-stop coverage, interrupted measurement, cancellation and reload')
+end
+
+do
+  local old=brakingProfiles[1]
+  local candidate={}; for k,v in pairs(old) do candidate[k]=v end
+  candidate.validated=nil; candidate.braking={}
+  for k,v in pairs(old.braking) do candidate.braking[k]=v end
+  candidate.braking.directions={}
+  for i,d in ipairs(old.braking.directions) do
+    local copy={}; for k,v in pairs(d) do copy[k]=v end
+    candidate.braking.directions[i]=copy
+  end
+  local c=A.new(names,old)
+  local s={t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
+  assert(c:resumeVerification(s,candidate))
+  local j=c.job
+  j.goals={{x=0,z=0}}; j.legStart={x=-4,z=0}; j.overshoot=1; j.stable=0
+  j.verifyWindow={{t=-2,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}}
+  c.navigate=function() return {},true end
+  local before=A.stoppingDistance(A.brakeModel(candidate,1,0,.85,.2),15)
+  s.t=2
+  local commands,message=c:calibrate(s)
+  local after=A.stoppingDistance(A.brakeModel(candidate,1,0,.85,.2),15)
+  assert(commands and message:match('overshoot') and after>before and candidate.maxSpeed==old.maxSpeed,'An overshooting measured model must retry with an earlier stop, without lowering cruise speed')
+  assert(old.braking.directions[1].delay<candidate.braking.directions[1].delay,'Measured-brake retry must retain the working calibration')
+  print('PASS: measured-brake retry increases the actual stopping allowance and preserves cruise speed')
 end
 
 do
   local s={t=0,x=0,y=227,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
   local old=profiles[1]
   local env=setmetatable({navController=A.new(names,old),status={},mode='HOLDING ALTITUDE',burner=6,burnerCommand=6,position={x=0,y=227,z=0},
-    sampleDt=.2,burnerSlewPerSecond=6,pendingAutopilot={keep=true},Autopilot=A,shipHeading=0}, {__index=_G})
+    sampleDt=.2,burnerSlewPerSecond=6,Autopilot=A,shipHeading=0}, {__index=_G})
   env.colors={red=1,orange=2,lime=3}
   env.navigationSample=function() return s end
   env.clamp=function(v,a,b) return math.max(a,math.min(b,v)) end
@@ -564,11 +611,22 @@ do
   assert(env.fullCalibration and env.navController.job.kind=='BRAKES' and env.manualBurner==6 and env.altitude==227,'Brake button must begin eight-stop measurement with the current burner held even without a prior height selection')
   env.navController.calibrate=function() env.navController.job=nil; return {},nil,brakingProfiles[1] end
   s.t=.2; tick(true)
-  assert(env.saved and env.navController.profile==brakingProfiles[1] and env.pendingAutopilot.keep and env.burner==6 and env.autopilotNotice:match('BRAKE CAL saved'),'Completed brake calibration must save its profile and preserve lift and the thruster checkpoint')
+  assert(env.saved and env.navController.profile==brakingProfiles[1] and env.burner==6 and env.autopilotNotice:match('BRAKE CAL saved'),'Completed brake calibration must save its profile and preserve lift')
   begin(); env.saveAutopilotProfile=function() error('disk full') end
   s.t=.4; tick(true)
   assert(env.navController.profile==brakingProfiles[1] and env.burner==6 and env.autopilotNotice:match('could not save'),'A failed brake-profile write must keep the previous working profile and burner')
-  print('PASS: brake button, held burner, successful save, checkpoint preservation and disk-full rollback')
+  local pending={}; for k,v in pairs(brakingProfiles[3]) do pending[k]=v end; pending.validated=nil
+  env.pendingAutopilot=pending; env.navController=A.new(names)
+  env.savePendingAutopilot=function(p) assert(p==pending and A.validCandidate(p,names) and not p.validated); env.savedPending=p end
+  begin()
+  assert(env.navController.job.pending and not env.navController.job.candidate.validated,'Brake button must prefer the saved survey when the five tests have not passed')
+  env.navController.calibrate=function() env.navController.job=nil; return {},nil,pending end
+  s.t=.6; tick(true)
+  assert(env.savedPending==pending and env.pendingAutopilot==pending and env.navController.profile==nil and env.autopilotNotice:match('5 flight tests'),'Pending brakes must save to the survey checkpoint and require flight validation')
+  begin(); env.savePendingAutopilot=function() error('disk full') end
+  s.t=.8; tick(true)
+  assert(env.pendingAutopilot==pending and not env.navController.profile and env.burner==6 and env.autopilotNotice:match('could not save'),'Failed pending-brake saves must retain the checkpoint and keep normal AUTO unavailable')
+  print('PASS: brake button, held burner, working/pending saves, validation gate, checkpoint preservation and disk-full rollback')
 end
 
 for i,profile in ipairs(brakingProfiles) do
