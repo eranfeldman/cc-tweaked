@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.2"
+local AIRSHIP_BUILD = "1.7.3"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -184,6 +184,24 @@ local Autopilot = (function()
     local desired={bx,bz,yaw}
     local commands,residual=self:allocate(p,desired)
     return commands,residual,desired
+  end
+  function A:stopCommands(s,p,dt,previous)
+    local speed=math.sqrt(s.vx^2+s.vz^2)
+    local response=math.max(2,dt*5,p.delay*2)
+    local lead=math.max(dt,p.delay*.65)
+    local vx,vz=s.vx,s.vz
+    if previous then
+      vx=vx+clamp((s.vx-previous.vx)/dt,-p.maxAccel*2,p.maxAccel*2)*lead
+      vz=vz+clamp((s.vz-previous.vz)/dt,-p.maxAccel*2,p.maxAccel*2)*lead
+    end
+    local bx,bz=body(vx,vz,s.heading)
+    -- Dampen motion without chasing an earlier position or heading while thrust decays.
+    local desired={speed>.06 and -bx/response or 0,speed>.06 and -bz/response or 0,
+      math.abs(s.yaw)>.015 and clamp(-s.yaw/response,-.12,.12) or 0}
+    local commands,residual=self:allocate(p,desired)
+    self.applied={desired[1]-residual[1],desired[2]-residual[2],desired[3]-residual[3]/p.yawWeight}
+    self.trace={desired=desired,braking="CAL_DAMP"}
+    return commands
   end
   function A:navigate(s,goal,p)
     p=p or self.profile
@@ -418,11 +436,12 @@ local Autopilot = (function()
       j.interrupted=nil; j.phase="SETTLE"; j.at=s.t; j.stable=nil; j.hold={x=s.x,z=s.z}; j.run=nil; self:reset(j.heading)
     end
     local dt=s.t-j.previous.t
+    local previous=j.previous
     j.previous=copy(s); j.heightMin=math.min(j.heightMin,s.y); j.heightMax=math.max(j.heightMax,s.y)
     if math.abs(s.yaw)>.8 or s.pressure<=.001 then self.job=nil; return nil,"BRAKE CAL interrupted: yaw or pressure invalid; previous profile kept." end
     local speed=math.sqrt(s.vx^2+s.vz^2)
     if j.phase=="SETTLE" then
-      local commands=self:navigate(s,j.hold,j.candidate)
+      local commands=self:stopCommands(s,j.candidate,dt,previous)
       j.stable=speed<.2 and math.abs(s.yaw)<.03 and (j.stable or s.t) or nil
       if j.stable and s.t-j.stable>=2 then
         if j.index>8 then
@@ -438,7 +457,7 @@ local Autopilot = (function()
         j.targetSpeed=math.max(2,A.cruiseSpeed(j.candidate)*(j.index%2==1 and 1 or 2))
         j.phase="ACCEL"; j.at=s.t; j.history={}; self:reset(j.heading)
       elseif s.t-j.at>60 then self.job=nil; return nil,"BRAKE CAL could not settle; previous profile kept." end
-      return commands,("BRAKE CAL %d/8 settling | %.2f b/s"):format(math.min(j.index,8),speed)
+      return commands,("BRAKE CAL settling | %d/8 recorded | %.2f b/s"):format(j.index-1,speed)
     end
     local along=s.vx*j.dx+s.vz*j.dz
     if j.phase=="ACCEL" or j.phase=="REACCEL" then
@@ -466,17 +485,24 @@ local Autopilot = (function()
     end
     local r=j.run
     r.distance=math.max(r.distance,(s.x-r.x)*j.dx+(s.z-r.z)*j.dz)
-    if s.t-r.at>math.max(.8,dt*1.5) and along>.5 and r.previousV>along then
+    local decel=math.max(0,(r.previousV-along)/dt)
+    if j.phase=="BRAKE" and s.t-r.at>math.max(.8,dt*1.5) and along>.5 and r.previousV>along then
       r.samples[#r.samples+1]={x=(r.previousV+along)/2*(r.previousPressure+s.pressure)/(2*j.pressure),y=(r.previousV-along)/dt,dt=dt}
     end
     r.previousV,r.previousPressure=along,s.pressure
-    if along<=.15 then
-      j.runs[j.index]=r; j.index=j.index+1; j.hold={x=s.x,z=s.z}; j.phase="SETTLE"; j.at=s.t; j.stable=nil
+    if j.phase=="BRAKE" and along<=math.max(.5,math.max(decel,j.candidate.maxAccel)*math.max(1.5,dt*3,j.candidate.delay)) then j.phase="TAIL" end
+    r.stable=math.abs(along)<=.15 and speed<=.2 and math.abs(s.yaw)<.03 and (r.stable or s.t) or nil
+    if r.stable and s.t-r.stable>=2 then
+      j.runs[j.index]=r; j.index=j.index+1; j.hold={x=s.x,z=s.z}; j.phase="SETTLE"; j.at=s.t; j.stable=r.stable
       self:reset(j.heading)
       return {},("BRAKE CAL %d/8 recorded | %.1f b/s stopped in %.1f blocks"):format(j.index-1,r.speed,r.distance)
     end
     if s.t-j.at>30 then self.job=nil; return nil,"BRAKE CAL could not stop; previous profile kept." end
-    return self:reverseCommands(s,j.dx,j.dz,j.candidate),("BRAKE CAL %d/8 full reverse | %.1f b/s | %.1f blocks"):format(j.index,along,r.distance)
+    if j.phase=="TAIL" then return self:stopCommands(s,j.candidate,dt,previous),("BRAKE CAL %d/8 finishing stop | %.2f b/s | %.1f blocks"):format(j.index,speed,r.distance) end
+    local commands,residual,desired=self:reverseCommands(s,j.dx,j.dz,j.candidate)
+    self.applied={desired[1]-residual[1],desired[2]-residual[2],desired[3]-residual[3]/j.candidate.yawWeight}
+    self.trace={desired=desired,braking="CAL_REVERSE"}
+    return commands,("BRAKE CAL %d/8 full reverse | %.1f b/s | %.1f blocks"):format(j.index,along,r.distance)
   end
   function A:fit(job)
     local p={version=1,gpsVersion=2,cruiseVersion=3,validationVersion=2,responseScale=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8,maxThrottle=throttleLimit}

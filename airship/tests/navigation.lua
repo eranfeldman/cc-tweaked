@@ -70,7 +70,7 @@ local function plant(mass,period,noise,uneven)
         assert(command.power>=0 and command.power<=1.000001,"Throttle exceeds normalized range")
         assert(math.abs(command.x)<=1 and math.abs(command.y)<=1,"Invalid nozzle command")
         local a=self.actuators[name]
-        local alpha=1-math.exp(-dt/.25)
+        local alpha=1-math.exp(-dt/(self.actuatorDelay or .25))
         a.x=a.x+(command.x-a.x)*alpha; a.y=a.y+(command.y-a.y)*alpha
         a.power=a.power+(command.power-a.power)*alpha
         local r=mounts[i]
@@ -559,8 +559,43 @@ for i=1,3 do
   brakingProfiles[i]=completed
 end
 
+for _,settings in ipairs({{.3,.25},{.65,.8},{1,1.2}}) do
+  local p=plant(1.4,settings[1],.01); p.actuatorDelay=settings[2]
+  local c=A.new(names,profiles[3]); assert(c:beginBraking(p:sample()))
+  local commands,completed={},nil
+  local recorded,rebound,low=0,0,false
+  for _=1,4000 do
+    p:advance(commands)
+    local s=p:sample(); local speed=math.sqrt(s.rawVx^2+s.rawVz^2)
+    local j=c.job; local index=j.index
+    if j.phase=='TAIL' or j.phase=='SETTLE' then
+      if speed<.2 then low=true end
+      if low then rebound=math.max(rebound,speed) end
+    else low=false end
+    local message; commands,message,completed=c:calibrate(s)
+    assert(commands,message)
+    if c.job and c.job.index>index then
+      assert(speed<=.2,'Brake calibration must not record a stop while sliding backward or sideways')
+      recorded=recorded+1
+    end
+    if completed then break end
+  end
+  assert(completed and recorded==8 and rebound<.25,'All eight stops must settle without a low-speed rebound under slow polling and actuator response')
+  print(('PASS: eight smooth stops, poll %.2fs actuator %.2fs, rebound %.3f b/s, %.1fs'):format(settings[1],settings[2],rebound,p.t))
+end
+
 do
   local p=brakingProfiles[1]
+  local settle=A.new(names,p)
+  local s={t=0,x=0,y=227,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
+  assert(settle:beginBraking(s)); s.t=.2; s.x=20
+  local commands=settle:calibrate(s)
+  for _,out in pairs(commands) do assert(out.power<1e-9,'A stopped calibration must not accelerate back to its earlier position') end
+  local j=settle.job; j.phase='BRAKE'; j.dx,j.dz=1,0
+  j.run={at=0,x=0,z=0,speed=10,previousV=.1,previousPressure=.85,distance=0,samples={},coast={}}
+  s.t=1.2; s.vx=-2
+  settle:calibrate(s)
+  assert(j.index==1 and j.phase=='TAIL' and settle.trace.desired[1]>0,'Reverse velocity is motion to damp, not a completed stop')
   local steering=A.new(names,p); steering:reset(0)
   local sample={t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85,rawVx=0,rawVz=0}
   steering:navigate(sample,{x=100,z=0})
