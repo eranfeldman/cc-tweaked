@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.7"
+local AIRSHIP_BUILD = "1.7.8"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -410,7 +410,8 @@ local Autopilot = (function()
           n=n+1; x=x+s.x; y=y+s.y; period=period+s.dt
         end
       end
-      if n<2 or cxx<.001 then return nil,"Too few braking samples; previous calibration kept." end
+      if n<2 then return nil,("Too few braking samples in direction %d (%d observed); previous calibration kept."):format(direction,n) end
+      if cxx<.001 then return nil,("Too few coast samples in direction %d; previous calibration kept."):format(direction) end
       local drag=clamp(cxy/cxx,0,10)
       local force=(y-drag*x)/n
       if not finite(force) or force<.01 or force>200 then return nil,"Measured reverse thrust is invalid; previous calibration kept." end
@@ -489,7 +490,7 @@ local Autopilot = (function()
     local r=j.run
     r.distance=math.max(r.distance,(s.x-r.x)*j.dx+(s.z-r.z)*j.dz)
     local decel=math.max(0,(r.previousV-along)/dt)
-    if j.phase=="BRAKE" and s.t-r.at>math.max(.8,dt*1.5) and along>.5 and r.previousV>along then
+    if j.phase=="BRAKE" and along>.5 and r.previousV>along then
       r.samples[#r.samples+1]={x=(r.previousV+along)/2*(r.previousPressure+s.pressure)/(2*j.pressure),y=(r.previousV-along)/dt,dt=dt}
     end
     r.previousV,r.previousPressure=along,s.pressure

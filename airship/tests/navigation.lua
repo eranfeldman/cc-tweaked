@@ -603,6 +603,13 @@ do
   s.t=1.2; s.vx=-2
   settle:calibrate(s)
   assert(j.index==1 and j.phase=='TAIL' and settle.trace.desired[1]>0,'Reverse velocity is motion to damp, not a completed stop')
+  local early=A.new(names,p); s={t=0,x=0,y=227,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85}
+  assert(early:beginBraking(s)); local earlyJob=early.job
+  earlyJob.phase='BRAKE'; earlyJob.dx,earlyJob.dz=1,0
+  earlyJob.run={at=0,x=0,z=0,speed=10,previousV=10,previousPressure=.85,distance=0,samples={},coast={}}
+  s={t=.2,x=1.9,y=227,z=0,vx=9,vz=0,heading=0,yaw=0,pressure=.85}
+  early:calibrate(s)
+  assert(#earlyJob.run.samples==1,'A valid early reverse-deceleration sample must be recorded before the old 0.8-second gate')
   local steering=A.new(names,p); steering:reset(0)
   local sample={t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85,rawVx=0,rawVz=0}
   steering:navigate(sample,{x=100,z=0})
