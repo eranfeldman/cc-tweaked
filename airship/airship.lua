@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.18"
+local AIRSHIP_BUILD = "1.7.19"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1548,7 +1548,7 @@ local function locate()
     intervalVelocity = {x=0,z=0}
     lastGpsAt = nil
     gpsFilter={}
-    if mode ~= "STOPPED" then
+    if mode ~= "STOPPED" and mode ~= "MAX LIFT" then
       vectorX, vectorY, power = 0, 0, 0
       if burnerSweep then
         sweepSummary = ("Sweep aborted: GPS lost. Saved %d/11; skipped %d."):format(burnerSweep.saved, burnerSweep.skipped)
@@ -1575,6 +1575,7 @@ local function locate()
   return false
 end
 local function updateFlight(gpsFresh)
+  if mode == "MAX LIFT" then return end
   if not position then
     vectorX, vectorY, power = 0, 0, 0
     if mode ~= "STOPPED" and mode ~= "GPS LOST - RE-ENGAGE" then mode = "WAITING FOR GPS" end
@@ -1990,7 +1991,7 @@ local function stepSavedAltitude(delta)
 end
 local function holdHere()
   local canceledCalibration=calibrationRunning
-  if position or canceledCalibration then
+  if position or canceledCalibration or mode=="MAX LIFT" then
     if position then altitude=math.floor(position.y+.5) end
     target=nil; setFlightMode(position and "HOLDING ALTITUDE" or "WAITING FOR GPS")
     if canceledCalibration then
@@ -2000,6 +2001,22 @@ local function holdHere()
       autopilotNoticeColor=colors.orange; status.text=autopilotNotice; status.foreground=colors.orange
     end
   end
+end
+local function maxLift()
+  if burnerSweep then
+    sweepSummary = ("Sweep stopped for MAX LIFT. Saved %d/11; skipped %d."):format(burnerSweep.saved, burnerSweep.skipped)
+    sweepSummaryUntil = os.clock() + 15
+  end
+  calibrationRunning, brakeCalibrationActive = false, false
+  autopilotStartedAt,autopilotReachedAt=nil,nil
+  navController:cancel()
+  autopilotCommands,fullCalibration=nil,nil
+  burnerSweep,manualBurner=nil,burner
+  target=nil
+  vectorX,vectorY,power,mode=0,-1,1,"MAX LIFT"
+  autopilotNotice="MAX LIFT: all 24 thrusters at 100%; press HOLD or STOP to exit."
+  autopilotNoticeColor=colors.orange
+  status.text,status.foreground=autopilotNotice,autopilotNoticeColor
 end
 local function engageAutopilot()
   local function refuse(message)
@@ -2150,6 +2167,7 @@ local function createGpuButtons()
       {"SAVED",nil,{43,90,132},selectAltitudePreset},
       {"HOLD",nil,{35,62,91},holdHere},
       {"AUTO",nil,{42,112,83},engageAutopilot},
+      {"MAX LIFT",nil,{150,92,30},maxLift},
       {"STOP",nil,{125,48,56},stop},
     },l.buttonY)
   elseif gpuTab=="CALIBRATION" then
@@ -2203,6 +2221,7 @@ local function createMonitorUi()
   monitorFrame:addButton({x=2, y=7, width=10, height=1, text="HOLD HERE", background=colors.blue}):onClick(holdHere)
   monitorFrame:addButton({x=13, y=7, width=11, height=1, text="AUTOPILOT", background=colors.lime}):onClick(engageAutopilot)
   monitorFrame:addButton({x=25, y=7, width=8, height=1, text="STOP", background=colors.red}):onClick(stop)
+  monitorFrame:addButton({x=34, y=7, width=10, height=1, text="MAX LIFT", background=colors.orange}):onClick(maxLift)
   monitorFrame:addButton({x=2, y=8, width=12, height=1, text="TEST FWD", background=colors.gray}):onClick(function() testVector(0, .2, "TEST Y+") end)
   monitorFrame:addButton({x=15, y=8, width=12, height=1, text="TEST BACK", background=colors.gray}):onClick(function() testVector(0, -.2, "TEST Y-") end)
   monitorFrame:addButton({x=29, y=8, width=14, height=1, text="BRAKE CAL F6", background=colors.blue}):onClick(startBrakingCalibration)
@@ -2337,11 +2356,12 @@ end
 local function flightButton(x, width, label, color, action)
   return flightPage:addButton({x=x, y=14, width=width, height=2, text=label, background=color}):onClick(action)
 end
-flightButton(2, 7, "ALT -", colors.orange, function() stepSavedAltitude(-1) end)
-flightButton(10, 7, "ALT +", colors.orange, function() stepSavedAltitude(1) end)
-flightButton(18, 9, "HOLD", colors.blue, holdHere)
-flightButton(28, 12, "AUTOPILOT", colors.lime, engageAutopilot)
-flightButton(41, 9, "STOP", colors.red, stop)
+flightButton(2, 6, "ALT -", colors.orange, function() stepSavedAltitude(-1) end)
+flightButton(9, 6, "ALT +", colors.orange, function() stepSavedAltitude(1) end)
+flightButton(16, 7, "HOLD", colors.blue, holdHere)
+flightButton(24, 8, "AUTO", colors.lime, engageAutopilot)
+flightButton(33, 8, "MAX LIFT", colors.orange, maxLift)
+flightButton(42, 8, "STOP", colors.red, stop)
 
 pidSummary = calibrationPage:addLabel({x=2, y=1, width=47, height=1, text="PID  loading gains...", foreground=colors.lightGray})
 calibrationPage:addLabel({x=2, y=3, width=47, height=1, text="HORIZONTAL PID: P I D   |   HEIGHT: BURNER AMOUNT", foreground=colors.lightBlue})
