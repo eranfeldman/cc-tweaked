@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.24"
+local AIRSHIP_BUILD = "1.7.25"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1000,10 +1000,32 @@ local function findAvionicsAll(kind)
     yieldComputer()
   end
   local devices = {}
-  for _, device in pairs(found) do devices[#devices + 1] = device end
+  for name, device in pairs(found) do devices[#devices + 1] = {name=name, device=device} end
+  table.sort(devices, function(a, b) return a.name < b.name end)
   return devices
 end
 seatControl.sensors = findAvionicsAll("optical_sensor")
+seatControl.sensorRanges = {}
+local rangePath = "airship-optical-sensor-ranges.cfg"
+local rangeFile = fs.open(rangePath, "r")
+local savedSensorRanges = {}
+if rangeFile then
+  local readOk, data = pcall(textutils.unserialize, rangeFile.readAll())
+  rangeFile.close()
+  if readOk and type(data) == "table" then savedSensorRanges = data end
+end
+for _, entry in ipairs(seatControl.sensors) do
+  local ok, current = pcall(entry.device.getRange)
+  yieldComputer()
+  local range = tonumber(savedSensorRanges[entry.name]) or (ok and tonumber(current)) or 15
+  range = math.max(1, math.floor(range))
+  seatControl.sensorRanges[entry.name] = range
+  savedSensorRanges[entry.name] = range
+  pcall(entry.device.setRange, 1)
+  yieldComputer()
+end
+rangeFile = fs.open(rangePath, "w")
+if rangeFile then rangeFile.write(textutils.serialize(savedSensorRanges)); rangeFile.close() end
 end
 monitor = monitor or findAvionics("monitor")
 local monitorName
@@ -1104,7 +1126,15 @@ end
 seatControl.getGroundClearance = function()
   if #seatControl.sensors < 3 then return nil, "need at least 3 Simulated optical sensors; found " .. #seatControl.sensors end
   local nearest
-  for i, sensor in ipairs(seatControl.sensors) do
+  local activationError
+  for _, entry in ipairs(seatControl.sensors) do
+    local ok, err = pcall(entry.device.setRange, seatControl.sensorRanges[entry.name] or 15)
+    yieldComputer()
+    if not ok then activationError = tostring(err) end
+  end
+  sleep(.1)
+  for _, entry in ipairs(seatControl.sensors) do
+    local sensor = entry.device
     local hitOk, hasHit = pcall(sensor.hasHit)
     yieldComputer()
     if hitOk and hasHit then
@@ -1115,6 +1145,11 @@ seatControl.getGroundClearance = function()
       end
     end
   end
+  for _, entry in ipairs(seatControl.sensors) do
+    pcall(entry.device.setRange, 1)
+    yieldComputer()
+  end
+  if activationError then return nil, "could not activate optical sensor range: " .. activationError end
   if not nearest then return nil, "no optical sensor sees ground; point sensors down and check their range" end
   return nearest
 end
