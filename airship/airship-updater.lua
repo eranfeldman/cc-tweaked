@@ -1,4 +1,4 @@
-local updaterBuild = "1.3.5"
+local updaterBuild = "1.3.6"
 local apiUrl = "https://api.github.com/repos/eranfeldman/cc-tweaked/commits/main"
 local baseUrl = "https://raw.githubusercontent.com/eranfeldman/cc-tweaked/"
 local commitFile = "/airship-latest.json"

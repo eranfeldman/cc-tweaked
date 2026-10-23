@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.16"
+local AIRSHIP_BUILD = "1.7.17"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1020,6 +1020,7 @@ local redstoneLinkBridge = findAvionics("redstone_link_bridge")
 local chatBox = peripheral.find("chat_box") or peripheral.find("chatBox") or findAvionics("chat_box") or findAvionics("chatBox")
 if not chatBox then print("Chat commands unavailable: connect an Advanced Peripherals chat box") end
 if not redstoneLinkBridge then print("Seat commands unavailable: connect a CC Redstone Link Bridge") end
+print("Chat Box: " .. (chatBox and "found" or "missing") .. " | Redstone Link Bridge: " .. (redstoneLinkBridge and "found" or "missing"))
 print("Setting up display...")
 if directGpuEnabled then setupDirectGpu() else directGpuError = "DirectGPU paused for stability; using CC monitor" end
 print("Building controls...")
@@ -1032,6 +1033,7 @@ screenWidth, screenHeight = term.getSize()
 local compact = screenWidth < 49 or screenHeight < 19
 local position, target, altitude, mode = nil, nil, nil, "STARTING"
 local autopilotStartedAt, autopilotReachedAt
+local chatNotice, chatNoticeUntil
 local function nearestCardinalHeading(heading)
   local quarterTurn = math.pi / 2
   return (math.floor(heading / quarterTurn + .5) % 4) * quarterTurn
@@ -2441,6 +2443,8 @@ local function refresh()
   if autopilotNotice and mode~="STOPPED" then status.text,status.foreground=autopilotNotice,autopilotNoticeColor end
   if sweepSummary and os.clock() < sweepSummaryUntil then status.text, status.foreground = sweepSummary, colors.orange
   elseif sweepSummary then sweepSummary = nil end
+  if chatNotice and os.clock() < chatNoticeUntil then status.text, status.foreground = chatNotice, colors.lightBlue
+  elseif chatNotice then chatNotice, chatNoticeUntil = nil, nil end
   if monitorFrame then
     monitorPos.text = position and ("X %.1f Y %.1f Z %.1f"):format(position.x, position.y, position.z) or "GPS not found"
     monitorAlt.text = (altitude and ("ALT %.1f / T %.0f") or "ALT %.1f"):format(position and position.y or 0, altitude or 0) .. ("   D %s   ETA %s"):format(distance and ("%.0f"):format(distance) or "--",eta)
@@ -2636,6 +2640,12 @@ local ok, err = pcall(function()
         local signal, reply
         if command == "seat up" then signal, reply = 15, "Seat up command sent."
         elseif command == "seat down" then signal, reply = 0, "Seat down command sent." end
+        if signal == nil then
+          chatNotice, chatNoticeUntil = "CHAT RX: use `seat up` or `seat down`", os.clock() + 8
+        else
+          redstoneLinkBridge = redstoneLinkBridge or findAvionics("redstone_link_bridge")
+          if not chatBox then chatBox = peripheral.find("chat_box") or peripheral.find("chatBox") or findAvionics("chat_box") or findAvionics("chatBox") end
+        end
         if signal ~= nil then
           local sent, failure
           if redstoneLinkBridge then
@@ -2643,6 +2653,8 @@ local ok, err = pcall(function()
           else failure = "Redstone Link Bridge unavailable" end
           yieldComputer()
           if not sent then reply = "Seat command failed: " .. tostring(failure) end
+          chatNotice = sent and ("CHAT OK: " .. command .. " (signal " .. signal .. ")") or ("CHAT ERROR: " .. tostring(failure))
+          chatNoticeUntil = os.clock() + 8
           if chatBox and type(chatBox.sendMessageToPlayer) == "function" then
             pcall(chatBox.sendMessageToPlayer, reply, username, "AIRSHIP")
             yieldComputer()
