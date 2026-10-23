@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.15"
+local AIRSHIP_BUILD = "1.7.16"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1016,6 +1016,10 @@ print("Discovering avionics...")
 local altitudeSensor = findAvionics("altitude_sensor")
 local navigationTable = findAvionics("navigation_table")
 local gimbalSensor = findAvionics("gimbal_sensor")
+local redstoneLinkBridge = findAvionics("redstone_link_bridge")
+local chatBox = peripheral.find("chat_box") or peripheral.find("chatBox") or findAvionics("chat_box") or findAvionics("chatBox")
+if not chatBox then print("Chat commands unavailable: connect an Advanced Peripherals chat box") end
+if not redstoneLinkBridge then print("Seat commands unavailable: connect a CC Redstone Link Bridge") end
 print("Setting up display...")
 if directGpuEnabled then setupDirectGpu() else directGpuError = "DirectGPU paused for stability; using CC monitor" end
 print("Building controls...")
@@ -2622,6 +2626,29 @@ local ok, err = pcall(function()
       local _, key = os.pullEvent("key_up")
       if key == keys.leftAlt then leftAltHeld = false
       elseif key == keys.rightAlt then rightAltHeld = false end
+    end
+  end)
+  basalt.schedule(function()
+    while running do
+      local _, username, message = os.pullEvent("chat")
+      local command = type(message) == "string" and message:gsub("^%s*%$", ""):match("^%s*(.-)%s*$"):lower() or ""
+      if type(username) == "string" and username:lower() == "pro_hacker_noob" then
+        local signal, reply
+        if command == "seat up" then signal, reply = 15, "Seat up command sent."
+        elseif command == "seat down" then signal, reply = 0, "Seat down command sent." end
+        if signal ~= nil then
+          local sent, failure
+          if redstoneLinkBridge then
+            sent, failure = pcall(redstoneLinkBridge.sendLinkSignal, "minecraft:stick", "minecraft:oak_button", signal)
+          else failure = "Redstone Link Bridge unavailable" end
+          yieldComputer()
+          if not sent then reply = "Seat command failed: " .. tostring(failure) end
+          if chatBox and type(chatBox.sendMessageToPlayer) == "function" then
+            pcall(chatBox.sendMessageToPlayer, reply, username, "AIRSHIP")
+            yieldComputer()
+          end
+        end
+      end
     end
   end)
   print("Starting flight panel...")
