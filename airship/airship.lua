@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.13"
+local AIRSHIP_BUILD = "1.7.14"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1027,6 +1027,7 @@ local screenWidth, screenHeight
 screenWidth, screenHeight = term.getSize()
 local compact = screenWidth < 49 or screenHeight < 19
 local position, target, altitude, mode = nil, nil, nil, "STARTING"
+local autopilotStartedAt, autopilotReachedAt
 local function nearestCardinalHeading(heading)
   local quarterTurn = math.pi / 2
   return (math.floor(heading / quarterTurn + .5) % 4) * quarterTurn
@@ -1379,7 +1380,13 @@ local function navigationReadout()
   local closing=span>0 and first.distance and last.distance and (first.distance-last.distance)/span or 0
   local eta=distance and (mode=="DESTINATION REACHED" and 0 or (mode=="AUTOPILOT" and span>=2 and closing>.1 and distance/closing or nil)) or nil
   local etaText=eta and (math.floor(eta/60)..":"..("%02d"):format(math.floor(eta%60))) or "--"
-  return speed,distance,etaText
+  local elapsedText="--:--"
+  if autopilotStartedAt then
+    local seconds=math.floor(math.max(0,(autopilotReachedAt or os.clock())-autopilotStartedAt))
+    elapsedText=seconds>=3600 and ("%d:%02d:%02d"):format(math.floor(seconds/3600),math.floor(seconds/60)%60,seconds%60)
+      or ("%d:%02d"):format(math.floor(seconds/60),seconds%60)
+  end
+  return speed,distance,etaText,elapsedText
 end
 
 local function calibrationReadout()
@@ -1426,6 +1433,7 @@ local function saveFlightReport()
 end
 local function stop()
   calibrationRunning = false
+  autopilotStartedAt,autopilotReachedAt=nil,nil
   autopilotNotice=nil
   navController:cancel(); autopilotCommands,fullCalibration=nil,nil
   brakeCalibrationActive=false
@@ -1456,6 +1464,8 @@ local function setFlightMode(nextMode)
   navController:cancel(); autopilotCommands,fullCalibration=nil,nil
   manualBurner = nil
   burnerSweep = nil
+  if nextMode=="AUTOPILOT" then autopilotStartedAt,autopilotReachedAt=os.clock(),nil
+  elseif nextMode~="FINAL TURN" and nextMode~="DESTINATION REACHED" then autopilotStartedAt,autopilotReachedAt=nil,nil end
   vectorX, vectorY, power, mode = 0, 0, 0, nextMode
   pid.horizontalX.integral, pid.horizontalZ.integral = 0, 0
 end
@@ -1666,7 +1676,9 @@ local function updateFlight(gpsFresh)
     if arrived and mode=="AUTOPILOT" then
       navController:setHeadingTarget(nearestCardinalHeading(sample.heading))
       mode="FINAL TURN"
-    elseif wasFinalTurn then mode=arrived and "DESTINATION REACHED" or "FINAL TURN"
+    elseif wasFinalTurn then
+      mode=arrived and "DESTINATION REACHED" or "FINAL TURN"
+      if arrived and not autopilotReachedAt then autopilotReachedAt=sample.t end
     elseif wasReached then mode="DESTINATION REACHED"
     else mode="AUTOPILOT" end
   end
@@ -1886,9 +1898,9 @@ local function renderDirectMonitor()
     local detailFont=math.max(11,math.min(small,math.floor(detailH*.19)))
     txt("FLIGHT STATUS",l.margin+14,detailY+8,detailFont,muted,"bold")
     txt(position and ("GPS  X %.1f     Y %.1f     Z %.1f"):format(position.x,position.y,position.z) or "GPS SIGNAL LOST",l.margin+14,detailY+math.floor(detailH*.34),detailFont,position and ink or {255,110,110})
-    local speed,distance,eta=navigationReadout()
+    local speed,distance,eta,elapsed=navigationReadout()
     txt(("MODE  %s     AV %s     HDG %s°     YAW %s rad/s"):format(mode,altitudeSensorReady and "READY" or "MISSING",shipHeading and ("%.0f"):format(math.deg(shipHeading)) or "--",yawRate and ("%.2f"):format(yawRate) or "--"),l.margin+14,detailY+math.floor(detailH*.52),detailFont,ink)
-    txt(("SPEED  %.1f b/s     DISTANCE  %s     ETA  %s"):format(speed,distance and ("%.1f"):format(distance) or "--",eta),l.margin+14,detailY+math.floor(detailH*.70),detailFont,ink)
+    txt(("SPEED  %.1f b/s     DISTANCE  %s     ETA  %s     ELAPSED  %s"):format(speed,distance and ("%.1f"):format(distance) or "--",eta,elapsed),l.margin+14,detailY+math.floor(detailH*.70),detailFont,ink)
     txt(target and ("DESTINATION  X %.0f   Z %.0f"):format(target.x,target.z) or "NO DESTINATION SET",l.margin+14,detailY+math.floor(detailH*.87),detailFont,muted)
   elseif gpuTab == "CALIBRATION" then
     local titleSize=math.max(18,math.floor(h*.032))
@@ -2381,8 +2393,13 @@ local function refresh()
     altText.text = ("Now %s\nTarget %s"):format(position and ("%.1f"):format(position.y) or "--", altitude and ("%.0f"):format(altitude) or "--")
     sysText.text = ("Burner %d/15\nThrust %.1f/15\nHeading %s°"):format(burner, measuredThrust, shipHeading and ("%.0f"):format(math.deg(shipHeading)) or "--")
   end
-  local speed,distance,eta=navigationReadout()
-  if navText then navText.text=calibrationReadout() or (compact and "SPD %.1f  D %s  ETA %s" or "SPEED %.1f b/s   DISTANCE %s   ETA %s"):format(speed,distance and ("%.1f"):format(distance) or "--",eta) end
+  local speed,distance,eta,elapsed=navigationReadout()
+  if navText then
+    local calibration=calibrationReadout()
+    if calibration then navText.text=calibration
+    elseif compact then navText.text=("TIME %s SPD %.1f D%s E%s"):format(elapsed,speed,distance and ("%.0f"):format(distance) or "--",eta)
+    else navText.text=("SPEED %.1f DIST %s ETA %s ELAPSED %s"):format(speed,distance and ("%.1f"):format(distance) or "--",eta,elapsed) end
+  end
   if not isFocused(heightInput) then heightInput.text = altitude and tostring(math.floor(altitude + .5)) or "" end
   if not isFocused(pidInput) then showGainValues() end
   if #savedAltitudeButtons > 0 then
@@ -2416,7 +2433,7 @@ local function refresh()
     monitorAlt.text = ("ALT %.1f / T %.0f   D %s   ETA %s"):format(position and position.y or 0, altitude or 0,distance and ("%.0f"):format(distance) or "--",eta)
     local savedCount = 0
     for _ in pairs(learnedHover) do savedCount = savedCount + 1 end
-    monitorSystem.text = calibrationReadout() or ("B%d/15 T%.1f SPD %.1f GPS %s"):format(burner, measuredThrust,speed,position and "OK" or "LOST")
+    monitorSystem.text = calibrationReadout() or ("TIME %s B%d SPD %.0f"):format(elapsed,burner,speed)
     monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
   end
   if directGpu and (gpuRedrawPending or os.clock() - lastGpuRender >= .025) then
