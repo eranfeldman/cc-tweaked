@@ -517,15 +517,15 @@ for i=1,3 do
     candidate={}; for k,v in pairs(profiles[i]) do candidate[k]=v end; candidate.validated=nil
   end
   local controller=A.new(names,profiles[i]); assert(controller:beginBraking(p:sample(),candidate))
-  local commands,completed={},nil
+  local commands,completed,lastMessage={},nil,nil
   for _=1,5000 do
     p:advance(commands)
     local message
-    commands,message,completed=controller:calibrate(p:sample())
+    commands,message,completed=controller:calibrate(p:sample()); lastMessage=message
     assert(commands,message)
     if completed then break end
   end
-  assert(completed and A.validBraking(completed.braking),'Eight automatic stopping tests must produce a valid measured model')
+  assert(completed and A.validBraking(completed.braking),('Eight automatic stopping tests must produce a valid measured model: index %s phase %s time %.1f: %s'):format(tostring(controller.job and controller.job.index),tostring(controller.job and controller.job.phase),p.t,tostring(lastMessage)))
   assert(completed.braking.height==227 and completed.braking.pressure==p.pressure,'Brake calibration must retain live height and pressure')
   assert(controller.profile==profiles[i] and profiles[i].braking==nil,'Measuring brakes must not overwrite the working profile before persistence succeeds')
   for _,d in ipairs(completed.braking.directions) do assert(#d.runs==2 and d.force>0 and d.delay>=.05) end
@@ -640,6 +640,13 @@ do
   assert(paused and c2.job==j2 and j2.index==2 and j2.runs[1].saved and j2.interrupted,'Invalid yaw during a GPS jump must pause the current stop and keep prior records')
   local recovered={}; for k,v in pairs(s) do recovered[k]=v end; recovered.t=.6
   assert(c2:calibrate(recovered) and c2.job==j2 and j2.phase=='SETTLE' and j2.index==2 and j2.runs[1].saved,'Navigation recovery must resume the interrupted brake test without resetting its count')
+  local expected={{1,0},{-1,0},{0,1},{0,-1},{1,0},{-1,0},{0,1},{0,-1}}
+  for i,d in ipairs(expected) do
+    local ci=A.new(names,profiles[1]); assert(ci:beginBraking(s)); ci.job.index=i; ci.job.stable=0; ci.job.at=0
+    local sample={}; for k,v in pairs(s) do sample[k]=v end; sample.t=2.1
+    assert(ci:calibrate(sample) and ci.job.phase=='ACCEL','Each brake pass must advance into its requested direction')
+    assert(math.abs(ci.job.dx-d[1])<1e-9 and math.abs(ci.job.dz-d[2])<1e-9,'Brake passes must alternate direction and repeat the same order at the second speed')
+  end
   c:cancel(); assert(c.profile==p and not c.job,'Canceling brake calibration must retain the previous saved braking profile')
   assert(A.new(names,p).profile.braking==p.braking,'Saved braking data must be accepted when reloading the autopilot profile')
   assert(not c:beginBraking(s,{validated=false}),'An incomplete survey must not bypass braking calibration validation')

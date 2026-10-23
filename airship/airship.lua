@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.5"
+local AIRSHIP_BUILD = "1.7.6"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -404,7 +404,7 @@ local Autopilot = (function()
     local b={version=1,pressure=j.pressure,height=j.height,heightMin=j.heightMin,heightMax=j.heightMax,directions={}}
     for direction=1,4 do
       local n,x,y,period,cxx,cxy=0,0,0,0,0,0
-      for i=(direction-1)*2+1,direction*2 do
+      for _,i in ipairs({direction,direction+4}) do
         for _,s in ipairs(j.runs[i].coast) do cxx=cxx+s.x^2; cxy=cxy+s.x*s.y end
         for _,s in ipairs(j.runs[i].samples) do
           n=n+1; x=x+s.x; y=y+s.y; period=period+s.dt
@@ -415,7 +415,7 @@ local Autopilot = (function()
       local force=(y-drag*x)/n
       if not finite(force) or force<.01 or force>200 then return nil,"Measured reverse thrust is invalid; previous calibration kept." end
       local d={force=force,drag=drag,delay=.05,maxSpeed=0,sampleDt=period/n,runs={}}
-      for i=(direction-1)*2+1,direction*2 do
+      for _,i in ipairs({direction,direction+4}) do
         local r=j.runs[i]
         local physical=A.stoppingDistance({force=force,drag=drag*r.pressure/j.pressure,delay=0},r.speed)
         d.delay=math.max(d.delay,(r.distance-physical)/r.speed+d.sampleDt*.5)
@@ -453,11 +453,11 @@ local Autopilot = (function()
           j.candidate.braking=b; self.job=nil; return {},nil,j.candidate
         end
         local directions={{1,0},{-1,0},{0,1},{0,-1}}
-        local d=directions[math.ceil(j.index/2)]
+        local d=directions[(j.index-1)%4+1]
         local c,ss=math.cos(j.heading),math.sin(j.heading)
         j.dx,j.dz=c*d[1]+ss*d[2],-ss*d[1]+c*d[2]
         j.goal={x=s.x+j.dx*10000,z=s.z+j.dz*10000}
-        j.targetSpeed=math.max(2,A.cruiseSpeed(j.candidate)*(j.index%2==1 and 1 or 2))
+        j.targetSpeed=math.max(2,A.cruiseSpeed(j.candidate)*(j.index<=4 and 1 or 2))
         j.phase="ACCEL"; j.at=s.t; j.history={}; self:reset(j.heading)
       elseif s.t-j.at>60 then j.interrupted=true; return {},"BRAKE CAL paused; cannot settle yet. Completed stops kept." end
       return commands,("BRAKE CAL settling | %d/8 recorded | %.2f b/s"):format(j.index-1,speed)
