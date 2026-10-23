@@ -653,6 +653,8 @@ do
     local sample={}; for k,v in pairs(s) do sample[k]=v end; sample.t=2.1
     assert(ci:calibrate(sample) and ci.job.phase=='ACCEL','Each brake pass must advance into its requested direction')
     assert(math.abs(ci.job.dx-d[1])<1e-9 and math.abs(ci.job.dz-d[2])<1e-9,'Brake passes must alternate direction and repeat the same order at the second speed')
+    assert(math.abs(ci.job.targetSpeed-math.max(2,A.cruiseSpeed(ci.job.candidate)*(i<=4 and .5 or 1)))<1e-9,
+      'Brake calibration should use a shorter half-cruise first pass and stop the second pass at cruise speed')
   end
   c:cancel(); assert(c.profile==p and not c.job,'Canceling brake calibration must retain the previous saved braking profile')
   assert(A.new(names,p).profile.braking==p.braking,'Saved braking data must be accepted when reloading the autopilot profile')

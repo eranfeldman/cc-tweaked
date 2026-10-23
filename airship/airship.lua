@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.8"
+local AIRSHIP_BUILD = "1.7.9"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -458,7 +458,7 @@ local Autopilot = (function()
         local c,ss=math.cos(j.heading),math.sin(j.heading)
         j.dx,j.dz=c*d[1]+ss*d[2],-ss*d[1]+c*d[2]
         j.goal={x=s.x+j.dx*10000,z=s.z+j.dz*10000}
-        j.targetSpeed=math.max(2,A.cruiseSpeed(j.candidate)*(j.index<=4 and 1 or 2))
+        j.targetSpeed=math.max(2,A.cruiseSpeed(j.candidate)*(j.index<=4 and .5 or 1))
         j.phase="ACCEL"; j.at=s.t; j.history={}; self:reset(j.heading)
       elseif s.t-j.at>60 then j.interrupted=true; return {},"BRAKE CAL paused; cannot settle yet. Completed stops kept." end
       return commands,("BRAKE CAL settling | %d/8 recorded | %.2f b/s"):format(j.index-1,speed)
