@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.20"
+local AIRSHIP_BUILD = "1.7.21"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -954,6 +954,8 @@ findAvionics = function(kind)
     end
   end
 end
+local seatControl = {}
+do
 local function findAvionicsAll(kind)
   local found = {}
   local function add(name, device)
@@ -992,6 +994,8 @@ local function findAvionicsAll(kind)
   local devices = {}
   for _, device in pairs(found) do devices[#devices + 1] = device end
   return devices
+end
+seatControl.sensors = findAvionicsAll("laser_sensor")
 end
 monitor = monitor or findAvionics("monitor")
 local monitorName
@@ -1055,12 +1059,11 @@ print("Discovering avionics...")
 local altitudeSensor = findAvionics("altitude_sensor")
 local navigationTable = findAvionics("navigation_table")
 local gimbalSensor = findAvionics("gimbal_sensor")
-local sequencedGearshift = findAvionics("Create_SequencedGearshift") or findAvionics("sequenced_gearshift")
-local groundSensors = findAvionicsAll("laser_sensor")
+seatControl.gearshift = findAvionics("Create_SequencedGearshift") or findAvionics("sequenced_gearshift")
 local chatBox = peripheral.find("chat_box") or peripheral.find("chatBox") or findAvionics("chat_box") or findAvionics("chatBox")
 if not chatBox then print("Chat commands unavailable: connect an Advanced Peripherals chat box") end
-if not sequencedGearshift then print("Seat commands unavailable: connect a Create Sequenced Gearshift") end
-print(("Chat Box: %s | Sequenced Gearshift: %s | Ground laser sensors: %d"):format(chatBox and "found" or "missing", sequencedGearshift and "found" or "missing", #groundSensors))
+if not seatControl.gearshift then print("Seat commands unavailable: connect a Create Sequenced Gearshift") end
+print(("Chat Box: %s | Sequenced Gearshift: %s | Ground laser sensors: %d"):format(chatBox and "found" or "missing", seatControl.gearshift and "found" or "missing", #seatControl.sensors))
 print("Setting up display...")
 if directGpuEnabled then setupDirectGpu() else directGpuError = "DirectGPU paused for stability; using CC monitor" end
 print("Building controls...")
@@ -1073,7 +1076,7 @@ screenWidth, screenHeight = term.getSize()
 local compact = screenWidth < 49 or screenHeight < 19
 local position, target, altitude, mode = nil, nil, nil, "STARTING"
 local autopilotStartedAt, autopilotReachedAt
-local chatNotice, chatNoticeUntil
+local chatNotice, chatNoticeUntil, fullCalibration
 local function nearestCardinalHeading(heading)
   local quarterTurn = math.pi / 2
   return (math.floor(heading / quarterTurn + .5) % 4) * quarterTurn
@@ -1083,17 +1086,17 @@ local burnerCommand, vectorX, vectorY, power = burner, 0, 0, 0
 local burnerSlewPerSecond = 6
 local calibrated = fs.exists("airship-calibrated")
 local running, manualBurner, burnerSweep, calibrationRunning = true, nil, nil, false
-local seatMoveBusy, seatLoweredBy = false, nil
+seatControl.busy, seatControl.loweredBy = false, nil
 if fs.exists("airship-seat-distance.cfg") then
   local file = fs.open("airship-seat-distance.cfg", "r")
   local saved = file and tonumber(file.readAll())
   if file then file.close() end
-  if saved and saved > 0 and saved == math.floor(saved) then seatLoweredBy = saved end
+  if saved and saved > 0 and saved == math.floor(saved) then seatControl.loweredBy = saved end
 end
-local function getGroundClearance()
-  if #groundSensors ~= 3 then return nil, "need 3 laser sensors; found " .. #groundSensors end
+seatControl.getGroundClearance = function()
+  if #seatControl.sensors ~= 3 then return nil, "need 3 laser sensors; found " .. #seatControl.sensors end
   local nearest
-  for i, sensor in ipairs(groundSensors) do
+  for i, sensor in ipairs(seatControl.sensors) do
     local ok, distance = pcall(sensor.getClosestHitDistance)
     yieldComputer()
     if not ok or type(distance) ~= "number" or distance ~= distance or distance < 0 or distance == math.huge then
@@ -1103,7 +1106,7 @@ local function getGroundClearance()
   end
   return nearest
 end
-local function runSeatCommand(command, username)
+seatControl.runCommand = function(command, username)
   local function reply(message, ok)
     chatNotice = (ok and "CHAT OK: " or "CHAT ERROR: ") .. message
     chatNoticeUntil = os.clock() + 8
@@ -1112,41 +1115,41 @@ local function runSeatCommand(command, username)
       yieldComputer()
     end
   end
-  if seatMoveBusy then reply("Seat pulley is already moving.", false); return end
-  if not sequencedGearshift then reply("Connect the Create Sequenced Gearshift to the peripheral hub.", false); return end
+  if seatControl.busy then reply("Seat pulley is already moving.", false); return end
+  if not seatControl.gearshift then reply("Connect the Create Sequenced Gearshift to the peripheral hub.", false); return end
   if fullCalibration or (mode ~= "HOLDING ALTITUDE" and mode ~= "DESTINATION REACHED") then
     reply("Hold the ship stationary before moving the seats.", false); return
   end
-  local isOk, moving = pcall(sequencedGearshift.isRunning)
+  local isOk, moving = pcall(seatControl.gearshift.isRunning)
   yieldComputer()
   if not isOk or moving then reply("Sequenced Gearshift is busy or unavailable.", false); return end
   local distance, modifier, clearance
   if command == "seat down" then
-    if seatLoweredBy then reply("Seats are already lowered; use `seat up` first.", false); return end
+    if seatControl.loweredBy then reply("Seats are already lowered; use `seat up` first.", false); return end
     local failure
-    clearance, failure = getGroundClearance()
+    clearance, failure = seatControl.getGroundClearance()
     if not clearance then reply(failure, false); return end
     distance = math.floor(clearance - 2)
     if distance < 1 then reply(("Closest ground reading is %.2f blocks; seats will not move."):format(clearance), false); return end
     modifier = 1
   else
-    if not seatLoweredBy then reply("No saved seat lowering distance; use `seat down` first.", false); return end
-    distance, modifier = seatLoweredBy, -1
+    if not seatControl.loweredBy then reply("No saved seat lowering distance; use `seat down` first.", false); return end
+    distance, modifier = seatControl.loweredBy, -1
   end
-  seatMoveBusy = true
-  local moveOk, moveError = pcall(sequencedGearshift.move, distance, modifier)
+  seatControl.busy = true
+  local moveOk, moveError = pcall(seatControl.gearshift.move, distance, modifier)
   yieldComputer()
-  if not moveOk then seatMoveBusy = false; reply("Gearshift move failed: " .. tostring(moveError), false); return end
+  if not moveOk then seatControl.busy = false; reply("Gearshift move failed: " .. tostring(moveError), false); return end
   while running do
-    local checkOk, stillMoving = pcall(sequencedGearshift.isRunning)
+    local checkOk, stillMoving = pcall(seatControl.gearshift.isRunning)
     yieldComputer()
-    if not checkOk then seatMoveBusy = false; reply("Could not read gearshift status: " .. tostring(stillMoving), false); return end
+    if not checkOk then seatControl.busy = false; reply("Could not read gearshift status: " .. tostring(stillMoving), false); return end
     if not stillMoving then break end
     sleep(.1)
   end
-  if not running then seatMoveBusy = false; return end
+  if not running then seatControl.busy = false; return end
   if command == "seat down" then
-    seatLoweredBy = distance
+    seatControl.loweredBy = distance
     local file = fs.open("airship-seat-distance.cfg", "w")
     if file then
       file.write(tostring(distance)); file.close()
@@ -1155,15 +1158,15 @@ local function runSeatCommand(command, username)
       reply(("Seats lowered %d blocks, but the return distance could not be saved; keep the controller running."):format(distance), false)
     end
   else
-    seatLoweredBy = nil
+    seatControl.loweredBy = nil
     if fs.exists("airship-seat-distance.cfg") then fs.delete("airship-seat-distance.cfg") end
     reply(("Seats raised %d blocks."):format(distance), true)
   end
-  seatMoveBusy = false
+  seatControl.busy = false
 end
 local navNames={}; for name in pairs(thrusters) do navNames[#navNames+1]=name end; table.sort(navNames)
 local navController=Autopilot.new(navNames)
-local autopilotCommands, fullCalibration, autopilotNotice, brakeCalibrationActive
+local autopilotCommands, autopilotNotice, brakeCalibrationActive
 local autopilotNoticeColor=colors.orange
 local flightRecording
 local flightLogDirectory="flight logs"
@@ -2782,7 +2785,7 @@ local ok, err = pcall(function()
       local command = type(message) == "string" and message:gsub("^%s*%$", ""):match("^%s*(.-)%s*$"):lower() or ""
       if type(username) == "string" and username:lower() == "pro_hacker_noob" then
         if command == "seat up" or command == "seat down" then
-          runSeatCommand(command, username)
+          seatControl.runCommand(command, username)
         else
           chatNotice, chatNoticeUntil = "CHAT RX: use `seat up` or `seat down`", os.clock() + 8
         end
