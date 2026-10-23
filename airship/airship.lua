@@ -1196,7 +1196,7 @@ local function loadBrakeCheckpoint(model,isPending)
         for i=1,value.index-1 do
           local run=value.runs[i]
           if type(run)~="table" or not number(run.speed) or run.speed<=0 or not number(run.distance) or run.distance<0
-            or not number(run.pressure) or run.pressure<=.001 or not number(run.height) or type(run.samples)~="table" or #run.samples<2 or type(run.coast)~="table" or #run.coast==0 then valid=false; break end
+            or not number(run.pressure) or run.pressure<=.001 or not number(run.height) or type(run.samples)~="table" or type(run.coast)~="table" or #run.coast==0 then valid=false; break end
           for _,sample in ipairs(run.samples) do
             if type(sample)~="table" or not number(sample.x) or sample.x<=0 or not number(sample.y) or sample.y<0 or not number(sample.dt) or sample.dt<=0 then valid=false; break end
           end

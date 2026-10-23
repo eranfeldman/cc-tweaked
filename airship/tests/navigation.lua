@@ -726,11 +726,12 @@ do
   env.fs.delete=function(path) files[path]=nil end
   env.fs.move=function(from,to) assert(files[from]~=nil); files[to]=files[from]; files[from]=nil end
   local clear,save,load=assert(load(helpers..'\nreturn clearBrakeCheckpoint,saveBrakeCheckpoint,loadBrakeCheckpoint','@brake-checkpoint','t',env))()
-  local run={speed=8,distance=12,pressure=.85,height=227,samples={{x=3,y=.5,dt=.2},{x=2,y=.4,dt=.2}},coast={{x=4,y=.1}}}
+  local run={speed=8,distance=12,pressure=.85,height=227,samples={{x=3,y=.5,dt=.2}},coast={{x=4,y=.1}}}
   local job={candidate=profiles[1],pending=false,index=2,runs={[1]=run},pressure=.85,height=227,heightMin=226,heightMax=228,heading=.4}
   save(job)
   local restored=load(profiles[1],false)
-  assert(restored and restored.index==2 and restored.runs[1].distance==12,'A settled brake stop must survive serialization and restore with its count')
+  assert(restored and restored.index==2 and restored.runs[1].distance==12 and #restored.runs[1].samples==1,
+    'A settled brake stop with one valid braking sample must survive serialization and restore with its count')
   objects[files['airship-brake-checkpoint.cfg']].version=1
   assert(not load(profiles[1],false),'Old brake checkpoints must be discarded after changing sample collection')
   save(job)
