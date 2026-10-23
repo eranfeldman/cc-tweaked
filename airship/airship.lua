@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.23"
+local AIRSHIP_BUILD = "1.7.24"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1106,13 +1106,16 @@ seatControl.getGroundClearance = function()
   local nearest
   for i, sensor in ipairs(seatControl.sensors) do
     local hitOk, hasHit = pcall(sensor.hasHit)
-    local ok, distance = pcall(sensor.getDistance)
     yieldComputer()
-    if not hitOk or not hasHit or not ok or type(distance) ~= "number" or distance ~= distance or distance < 0 or distance == math.huge then
-      return nil, "optical sensor " .. i .. " has no ground hit; point it down and check its range"
+    if hitOk and hasHit then
+      local ok, distance = pcall(sensor.getDistance)
+      yieldComputer()
+      if ok and type(distance) == "number" and distance == distance and distance >= 0 and distance < math.huge then
+        nearest = nearest and math.min(nearest, distance) or distance
+      end
     end
-    nearest = nearest and math.min(nearest, distance) or distance
   end
+  if not nearest then return nil, "no optical sensor sees ground; point sensors down and check their range" end
   return nearest
 end
 seatControl.runCommand = function(command, username)
