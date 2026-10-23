@@ -226,6 +226,7 @@ local function renderFixture(tab)
   env.learnedHover, env.gpuButtons = {}, {{x=1,y=1,w=60,h=35,label="FLIGHT",color={1,2,3}}}
   env.savedHoverPoints = function() return {} end
   env.navigationReadout = function() return 0, nil, "--" end
+  env.calibrationReadout = function() return nil end
   local render = assert(load(helper .. "\n" .. layout .. "\n" .. renderer .. "\nreturn renderDirectMonitor", "@renderer", "t", env))()
   return env, run, render, counts
 end

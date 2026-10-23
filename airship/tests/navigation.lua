@@ -437,6 +437,21 @@ do
   assert(j.overAt==nil and j.legStart.x==0,'A navigation gap must preserve run-up geometry but reset the overshoot duration evidence')
   s.t=9.2; c:calibrate(s)
   assert(j.overshoot<=.5,'Time without navigation samples must not count as sustained overshoot')
+  c,j,s=fixture(); s.t=.2; s.x=11.9; c:calibrate(s)
+  s.t=.6; s.x=10.6; c:calibrate(s)
+  assert(math.abs(j.overshoot-1.9)<1e-8,'Confirming sustained overshoot must retain its initial peak, not only the later smaller sample')
+  for _,case in ipairs({{0,0,10,0},{0,0,-10,0},{0,0,0,-10},{1000000,-2000000,1000030,-1999960}}) do
+    c,j,s=fixture()
+    j.legStart={x=case[1],z=case[2]}; j.goals[1]={x=case[3],z=case[4]}
+    local dx,dz=case[3]-case[1],case[4]-case[2]; local len=math.sqrt(dx*dx+dz*dz); dx,dz=dx/len,dz/len
+    s.x,s.z=case[3]+dx*1.2-dz*9,case[4]+dz*1.2+dx*9
+    s.t=.2; c:calibrate(s); s.t=.6; c:calibrate(s)
+    assert(math.abs(j.overshoot-1.2)<1e-7 and math.abs(j.cross-9)<1e-7 and math.abs(j.remaining+1.2)<1e-7,'Overshoot must be signed along the leg, independent of sideways distance, heading and world origin')
+    c,j,s=fixture(); j.legStart={x=case[1],z=case[2]}; j.goals[1]={x=case[3],z=case[4]}
+    s.x,s.z=case[3]-dx*2-dz*9,case[4]-dz*2+dx*9
+    s.t=.2; c:calibrate(s); s.t=.6; c:calibrate(s)
+    assert(j.overshoot==0 and math.abs(j.remaining-2)<1e-7,'Being off the route before the destination must not count as overshoot')
+  end
   print('PASS: per-test retries retain completed legs, repeat the full run-up, finish once, keep cruise speed, and reject sustained overshoot')
 end
 
@@ -521,14 +536,24 @@ for i=1,3 do
     local braking=completed.braking
     assert(controller:resumeVerification(p:sample(),completed) and controller.job.phase=='VERIFY')
     completed=nil; commands={}
+    local travelled,direct,truthOvershoot,previousLeg=0,0,0,nil
     for _=1,10000 do
+      local j=controller.job; local goal=j.goals[j.leg]
+      local dx,dz=goal.x-j.legStart.x,goal.z-j.legStart.z; local length=math.sqrt(dx*dx+dz*dz)
+      if previousLeg~=j.leg then direct=direct+length; previousLeg=j.leg end
+      local x,z=p.x,p.z
       p:advance(commands)
+      travelled=travelled+math.sqrt((p.x-x)^2+(p.z-z)^2)
+      if length>.01 then truthOvershoot=math.max(truthOvershoot,((p.x-goal.x)*dx+(p.z-goal.z)*dz)/length) end
       local message
       commands,message,completed=controller:calibrate(p:sample())
       assert(commands,message)
       if completed then break end
     end
     assert(completed and A.validProfile(completed,names) and completed.verification.tests==5 and completed.braking==braking,'All five flight tests must use the pending brake model and validate without repeating the survey')
+    assert(math.abs(completed.verification.overshoot-truthOvershoot)<.05,'Flight validation overshoot must agree with the simulated physical position')
+    assert(travelled<direct*1.02,'Five settled flight legs must follow their direct routes without significant detours')
+    print(('PASS: five-leg travelled/direct %.4f, scored/physical overshoot %.3f/%.3f'):format(travelled/direct,completed.verification.overshoot,truthOvershoot))
     print(('PASS: pending survey -> eight stops -> five flight tests, overshoot %.3f, retries %d'):format(completed.verification.overshoot,completed.verification.retries))
   end
   brakingProfiles[i]=completed
@@ -536,6 +561,12 @@ end
 
 do
   local p=brakingProfiles[1]
+  local steering=A.new(names,p); steering:reset(0)
+  local sample={t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=.85,rawVx=0,rawVz=0}
+  steering:navigate(sample,{x=100,z=0})
+  sample.t,sample.x,sample.z,sample.vx,sample.rawVx=.2,94,5,8,8
+  steering:navigate(sample,{x=100,z=0})
+  assert(steering.trace.braking=='REVERSE' and steering.trace.desired[2]<0 and steering.trace.targetCross<0,'Measured reverse braking must still steer back toward the straight route')
   local dense=A.brakeModel(p,1,0,.85,.2)
   local thin=A.brakeModel(p,1,0,.3,.2)
   local slow=A.brakeModel(p,1,0,.85,1)
@@ -626,6 +657,17 @@ do
   begin(); env.savePendingAutopilot=function() error('disk full') end
   s.t=.8; tick(true)
   assert(env.pendingAutopilot==pending and not env.navController.profile and env.burner==6 and env.autopilotNotice:match('could not save'),'Failed pending-brake saves must retain the checkpoint and keep normal AUTO unavailable')
+  local job={phase='VERIFY',candidate=pending,leg=1,retry=0,persistRevision=0,legStart={x=0,z=0},goals={{x=20,z=0},{x=-20,z=0}}}
+  env.navController={job=job,trace={validation={remaining=-1.2,cross=-9,overshoot=1.9}}}
+  env.navController.calibrate=function() job.leg=2; return {},'next test' end
+  env.fullCalibration,env.pendingRetry=true,0
+  env.recordFlight=function(_,goal,_,_,stage) env.recordedGoal,env.recordedStage=goal,stage end
+  s.t=1; tick(true)
+  assert(env.recordedGoal==job.goals[1] and env.recordedStage=='CAL_1_TRY_1','A boundary flight sample must retain its actual test destination and stage')
+  local readout=assert(source:match('(local function calibrationReadout%b()%s*.-)\nlocal function clamp'))
+  local details=assert(load(readout..'\nreturn calibrationReadout','@calibration-readout','t',env))()
+  assert(details()=='LEFT -1.2m  SIDE 9.0m  OVER 1.90m','Test display must distinguish signed distance, sideways error and confirmed overshoot')
+  env.fullCalibration=false; assert(details()==nil,'Finished calibration must not leave stale scoring in the flight display')
   print('PASS: brake button, held burner, working/pending saves, validation gate, checkpoint preservation and disk-full rollback')
 end
 

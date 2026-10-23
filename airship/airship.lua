@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.1"
+local AIRSHIP_BUILD = "1.7.2"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -177,9 +177,9 @@ local Autopilot = (function()
     for _,out in pairs(commands) do if out.power>1e-6 then out.x=out.x/out.power; out.y=out.y/out.power else out.x,out.y,out.power=0,0,0 end end
     return commands,residual
   end
-  function A:reverseCommands(s,dx,dz,p,fraction)
+  function A:reverseCommands(s,dx,dz,p,fraction,lateral)
     local strength=p.maxAccel*2*(fraction or 1)
-    local bx,bz=body(-dx*strength,-dz*strength,s.heading)
+    local bx,bz=body(-dx*strength+(lateral and lateral.x or 0),-dz*strength+(lateral and lateral.z or 0),s.heading)
     local yaw=clamp(.12*wrap((self.headingTarget or s.heading)-s.heading)-2.8*s.yaw,-.12,.12)
     local desired={bx,bz,yaw}
     local commands,residual=self:allocate(p,desired)
@@ -255,6 +255,8 @@ local Autopilot = (function()
     end
     local stopping=measured and A.stoppingDistance(measured,math.abs(closing)) or 0
     local measuredApproach=measured and (distance>3 or math.abs(closing)>1.5)
+    local targetCross=plannedSpeed(-cross,math.max(1,p.maxSpeed*.35))
+    local az=clamp((targetCross-crossSpeed)/response,-maxAccel*.7,maxAccel*.7)
     if measuredApproach then
       remaining=(goal.x-s.x)*r.tx+(goal.z-s.z)*r.tz
       local stopLimit=A.stoppingSpeed(measured,math.max(0,math.abs(remaining)-.35))
@@ -262,14 +264,14 @@ local Autopilot = (function()
       targetAlong=(remaining<0 and -1 or 1)*math.min(stopLimit,linearLimit)
       local error=(closing-targetAlong)*(closing<0 and -1 or 1)
       if math.abs(closing)>.1 and error>-.15 then
-        local speed=math.sqrt(s.vx^2+s.vz^2)
         local targetSpeed=math.abs(targetAlong)
         local slope=linearLimit<stopLimit and .6 or 1/(measured.delay+targetSpeed/(measured.force+measured.drag*targetSpeed))
         local decel=math.abs(closing)*slope+error/math.max(.5,dt*2)
         local fraction=clamp((decel-measured.drag*math.abs(closing))/measured.fullForce,0,1)
-        local commands,residual,desired=self:reverseCommands(s,s.vx/speed,s.vz/speed,p,fraction)
+        local direction=closing<0 and -1 or 1
+        local commands,residual,desired=self:reverseCommands(s,r.tx*direction,r.tz*direction,p,fraction,{x=-r.tz*az,z=r.tx*az})
         self.applied={desired[1]-residual[1],desired[2]-residual[2],desired[3]-residual[3]/p.yawWeight}
-        self.trace={cross=cross,remaining=remaining,targetAlong=targetAlong,targetCross=0,desired=desired,stoppingDistance=stopping,braking="REVERSE"}
+        self.trace={cross=cross,remaining=remaining,targetAlong=targetAlong,targetCross=targetCross,desired=desired,stoppingDistance=stopping,braking="REVERSE"}
         self.previous=copy(s)
         return commands,false
       end
@@ -282,12 +284,9 @@ local Autopilot = (function()
       approachSpeed=clamp(approachSpeed,-math.abs(remaining)*approachGain,math.abs(remaining)*approachGain)
       targetAlong=targetAlong*(1-approach)+approachSpeed*approach
     end
-    local targetCross=plannedSpeed(-cross,math.max(1,p.maxSpeed*.35))
     local braking=modern and alongSpeed*(targetAlong-alongSpeed)<0
     local ax=(targetAlong-alongSpeed)/(braking and distance>20 and response*.5 or response)
-    local az=(targetCross-crossSpeed)/response
     -- Reserve thrust for sideways recovery rather than bending the route toward the current position.
-    az=clamp(az,-maxAccel*.7,maxAccel*.7)
     ax=clamp(ax,-math.sqrt(maxAccel^2-az^2),math.sqrt(maxAccel^2-az^2))
     local bx,bz=body(ax*r.tx-az*r.tz,ax*r.tz+az*r.tx,s.heading)
     local blend=modern and clamp((distance-.15)/(.35+1.5*caution),0,1) or clamp((distance-3-caution)/(6+14*caution),0,1)
@@ -563,7 +562,7 @@ local Autopilot = (function()
       if speed>.35 then gains[3]=math.min(4,gains[3]*1.2)
       else gains[1]=clamp(gains[1]*1.25,.0001,.25); gains[2]=gains[1]*.02 end
     end
-    j.lastRetry=reason; j.returning=true; j.at=s.t; j.stable=nil; j.verifyWindow=nil
+    j.lastRetry=reason; j.returning=true; j.returnStart={x=s.x,z=s.z}; j.at=s.t; j.stable=nil; j.verifyWindow=nil
     controller:reset(j.heading)
     return {},("AUTO TEST %d/5 retry %d/5: %s; returning to start."):format(j.leg,j.retry+1,reason)
   end
@@ -577,7 +576,7 @@ local Autopilot = (function()
       j.interrupted=nil
       j.previous=copy(s)
       if j.phase=="VERIFY" then
-        j.at=s.t; j.stable=nil; j.verifyWindow={copy(s)}; j.overAt=nil; self:reset(j.heading)
+        j.at=s.t; j.stable=nil; j.verifyWindow={copy(s)}; j.overAt=nil; j.overPeak=nil; self:reset(j.heading); self.trace=nil
         return {},("Navigation gap; restarting auto test %d/5."):format(j.leg)
       end
       while #j.coasts>(j.index-1)*2 do table.remove(j.coasts) end
@@ -616,13 +615,21 @@ local Autopilot = (function()
       local goal=j.returning and j.legStart or destination
       local gx,gz=destination.x-j.legStart.x,destination.z-j.legStart.z
       local length=math.sqrt(gx*gx+gz*gz)
+      local start=j.returning and j.returnStart or j.legStart
+      local tx,tz=goal.x-start.x,goal.z-start.z
+      local span=math.sqrt(tx*tx+tz*tz)
+      j.remaining=span>.01 and ((goal.x-s.x)*tx+(goal.z-s.z)*tz)/span or 0
+      j.cross=span>.01 and ((s.z-start.z)*tx-(s.x-start.x)*tz)/span or 0
       if not j.returning and length>.01 then
         local over=((s.x-destination.x)*gx+(s.z-destination.z)*gz)/length
         j.overAt=over>.5 and (j.overAt or s.t) or nil
+        j.overPeak=over>.5 and math.max(j.overPeak or 0,over) or nil
         -- One noisy fix must not fail a run; sustained or large overshoot still does.
-        if over<=.5 or over>2 or j.overAt and s.t-j.overAt>=.3 then j.overshoot=math.max(j.overshoot,over) end
+        if over<=.5 or over>2 or j.overAt and s.t-j.overAt>=.3 then j.overshoot=math.max(j.overshoot,j.overPeak or over) end
       end
       local commands=self:navigate(s,goal,j.candidate)
+      self.trace=self.trace or {}
+      self.trace.validation={leg=j.leg,remaining=j.remaining,cross=j.cross,overshoot=j.overshoot}
       -- Measure net drift over several rocking cycles; bound each position so real excursions cannot pass.
       j.verifyWindow=j.verifyWindow or {}
       j.verifyWindow[#j.verifyWindow+1]=copy(s)
@@ -636,7 +643,7 @@ local Autopilot = (function()
       j.stable=settled and bounded and (j.stable or s.t) or nil
       if j.stable and s.t-j.stable>=1.5 and f.span>=3 then
         if j.returning then
-          j.returning=nil; j.at=s.t; j.stable=nil; j.verifyWindow=nil; j.overshoot=0; j.overAt=nil
+          j.returning=nil; j.at=s.t; j.stable=nil; j.verifyWindow=nil; j.overshoot=0; j.overAt=nil; j.overPeak=nil
           self:reset(j.heading)
           return {},("AUTO TEST %d/5 retry %d/5: %s; starting repeat."):format(j.leg,j.retry+1,j.lastRetry)
         elseif j.overshoot>.5 then
@@ -644,7 +651,7 @@ local Autopilot = (function()
         end
         j.maxOvershoot=math.max(j.maxOvershoot or 0,j.overshoot)
         j.leg=j.leg+1; j.at=s.t; j.stable=nil; j.verifyWindow=nil; j.legStart={x=s.x,z=s.z}
-        j.retry=0; j.overshoot=0; j.overAt=nil; j.lastRetry=nil
+        j.retry=0; j.overshoot=0; j.overAt=nil; j.overPeak=nil; j.lastRetry=nil
         if j.leg>#j.goals then
           j.candidate.validated=true
           j.candidate.verification={overshoot=j.maxOvershoot,retries=j.totalRetries or 0,tests=#j.goals,peakSpeed=j.peakSpeed}
@@ -658,7 +665,7 @@ local Autopilot = (function()
         local speed=math.sqrt(f.vx*f.vx+f.vz*f.vz)
         return retryLeg(self,j,s,("%stimeout %.1fm %.2fm/s yaw %.2f"):format(j.returning and "return " or "",math.sqrt(dx*dx+dz*dz),speed,math.abs(f.yaw)),false,speed)
       end
-      return commands,("%s %d/5 try %d/5%s | %.2fm %.2fm/s"):format(j.returning and "RETURN" or "AUTO TEST",math.min(j.leg,5),j.retry+1,j.lastRetry and " | "..j.lastRetry or "",math.sqrt(dx*dx+dz*dz),math.sqrt(f.vx^2+f.vz^2))
+      return commands,("%s %d/5 try %d/5%s | %.2fm %.2fm/s"):format(j.returning and "RETURN" or "AUTO TEST",math.min(j.leg,5),j.retry+1,j.lastRetry and " | "..j.lastRetry or "",rawDistance,math.sqrt(f.vx^2+f.vz^2))
     end
     local commands={}
     if j.phase=="WARMUP" or j.phase=="PULSE" then
@@ -1056,15 +1063,16 @@ local function recordFlight(s,goal,profile,commands,stage)
     if r.count==0 then
       file.writeLine("# Airship v"..AIRSHIP_BUILD.."; relative X/Z only; first 180 samples at no more than 2 Hz")
       file.writeLine("# profile "..textutils.serialize(profile,{compact=true}))
-      local columns="time,stage,x,z,goal_x,goal_z,vx,vz,heading,yaw,pressure,cross,remaining,target_along,target_cross,requested_ax,requested_az,requested_yaw,allocated_ax,allocated_az,allocated_yaw,stop_distance,braking,raw_vx,raw_vz"
+      local columns="time,stage,x,z,goal_x,goal_z,vx,vz,heading,yaw,pressure,cross,remaining,target_along,target_cross,requested_ax,requested_az,requested_yaw,allocated_ax,allocated_az,allocated_yaw,stop_distance,braking,raw_vx,raw_vz,test_remaining,test_cross,overshoot"
       for _,name in ipairs(navNames) do columns=columns..","..name.."_x,"..name.."_y,"..name.."_power" end
       file.writeLine(columns)
     end
     local trace=navController.trace or {}
+    local validation=trace.validation or {}
     local desired,applied=trace.desired or {},navController.applied or {}
     local values={s.t-r.t,stage,s.x-r.x,s.z-r.z,goal.x-r.x,goal.z-r.z,s.vx,s.vz,s.heading,s.yaw,s.pressure,
       trace.cross or 0,trace.remaining or 0,trace.targetAlong or 0,trace.targetCross or 0,
-      desired[1] or 0,desired[2] or 0,desired[3] or 0,applied[1] or 0,applied[2] or 0,applied[3] or 0,trace.stoppingDistance or 0,trace.braking or "FALLBACK",s.rawVx or s.vx,s.rawVz or s.vz}
+      desired[1] or 0,desired[2] or 0,desired[3] or 0,applied[1] or 0,applied[2] or 0,applied[3] or 0,trace.stoppingDistance or 0,trace.braking or "FALLBACK",s.rawVx or s.vx,s.rawVz or s.vz,validation.remaining or 0,validation.cross or 0,validation.overshoot or 0}
     for _,name in ipairs(navNames) do
       local command=commands and commands[name] or {}
       values[#values+1]=command.x or 0; values[#values+1]=command.y or 0; values[#values+1]=command.power or 0
@@ -1296,6 +1304,10 @@ local function navigationReadout()
   return speed,distance,etaText
 end
 
+local function calibrationReadout()
+  local v=fullCalibration and navController.job and navController.job.phase=="VERIFY" and navController.trace and navController.trace.validation
+  return v and ("LEFT %+.1fm  SIDE %.1fm  OVER %.2fm"):format(v.remaining,math.abs(v.cross),v.overshoot) or nil
+end
 local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 local function outputs(cooperative)
   local jobs={}
@@ -1487,10 +1499,13 @@ local function updateFlight(gpsFresh)
     end
     local brakingCalibration=navController.job.kind=="BRAKES"
     local brakingPending=brakingCalibration and navController.job.pending
+    local flightJob=navController.job.phase=="VERIFY" and navController.job
+    local flightGoal=flightJob and (flightJob.returning and flightJob.legStart or flightJob.goals[flightJob.leg])
+    local flightStage=flightJob and ("CAL_"..flightJob.leg.."_TRY_"..(flightJob.retry+1)..(flightJob.returning and "_RETURN" or ""))
     local commands,message,completed=navController:calibrate(sample)
     autopilotCommands=commands or {}
     local job=navController.job
-    if job and job.phase=="VERIFY" then recordFlight(sample,job.returning and job.legStart or job.goals[job.leg],job.candidate,commands,"CAL_"..job.leg.."_TRY_"..(job.retry+1)..(job.returning and "_RETURN" or "")) end
+    if flightGoal then recordFlight(sample,flightGoal,flightJob.candidate,commands,flightStage) end
     if job and job.kind=="BRAKES" then recordFlight(sample,job.goal or job.hold,job.candidate,commands,"CAL_BRAKE_"..job.index.."_"..job.phase) end
     if job and job.phase=="VERIFY" and (not pendingAutopilot or pendingRetry~=job.persistRevision) then
       local saved,err=pcall(savePendingAutopilot,job.candidate)
@@ -1781,8 +1796,9 @@ local function renderDirectMonitor()
     local detailY=barY+math.floor(h*.25); local detailH=l.buttonY-detailY-l.margin
     rect(l.margin,detailY,w-2*l.margin,detailH,panel)
     local detailFont=math.max(11,math.min(math.floor(h*.023),math.floor(detailH*.2)))
-    txt("SENSOR / SWEEP DETAIL",l.margin+14,detailY+8,detailFont,muted,"bold")
-    txt(("AVIONICS ALTITUDE  %s     PRESSURE  %s"):format(altitudeSensorHeight and ("%.1f"):format(altitudeSensorHeight) or "--",altitudeSensorPressure and ("%.3f"):format(altitudeSensorPressure) or "--"),l.margin+14,detailY+math.floor(detailH*.38),detailFont,ink)
+    local calDetails=calibrationReadout()
+    txt(calDetails and "FLIGHT TEST GEOMETRY" or "SENSOR / SWEEP DETAIL",l.margin+14,detailY+8,detailFont,muted,"bold")
+    txt(calDetails or ("AVIONICS ALTITUDE  %s     PRESSURE  %s"):format(altitudeSensorHeight and ("%.1f"):format(altitudeSensorHeight) or "--",altitudeSensorPressure and ("%.3f"):format(altitudeSensorPressure) or "--"),l.margin+14,detailY+math.floor(detailH*.38),detailFont,ink)
     local stable=burnerSweep and burnerSweep.stableSince and ("%.1f sec"):format(os.clock()-burnerSweep.stableSince) or "--"
     txt(("CURRENT OUTPUT  %d / 15     SETTLED  %s     GPS  %s"):format(burner,stable,position and "OK" or "LOST"),l.margin+14,detailY+math.floor(detailH*.68),detailFont,ink)
   else
@@ -2224,7 +2240,7 @@ local function refresh()
     sysText.text = ("Burner %d/15\nThrust %.1f/15\nHeading %s°"):format(burner, measuredThrust, shipHeading and ("%.0f"):format(math.deg(shipHeading)) or "--")
   end
   local speed,distance,eta=navigationReadout()
-  if navText then navText.text=(compact and "SPD %.1f  D %s  ETA %s" or "SPEED %.1f b/s   DISTANCE %s   ETA %s"):format(speed,distance and ("%.1f"):format(distance) or "--",eta) end
+  if navText then navText.text=calibrationReadout() or (compact and "SPD %.1f  D %s  ETA %s" or "SPEED %.1f b/s   DISTANCE %s   ETA %s"):format(speed,distance and ("%.1f"):format(distance) or "--",eta) end
   if not isFocused(heightInput) then heightInput.text = altitude and tostring(math.floor(altitude + .5)) or "" end
   if not isFocused(pidInput) then showGainValues() end
   if #savedAltitudeButtons > 0 then
@@ -2258,7 +2274,7 @@ local function refresh()
     monitorAlt.text = ("ALT %.1f / T %.0f   D %s   ETA %s"):format(position and position.y or 0, altitude or 0,distance and ("%.0f"):format(distance) or "--",eta)
     local savedCount = 0
     for _ in pairs(learnedHover) do savedCount = savedCount + 1 end
-    monitorSystem.text = ("B%d/15 T%.1f SPD %.1f GPS %s"):format(burner, measuredThrust,speed,position and "OK" or "LOST")
+    monitorSystem.text = calibrationReadout() or ("B%d/15 T%.1f SPD %.1f GPS %s"):format(burner, measuredThrust,speed,position and "OK" or "LOST")
     monitorStatus.text, monitorStatus.foreground = status.text, status.foreground
   end
   if directGpu and (gpuRedrawPending or os.clock() - lastGpuRender >= .025) then
