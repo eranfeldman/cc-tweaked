@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.4"
+local AIRSHIP_BUILD = "1.7.5"
 if (...) == "--upload-report" then
   local previous,output=term.current(),{}
   local capture=setmetatable({write=function(value)
@@ -438,7 +438,10 @@ local Autopilot = (function()
     local dt=s.t-j.previous.t
     local previous=j.previous
     j.previous=copy(s); j.heightMin=math.min(j.heightMin,s.y); j.heightMax=math.max(j.heightMax,s.y)
-    if math.abs(s.yaw)>.8 or s.pressure<=.001 then self.job=nil; return nil,"BRAKE CAL interrupted: yaw or pressure invalid; previous profile kept." end
+    if math.abs(s.yaw)>.8 or s.pressure<=.001 then
+      j.interrupted=true
+      return {} ,"BRAKE CAL paused: waiting for valid yaw and air pressure."
+    end
     local speed=math.sqrt(s.vx^2+s.vz^2)
     if j.phase=="SETTLE" then
       local commands=self:stopCommands(s,j.candidate,dt,previous)
@@ -446,7 +449,7 @@ local Autopilot = (function()
       if j.stable and s.t-j.stable>=2 then
         if j.index>8 then
           local b,err=fitBraking(j)
-          if not b then self.job=nil; return nil,err end
+          if not b then return {},err end
           j.candidate.braking=b; self.job=nil; return {},nil,j.candidate
         end
         local directions={{1,0},{-1,0},{0,1},{0,-1}}
@@ -456,7 +459,7 @@ local Autopilot = (function()
         j.goal={x=s.x+j.dx*10000,z=s.z+j.dz*10000}
         j.targetSpeed=math.max(2,A.cruiseSpeed(j.candidate)*(j.index%2==1 and 1 or 2))
         j.phase="ACCEL"; j.at=s.t; j.history={}; self:reset(j.heading)
-      elseif s.t-j.at>60 then self.job=nil; return nil,"BRAKE CAL could not settle; previous profile kept." end
+      elseif s.t-j.at>60 then j.interrupted=true; return {},"BRAKE CAL paused; cannot settle yet. Completed stops kept." end
       return commands,("BRAKE CAL settling | %d/8 recorded | %.2f b/s"):format(j.index-1,speed)
     end
     local along=s.vx*j.dx+s.vz*j.dz
@@ -466,7 +469,7 @@ local Autopilot = (function()
       local old=j.history[1]
       local plateau=s.t-old.t>=3.5 and along>=old.v*.98 and along<=old.v*1.03 and along>=2
       if along>=j.targetSpeed or plateau or s.t-j.at>=30 then
-        if along<2 then self.job=nil; return nil,"BRAKE CAL could not build measurable speed; previous profile kept." end
+        if along<2 then j.interrupted=true; return {},"BRAKE CAL paused; could not build measurable speed. Completed stops kept." end
         if j.phase=="ACCEL" then
           j.phase="COAST"; j.at=s.t; j.coast={}; j.coastV=along; j.coastPressure=s.pressure
         else
@@ -497,7 +500,7 @@ local Autopilot = (function()
       self:reset(j.heading)
       return {},("BRAKE CAL %d/8 recorded | %.1f b/s stopped in %.1f blocks"):format(j.index-1,r.speed,r.distance)
     end
-    if s.t-j.at>30 then self.job=nil; return nil,"BRAKE CAL could not stop; previous profile kept." end
+    if s.t-j.at>30 then j.interrupted=true; return {},"BRAKE CAL paused; stop timed out. Completed stops kept." end
     if j.phase=="TAIL" then return self:stopCommands(s,j.candidate,dt,previous),("BRAKE CAL %d/8 finishing stop | %.2f b/s | %.1f blocks"):format(j.index,speed,r.distance) end
     local commands,residual,desired=self:reverseCommands(s,j.dx,j.dz,j.candidate)
     self.applied={desired[1]-residual[1],desired[2]-residual[2],desired[3]-residual[3]/j.candidate.yawWeight}
@@ -1073,7 +1076,7 @@ local calibrated = fs.exists("airship-calibrated")
 local running, manualBurner, burnerSweep, calibrationRunning = true, nil, nil, false
 local navNames={}; for name in pairs(thrusters) do navNames[#navNames+1]=name end; table.sort(navNames)
 local navController=Autopilot.new(navNames)
-local autopilotCommands, fullCalibration, autopilotNotice
+local autopilotCommands, fullCalibration, autopilotNotice, brakeCalibrationActive
 local autopilotNoticeColor=colors.orange
 local flightRecording
 local function recordFlight(s,goal,profile,commands,stage)
@@ -1370,6 +1373,7 @@ local function stop()
   calibrationRunning = false
   autopilotNotice=nil
   navController:cancel(); autopilotCommands,fullCalibration=nil,nil
+  brakeCalibrationActive=false
   if burnerSweep then
     sweepSummary = ("Sweep canceled. Saved %d/11; skipped %d."):format(burnerSweep.saved, burnerSweep.skipped)
     sweepSummaryUntil = os.clock() + 15
@@ -1392,6 +1396,7 @@ local function requestProgramUpdate()
 end
 local function setFlightMode(nextMode)
   calibrationRunning = false
+  brakeCalibrationActive = false
   autopilotNotice=nil
   navController:cancel(); autopilotCommands,fullCalibration=nil,nil
   manualBurner = nil
@@ -1527,6 +1532,14 @@ local function updateFlight(gpsFresh)
     end
     local sample=navigationSample()
     if not navController.job then
+      if brakeCalibrationActive then
+        fullCalibration,calibrationRunning=false,false
+        brakeCalibrationActive=false
+        mode="HOLDING ALTITUDE"
+        autopilotNotice="BRAKE CAL paused without a live checkpoint; saved profile kept. Start BRAKE CAL to resume measurement."
+        autopilotNoticeColor=colors.orange
+        return
+      end
       local started,message=navController:begin(sample)
       autopilotCommands={}
       autopilotNotice=started and "Navigation ready; starting calibration." or message
@@ -1566,6 +1579,7 @@ local function updateFlight(gpsFresh)
     elseif not commands then autopilotNotice=message; autopilotNoticeColor=colors.red
     else autopilotNotice=message; autopilotNoticeColor=colors.orange end
     if completed or not commands then
+      brakeCalibrationActive=false
       fullCalibration,calibrationRunning=false,false
       mode="HOLDING ALTITUDE"; autopilotCommands={}; navController:reset(shipHeading)
     end
@@ -1924,6 +1938,7 @@ local function startFullCalibration()
     return
   end
   flightRecording=nil
+  brakeCalibrationActive=false
   if pendingAutopilot then
     local sample=navigationSample()
     local resumed,message=navController:resumeVerification(sample,pendingAutopilot)
@@ -1941,6 +1956,7 @@ local function startFullCalibration()
     return
   end
   navController:cancel()
+  brakeCalibrationActive=false
   manualBurner,burnerCommand=burner,burner
   vectorX,vectorY,power,target=0,0,0,nil
   autopilotCommands={}; fullCalibration,calibrationRunning=true,true
@@ -1957,6 +1973,7 @@ local function startBrakingCalibration()
   manualBurner,burnerCommand=burner,burner
   vectorX,vectorY,power,target=0,0,0,nil
   autopilotCommands={}; fullCalibration,calibrationRunning=true,true; flightRecording=nil
+  brakeCalibrationActive=true
   mode="BRAKE CAL"; autopilotNotice="BRAKE CAL: 8 automatic stops; current burner held. H cancels."
   autopilotNoticeColor=colors.orange; status.text=autopilotNotice; status.foreground=colors.orange
 end

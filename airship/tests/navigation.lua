@@ -633,6 +633,13 @@ do
   assert(c:beginBraking(s)); local j=c.job
   j.index=2; j.runs[1]={saved=true}; j.phase='BRAKE'; j.interrupted=true; s.t=.2
   assert(c:calibrate(s) and j.phase=='SETTLE' and j.index==2 and j.runs[1].saved,'GPS interruption must restart only the current stopping test')
+  local c2=A.new(names,profiles[1]); assert(c2:beginBraking(s)); local j2=c2.job
+  j2.index=2; j2.runs[1]={saved=true}; j2.phase='BRAKE'; j2.run={partial=true}
+  local bad={}; for k,v in pairs(s) do bad[k]=v end; bad.t=.4; bad.yaw=1
+  local paused=c2:calibrate(bad)
+  assert(paused and c2.job==j2 and j2.index==2 and j2.runs[1].saved and j2.interrupted,'Invalid yaw during a GPS jump must pause the current stop and keep prior records')
+  local recovered={}; for k,v in pairs(s) do recovered[k]=v end; recovered.t=.6
+  assert(c2:calibrate(recovered) and c2.job==j2 and j2.phase=='SETTLE' and j2.index==2 and j2.runs[1].saved,'Navigation recovery must resume the interrupted brake test without resetting its count')
   c:cancel(); assert(c.profile==p and not c.job,'Canceling brake calibration must retain the previous saved braking profile')
   assert(A.new(names,p).profile.braking==p.braking,'Saved braking data must be accepted when reloading the autopilot profile')
   assert(not c:beginBraking(s,{validated=false}),'An incomplete survey must not bypass braking calibration validation')
