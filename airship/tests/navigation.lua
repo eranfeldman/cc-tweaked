@@ -716,6 +716,10 @@ do
   save(job)
   local restored=load(profiles[1],false)
   assert(restored and restored.index==2 and restored.runs[1].distance==12,'A settled brake stop must survive serialization and restore with its count')
+  objects[files['airship-brake-checkpoint.cfg']].version=1
+  assert(not load(profiles[1],false),'Old brake checkpoints must be discarded after changing sample collection')
+  save(job)
+  assert(load(profiles[1],false),'The updated brake checkpoint format must still resume completed stops')
   local changed={}; for k,v in pairs(profiles[1]) do changed[k]=v end
   changed.channels={}; for i,ch in ipairs(profiles[1].channels) do local c={}; for k,v in pairs(ch) do c[k]=v end; c.b={ch.b[1],ch.b[2],ch.b[3]}; changed.channels[i]=c end
   changed.channels[1].b[1]=changed.channels[1].b[1]+.01

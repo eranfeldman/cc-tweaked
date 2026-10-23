@@ -37,7 +37,7 @@ Put a Create Redstone Link transmitter against the computer's **front** (monitor
 ## Cruise controller and upgrades
 ### v1.7.8 Record valid braking samples immediately
 
-BRAKE CAL now records each valid reverse-deceleration sample as soon as the ship slows, instead of ignoring the first 0.8 seconds. This avoids finishing a fast stop with too few measurements. GPS-invalid samples, readings without forward motion, and stops that fail the existing settling checks still do not count. If fitting still fails, the status identifies the direction and whether deceleration or coast samples were missing.
+BRAKE CAL now records each valid reverse-deceleration sample as soon as the ship slows, instead of ignoring the first 0.8 seconds. This avoids finishing a fast stop with too few measurements. GPS-invalid samples, readings without forward motion, and stops that fail the existing settling checks still do not count. The first v1.7.8 run discards any older brake checkpoint and repeats all eight stops; the 96-thruster survey and saved heights remain intact. If fitting still fails, the status identifies the direction and whether deceleration or coast samples were missing.
 
 ### v1.7.7 Persist completed brake stops
 

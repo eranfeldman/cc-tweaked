@@ -1149,7 +1149,7 @@ local function clearBrakeCheckpoint()
   end
 end
 local function saveBrakeCheckpoint(job)
-  local checkpoint={version=1,names=job.candidate.names,channels=job.candidate.channels,candidate=job.candidate,pending=job.pending,
+  local checkpoint={version=2,names=job.candidate.names,channels=job.candidate.channels,candidate=job.candidate,pending=job.pending,
     index=job.index,runs=job.runs,pressure=job.pressure,height=job.height,heightMin=job.heightMin,heightMax=job.heightMax,heading=job.heading}
   local path=brakeCheckpointPath
   local file=assert(fs.open(path..".tmp","w"),"Cannot checkpoint brake calibration")
@@ -1185,7 +1185,7 @@ local function loadBrakeCheckpoint(model,isPending)
       local ok,value=pcall(function()
         local file=assert(fs.open(path,"r")); local data=textutils.unserialize(file.readAll()); file.close(); return data
       end)
-      if ok and type(value)=="table" and type(model)=="table" and value.version==1 and value.pending==isPending
+      if ok and type(value)=="table" and type(model)=="table" and value.version==2 and value.pending==isPending
         and number(value.index) and value.index==math.floor(value.index)
         and value.index>=2 and value.index<=9 and type(value.runs)=="table" and type(value.names)=="table" and type(value.channels)=="table"
         and Autopilot.validCandidate(value.candidate,navNames) and value.candidate.gpsVersion==2
