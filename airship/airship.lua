@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.37"
+local AIRSHIP_BUILD = "1.7.38"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1191,17 +1191,11 @@ local chatNotice, chatNoticeUntil, fullCalibration
 Autopilot.privateChatReply = function(username, message)
   if not chatBox then return false, "chat box is unavailable" end
   if type(username) ~= "string" or username == "" then return false, "chat sender is unknown" end
-  local ok, sent, err = pcall(function()
-    if type(chatBox.sendMessageToPlayer) == "function" then
-      return chatBox.sendMessageToPlayer(message, username, "AIRSHIP")
-    elseif type(chatBox.sendMessage) == "function" then
-      return chatBox.sendMessage(message, {player=username, prefix="AIRSHIP"})
-    end
-    return nil, "chat box has no supported private-message method"
-  end)
-  if not ok then return false, tostring(sent) end
-  if sent ~= true then return false, tostring(err or "chat box did not confirm delivery") end
-  return true
+  local modernOk, modernSent, modernError = pcall(chatBox.sendMessage, message, {player=username, prefix="AIRSHIP"})
+  if modernOk and modernSent == true then return true end
+  local legacyOk, legacySent, legacyError = pcall(chatBox.sendMessageToPlayer, message, username, "AIRSHIP")
+  if legacyOk and legacySent == true then return true end
+  return false, tostring(legacyOk and (legacyError or modernError or "chat box did not confirm delivery") or legacySent)
 end
 local function nearestCardinalHeading(heading)
   local quarterTurn = math.pi / 2
