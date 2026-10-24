@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.39"
+local AIRSHIP_BUILD = "1.7.40"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1211,6 +1211,7 @@ local burnerSlewPerSecond = 6
 local calibrated = fs.exists("airship-calibrated")
 local running, manualBurner, burnerSweep, calibrationRunning = true, nil, nil, false
 seatControl.busy, seatControl.loweredBy = false, nil
+seatControl.travelCompensation = 30 -- observed pulley shortfall in blocks
 if fs.exists("airship-seat-distance.cfg") then
   local file = fs.open("airship-seat-distance.cfg", "r")
   local saved = file and tonumber(file.readAll())
@@ -1269,7 +1270,7 @@ seatControl.runCommand = function(command, username)
     local failure
     clearance, failure = seatControl.getGroundClearance()
     if not clearance then reply(failure, false); return end
-    distance = math.floor(clearance - 2)
+    distance = math.floor(clearance - 2 + seatControl.travelCompensation)
     if distance < 1 then reply(("Closest ground reading is %.2f blocks; seats will not move."):format(clearance), false); return end
     modifier = 2
   else
@@ -1294,7 +1295,7 @@ seatControl.runCommand = function(command, username)
     local file = fs.open("airship-seat-distance.cfg", "w")
     if file then
       file.write(tostring(distance)); file.close()
-      reply(("Seats lowered %d blocks; nearest sensor started at %.2f blocks, leaving at least 2."):format(distance, clearance), true)
+      reply(("Seats lowered %d blocks; applied the 30-block correction for the measured pulley shortfall (sensor clearance %.2f). Use seat up to reverse it."):format(distance, clearance), true)
     else
       reply(("Seats lowered %d blocks, but the return distance could not be saved; keep the controller running."):format(distance), false)
     end
