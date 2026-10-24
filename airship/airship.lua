@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.44"
+local AIRSHIP_BUILD = "1.7.45"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -2013,7 +2013,13 @@ local function updateFlight(gpsFresh)
       mode="FINAL TURN"
     elseif wasFinalTurn then
       mode=arrived and "DESTINATION REACHED" or "FINAL TURN"
-      if arrived and not autopilotReachedAt then autopilotReachedAt=sample.t end
+      if arrived and not autopilotReachedAt then
+        autopilotReachedAt=sample.t
+        if chatBox then
+          local sent, failure=Autopilot.privateChatReply("pro_hacker_noob",("Autopilot finished: X %.1f, Y %.1f, Z %.1f in %ds."):format(target.x,position.y,target.z,math.floor(sample.t-(autopilotStartedAt or sample.t))))
+          if not sent then chatNotice="PRIVATE MESSAGE FAILED: "..failure; chatNoticeUntil=os.clock()+8 end
+        end
+      end
     elseif wasReached then mode="DESTINATION REACHED"
     else mode="AUTOPILOT" end
   end
