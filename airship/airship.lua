@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.29"
+local AIRSHIP_BUILD = "1.7.30"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -2842,6 +2842,17 @@ local ok, err = pcall(function()
         command = command:gsub("^auto%s+pilot%s+", "autopilot ")
         if command == "seat up" or command == "seat down" then
           seatControl.runCommand(command, username)
+        elseif command == "heights" then
+          local points = savedHoverPoints()
+          if #points == 0 then
+            reply("No saved height calibration points.", false)
+          else
+            for first = 1, #points, 8 do
+              local entries = {}
+              for i = first, math.min(first + 7, #points) do entries[#entries + 1] = ("Y %.1f: burner %d"):format(points[i].height, points[i].level) end
+              reply(("Saved height calibration %d-%d/%d: %s"):format(first, math.min(first + 7, #points), #points, table.concat(entries, ", ")), true)
+            end
+          end
         elseif command == "location" then
           if position and lastGpsAt and os.clock() - lastGpsAt <= 2 then
             reply(("Current location: X %.1f, Y %.1f, Z %.1f"):format(position.x, position.y, position.z), true)
@@ -2866,13 +2877,13 @@ local ok, err = pcall(function()
         elseif command:match("^autopilot%s+") then
           local tokens, values = {}, {}
           for token in command:match("^autopilot%s+(.+)$"):gmatch("%S+") do tokens[#tokens + 1] = token end
-          local valid = (#tokens == 2 or #tokens == 3)
+          local valid = #tokens == 2
           for i, token in ipairs(tokens) do
             values[i] = tonumber(token)
             if not values[i] or values[i] ~= values[i] or math.abs(values[i]) == math.huge then valid = false end
           end
           if not valid then
-            reply("Use `autopilot X Z` or `autopilot X Y Z`.", false)
+            reply("Use `autopilot X Z`.", false)
           elseif calibrationRunning then
             reply("Wait for calibration to finish before starting autopilot.", false)
           elseif burnerSweep then
@@ -2882,18 +2893,17 @@ local ok, err = pcall(function()
           elseif not navController.profile then
             reply("Run FULL AUTO CAL before using autopilot.", false)
           else
-            local x, y, z = values[1], values[3] and values[2] or nil, values[3] or values[2]
+            local x, z = values[1], values[2]
             target = {x=x, z=z}
-            if y then altitude = y end
             engageAutopilot()
             if mode == "AUTOPILOT" then
-              reply(y and ("Autopilot engaged for X %.1f, Y %.1f, Z %.1f."):format(x, y, z) or ("Autopilot engaged for X %.1f, Z %.1f at the current height target."):format(x, z), true)
+              reply(("Autopilot engaged for X %.1f, Z %.1f at the current height target."):format(x, z), true)
             else
               reply(autopilotNotice or "Autopilot could not engage.", false)
             end
           end
         else
-          reply("Commands: autopilot X Z [or X Y Z], location, burner N, seat up, seat down.", false)
+          reply("Commands: autopilot X Z, location, heights, burner N, seat up, seat down.", false)
         end
       end
     end
