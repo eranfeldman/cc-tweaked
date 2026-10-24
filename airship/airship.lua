@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.40"
+local AIRSHIP_BUILD = "1.7.41"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1175,10 +1175,11 @@ local altitudeSensor = findAvionics("altitude_sensor")
 local navigationTable = findAvionics("navigation_table")
 local gimbalSensor = findAvionics("gimbal_sensor")
 seatControl.gearshift = findAvionics("Create_SequencedGearshift") or findAvionics("sequenced_gearshift")
+seatControl.pulley = findAvionics("Create_RopePulley")
 local chatBox = peripheral.find("chat_box") or peripheral.find("chatBox") or findAvionics("chat_box") or findAvionics("chatBox")
 if not chatBox then print("Chat commands unavailable: connect an Advanced Peripherals chat box") end
 if not seatControl.gearshift then print("Seat commands unavailable: connect a Create Sequenced Gearshift") end
-print(("Chat Box: %s | Sequenced Gearshift: %s | Ground optical sensors: %d"):format(chatBox and "found" or "missing", seatControl.gearshift and "found" or "missing", #seatControl.sensors))
+print(("Chat Box: %s | Sequenced Gearshift: %s | Rope Pulley: %s | Ground optical sensors: %d"):format(chatBox and "found" or "missing", seatControl.gearshift and "found" or "missing", seatControl.pulley and "found" or "missing", #seatControl.sensors))
 print("Setting up display...")
 if directGpuEnabled then setupDirectGpu() else directGpuError = "DirectGPU paused for stability; using CC monitor" end
 print("Building controls...")
@@ -1210,13 +1211,20 @@ local burnerCommand, vectorX, vectorY, power = burner, 0, 0, 0
 local burnerSlewPerSecond = 6
 local calibrated = fs.exists("airship-calibrated")
 local running, manualBurner, burnerSweep, calibrationRunning = true, nil, nil, false
-seatControl.busy, seatControl.loweredBy = false, nil
-seatControl.travelCompensation = 30 -- observed pulley shortfall in blocks
+seatControl.busy, seatControl.loweredBy, seatControl.loweredStartOffset = false, nil, nil
 if fs.exists("airship-seat-distance.cfg") then
   local file = fs.open("airship-seat-distance.cfg", "r")
-  local saved = file and tonumber(file.readAll())
+  local savedData = file and file.readAll()
   if file then file.close() end
-  if saved and saved > 0 and saved == math.floor(saved) then seatControl.loweredBy = saved end
+  local saved = tonumber(savedData)
+  if saved and saved > 0 and saved == math.floor(saved) then
+    seatControl.loweredBy, seatControl.loweredStartOffset = saved, 0
+  elseif savedData then
+    local ok, data = pcall(textutils.unserialize, savedData)
+    if ok and type(data) == "table" and tonumber(data.distance) and tonumber(data.startOffset) then
+      seatControl.loweredBy, seatControl.loweredStartOffset = tonumber(data.distance), tonumber(data.startOffset)
+    end
+  end
 end
 seatControl.getGroundClearance = function()
   if #seatControl.sensors < 3 then return nil, "need at least 3 Simulated optical sensors; found " .. #seatControl.sensors end
@@ -1258,51 +1266,108 @@ seatControl.runCommand = function(command, username)
   end
   if seatControl.busy then reply("Seat pulley is already moving.", false); return end
   if not seatControl.gearshift then reply("Connect the Create Sequenced Gearshift to the peripheral hub.", false); return end
+  if not seatControl.pulley then reply("Connect the seat's Create Rope Pulley as a Create_RopePulley peripheral through the hub; the controller needs its actual extension readback.", false); return end
   if fullCalibration or (mode ~= "HOLDING ALTITUDE" and mode ~= "DESTINATION REACHED") then
     reply("Hold the ship stationary before moving the seats.", false); return
   end
   local isOk, moving = pcall(seatControl.gearshift.isRunning)
   yieldComputer()
   if not isOk or moving then reply("Sequenced Gearshift is busy or unavailable.", false); return end
-  local distance, modifier, clearance
+  local distance, modifier, clearance, startOffset, targetOffset
+  local offsetOk, offset = pcall(seatControl.pulley.getOffset)
+  yieldComputer()
+  if not offsetOk or type(offset) ~= "number" or offset ~= offset or math.abs(offset) == math.huge then
+    reply("Could not read the seat rope pulley extension: " .. tostring(offset), false); return
+  end
+  startOffset = offset
   if command == "seat down" then
     if seatControl.loweredBy then reply("Seats are already lowered; use `seat up` first.", false); return end
     local failure
     clearance, failure = seatControl.getGroundClearance()
     if not clearance then reply(failure, false); return end
-    distance = math.floor(clearance - 2 + seatControl.travelCompensation)
+    distance = math.floor(clearance - 2)
     if distance < 1 then reply(("Closest ground reading is %.2f blocks; seats will not move."):format(clearance), false); return end
     modifier = 2
-  else
-    if not seatControl.loweredBy then reply("No saved seat lowering distance; use `seat down` first.", false); return end
-    distance, modifier = seatControl.loweredBy, -2
-  end
-  seatControl.busy = true
-  local moveOk, moveError = pcall(seatControl.gearshift.move, distance, modifier)
-  yieldComputer()
-  if not moveOk then seatControl.busy = false; reply("Gearshift move failed: " .. tostring(moveError), false); return end
-  if command == "seat down" then reply(("Seat lowering started: %.1f blocks clearance, moving %d blocks; ETA about %d seconds at 96 RPM."):format(clearance, distance, math.ceil(distance / 7.5)), true) end
-  while running do
-    local checkOk, stillMoving = pcall(seatControl.gearshift.isRunning)
+    targetOffset = startOffset + distance
+    local maxOk, maxLength = pcall(seatControl.pulley.getMaxLength)
     yieldComputer()
-    if not checkOk then seatControl.busy = false; reply("Could not read gearshift status: " .. tostring(stillMoving), false); return end
-    if not stillMoving then break end
-    sleep(.1)
-  end
-  if not running then seatControl.busy = false; return end
-  if command == "seat down" then
-    seatControl.loweredBy = distance
-    local file = fs.open("airship-seat-distance.cfg", "w")
-    if file then
-      file.write(tostring(distance)); file.close()
-      reply(("Seats lowered %d blocks; applied the 30-block correction for the measured pulley shortfall (sensor clearance %.2f). Use seat up to reverse it."):format(distance, clearance), true)
-    else
-      reply(("Seats lowered %d blocks, but the return distance could not be saved; keep the controller running."):format(distance), false)
+    if maxOk and type(maxLength) == "number" and maxLength > 0 and targetOffset > maxLength then
+      reply(("Target pulley extension %.1f exceeds its maximum %.1f blocks; no movement started."):format(targetOffset, maxLength), false); return
     end
   else
-    seatControl.loweredBy = nil
+    if not seatControl.loweredBy then reply("No saved seat lowering distance; use `seat down` first.", false); return end
+    distance, modifier = math.ceil(math.max(0, startOffset - (seatControl.loweredStartOffset or 0))), -2
+    targetOffset = seatControl.loweredStartOffset or 0
+    if distance < 1 then reply("Pulley is already at its saved raised position.", false); return end
+  end
+  seatControl.busy = true
+  if command == "seat down" then reply(("Seat lowering started: %.1f blocks clearance, target extension %.1f; ETA about %d seconds at 96 RPM."):format(clearance, targetOffset, math.ceil(distance / 7.5)), true) end
+  local commanded, currentOffset, moveFailure, reached = distance, startOffset, nil, false
+  local direction = modifier > 0 and 1 or -1
+  local totalCommanded = 0
+  for attempt = 1, 4 do
+    local moveOk, moveError = pcall(seatControl.gearshift.move, commanded, modifier)
+    yieldComputer()
+    if not moveOk then moveFailure = "Gearshift move failed: " .. tostring(moveError); break end
+    totalCommanded = totalCommanded + commanded
+    while running do
+      local checkOk, stillMoving = pcall(seatControl.gearshift.isRunning)
+      yieldComputer()
+      if not checkOk then moveFailure = "Could not read gearshift status: " .. tostring(stillMoving); break end
+      if not stillMoving then break end
+      sleep(.1)
+    end
+    if moveFailure or not running then break end
+    sleep(.1)
+    local readOk, actualOffset = pcall(seatControl.pulley.getOffset)
+    yieldComputer()
+    if not readOk or type(actualOffset) ~= "number" or actualOffset ~= actualOffset or math.abs(actualOffset) == math.huge then
+      moveFailure = "Could not read pulley extension after movement: " .. tostring(actualOffset); break
+    end
+    local progressed = (actualOffset - currentOffset) * direction
+    local remaining = (targetOffset - actualOffset) * direction
+    currentOffset = actualOffset
+    if remaining < -.5 then
+      moveFailure = ("Pulley passed target by %.1f blocks; stopped for safety."):format(-remaining)
+      break
+    elseif remaining <= .5 then
+      reached = true
+      break
+    elseif progressed <= .1 then
+      moveFailure = ("Gearshift stopped with %.1f blocks remaining and pulley offset unchanged."):format(remaining)
+      break
+    end
+    local ratio = progressed / commanded
+    if ratio < .2 or ratio > 1.5 then
+      moveFailure = ("Pulley travel ratio %.2f is outside correction range; %.1f blocks remain."):format(ratio, remaining)
+      break
+    end
+    commanded = math.ceil(remaining / ratio)
+  end
+  if not running then seatControl.busy = false; return end
+  if not reached then
+    if command == "seat down" and totalCommanded > 0 then
+      seatControl.loweredBy, seatControl.loweredStartOffset = totalCommanded, startOffset
+      local file = fs.open("airship-seat-distance.cfg", "w")
+      if file then file.write(textutils.serialize({distance=totalCommanded,startOffset=startOffset})); file.close() end
+    end
+    seatControl.busy = false
+    reply((moveFailure or "Pulley did not reach its requested extension after 4 measured moves.") .. (totalCommanded > 0 and " Partial position saved; use `seat up` to return." or ""), false)
+    return
+  end
+  if command == "seat down" then
+    seatControl.loweredBy, seatControl.loweredStartOffset = totalCommanded, startOffset
+    local file = fs.open("airship-seat-distance.cfg", "w")
+    if file then
+      file.write(textutils.serialize({distance=totalCommanded,startOffset=startOffset})); file.close()
+      reply(("Seats reached target pulley offset %.1f (sensor clearance %.1f); commanded %d blocks total. Use seat up to reverse it."):format(currentOffset, clearance, totalCommanded), true)
+    else
+      reply(("Seats lowered to offset %.1f, but the return distance could not be saved; keep the controller running."):format(currentOffset), false)
+    end
+  else
+    seatControl.loweredBy, seatControl.loweredStartOffset = nil, nil
     if fs.exists("airship-seat-distance.cfg") then fs.delete("airship-seat-distance.cfg") end
-    reply(("Seats raised %d blocks."):format(distance), true)
+    reply(("Seats returned to pulley offset %.1f."):format(currentOffset), true)
   end
   seatControl.busy = false
 end
