@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.43"
+local AIRSHIP_BUILD = "1.7.44"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -75,7 +75,7 @@ local Autopilot = (function()
     return (rates[1]*ux+rates[2]*uy)/(1-uz*uz)
   end
   function A.validProfile(p,names)
-    if type(p)~="table" or p.version~=1 or p.validated~=true or type(p.names)~="table" or #p.names~=#names or type(p.channels)~="table" or #p.channels~=#names*4 then return false end
+    if type(p)~="table" or p.version~=2 or p.validated~=true or type(p.names)~="table" or #p.names~=#names or type(p.channels)~="table" or #p.channels~=#names*4 then return false end
     for i,name in ipairs(names) do if p.names[i]~=name then return false end end
     for _,key in ipairs({"pressure","yawWeight","maxAccel","maxSpeed","delay"}) do if not finite(p[key]) or p[key]<=0 then return false end end
     if p.pressure>2 or p.yawWeight>30 or p.maxAccel>6 or p.maxSpeed>32 or p.delay>10 or type(p.drag)~="table" or type(p.gains)~="table" then return false end
@@ -475,7 +475,7 @@ local Autopilot = (function()
     return commands,("BRAKE CAL %d/8 full reverse | %.1f b/s | %.1f blocks"):format(j.index,along,r.distance)
   end
   function A:fit(job)
-    local p={version=1,gpsVersion=2,cruiseVersion=3,validationVersion=2,responseScale=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8,maxThrottle=throttleLimit}
+    local p={version=2,gpsVersion=2,cruiseVersion=3,validationVersion=2,responseScale=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8,maxThrottle=throttleLimit}
     for index,m in ipairs(job.measurements) do
       local response={}
       for i=1,3 do
