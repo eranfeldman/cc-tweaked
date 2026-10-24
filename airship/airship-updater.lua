@@ -1,4 +1,4 @@
-local updaterBuild = "1.3.6"
+local updaterBuild = "1.3.7"
 local apiUrl = "https://api.github.com/repos/eranfeldman/cc-tweaked/commits/main"
 local baseUrl = "https://raw.githubusercontent.com/eranfeldman/cc-tweaked/"
 local commitFile = "/airship-latest.json"
@@ -67,7 +67,7 @@ term.clear()
 term.setCursorPos(1, 1)
 print("Airship updater " .. updaterBuild)
 print("Resolving latest main commit...")
-local apiSource, err = download(apiUrl, commitFile, false)
+local apiSource, err = download(apiUrl .. "?refresh=" .. tostring(os.epoch("utc")), commitFile, false)
 if not apiSource then printError(err); return end
 local decoded, commit = pcall(textutils.unserializeJSON, apiSource)
 fs.delete(commitFile)

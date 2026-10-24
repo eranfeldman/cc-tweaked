@@ -13,14 +13,14 @@ In the computer terminal, install Basalt 2.5, download the updated controller be
 ```text
 wget run https://basalt.madefor.cc/2.5/install.lua minified
 wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship.lua airship.lua
-wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship-updater.lua?bootstrap=1.3.6 airship-updater.lua
+wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship-updater.lua?bootstrap=1.3.7 airship-updater.lua
 wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/pid-tuner.lua pid-tuner.lua
 airship.lua
 ```
 
 Or copy `airship.lua` into a file on the computer and run `airship.lua`. The computer needs wireless GPS access and all 24 `liquid_vector_thruster` peripherals. They can be connected directly or exposed by the wired peripheral hub; their peripheral names and number suffixes can vary. The controller finds them by peripheral type, including mixed direct and hub-connected devices, and stops with a clear count error unless it sees all 24. For accurate altitude readout and burner calibration, connect a Create: Avionics **Altitude Sensor** to the computer through the peripheral network. Height control still comes from burner amounts. Its peripheral type is `altitude_sensor`; the app detects it automatically and falls back to GPS altitude if it is absent.
 
-Install `airship-updater.lua` beside the controller. It validates and installs the controller, both diagnostics, the PID tuner, and itself from one GitHub commit. It keeps each previous copy as a `.bak`, leaves calibration and PID files in place, then launches the controller. To bootstrap the rollback updater from an older install, run `wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship-updater.lua?bootstrap=1.3.1 airship-updater-new.lua` then `airship-updater-new.lua`. The temporary bootstrap file can be deleted afterward. Height is controlled only by burner amounts from the saved calibration map.
+Install `airship-updater.lua` beside the controller. It validates and installs the controller, both diagnostics, the PID tuner, and itself from one GitHub commit. It keeps each previous copy as a `.bak`, leaves calibration and PID files in place, then launches the controller. To bootstrap the rollback updater from an older install, run `wget https://raw.githubusercontent.com/eranfeldman/cc-tweaked/main/airship/airship-updater.lua?bootstrap=1.3.7 airship-updater-new.lua` then `airship-updater-new.lua`. The temporary bootstrap file can be deleted afterward. Height is controlled only by burner amounts from the saved calibration map.
 
 To check that CC:Tweaked sees it, run `lua` and enter:
 
@@ -61,6 +61,10 @@ Sensors visible both in the computer's peripheral list and through a wired hub a
 ### v1.7.24 Seat lowering with partial sensor hits
 
 `seat down` now takes the minimum distance from sensors that currently see ground, and proceeds if at least one has a valid reading. It refuses only when none see ground. `seat up` still reverses the exact saved travel distance.
+
+### Updater v1.3.7 Always resolve a fresh main commit
+
+The updater adds a unique UTC timestamp to GitHub's main-commit API request to avoid reusing a stale cached commit SHA. Raw files are then downloaded from that exact commit.
 
 ### v1.7.31 Chat callback local-limit fix
 
