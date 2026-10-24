@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.47"
+local AIRSHIP_BUILD = "1.7.48"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1237,6 +1237,7 @@ seatControl.getGroundClearance = function()
   if #seatControl.sensors < 3 then return nil, "need at least 3 Simulated optical sensors; found " .. #seatControl.sensors end
   local nearest
   local activationError
+  local resetError
   for _, entry in ipairs(seatControl.sensors) do
     local ok, err = pcall(entry.device.setRange, 280)
     yieldComputer()
@@ -1256,9 +1257,22 @@ seatControl.getGroundClearance = function()
     end
   end
   for _, entry in ipairs(seatControl.sensors) do
-    pcall(entry.device.setRange, 1)
+    local resetOk = pcall(entry.device.setRange, 1)
     yieldComputer()
+    local rangeOk, range = pcall(entry.device.getRange)
+    yieldComputer()
+    if not resetOk or not rangeOk or tonumber(range) ~= 1 then
+      pcall(entry.device.setRange, 1)
+      yieldComputer()
+      sleep(.1)
+      local confirmOk, confirmed = pcall(entry.device.getRange)
+      yieldComputer()
+      if not confirmOk or tonumber(confirmed) ~= 1 then
+        resetError = resetError or ("could not restore sensor " .. entry.name .. " to range 1")
+      end
+    end
   end
+  if resetError then return nil, resetError end
   if activationError then return nil, "could not activate optical sensor range: " .. activationError end
   if not nearest then return nil, "no optical sensor sees ground; point sensors down and check their range" end
   return nearest
