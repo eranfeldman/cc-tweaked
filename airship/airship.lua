@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.42"
+local AIRSHIP_BUILD = "1.7.43"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -223,7 +223,7 @@ local Autopilot = (function()
       local braking=math.sqrt((brakeAccel*delay)^2+2*brakeAccel*gap)-brakeAccel*delay
       return (error<0 and -1 or 1)*math.min(limit,braking,gap*.7/response)
     end
-    local cruiseLimit=p.maxSpeed
+    local cruiseLimit=modern and math.huge or p.maxSpeed
     local targetAlong=plannedSpeed(remaining,cruiseLimit,3+9*caution)
     local rx,rz=body(r.tx,r.tz,s.heading)
     local closing=s.vx*r.tx+s.vz*r.tz
@@ -245,7 +245,7 @@ local Autopilot = (function()
       remaining=(goal.x-s.x)*r.tx+(goal.z-s.z)*r.tz
       local stopLimit=A.stoppingSpeed(measured,math.max(0,math.abs(remaining)-.35))
       local linearLimit=math.abs(remaining)*.6
-      targetAlong=(remaining<0 and -1 or 1)*math.min(stopLimit,linearLimit,p.maxSpeed)
+      targetAlong=(remaining<0 and -1 or 1)*math.min(stopLimit,linearLimit)
       local error=(closing-targetAlong)*(closing<0 and -1 or 1)
       if math.abs(closing)>.1 and error>-.15 then
         local targetSpeed=math.abs(targetAlong)
