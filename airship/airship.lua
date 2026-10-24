@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.32"
+local AIRSHIP_BUILD = "1.7.33"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -668,6 +668,41 @@ local Autopilot = (function()
   return A
 end)()
 -- END AUTOPILOT CORE
+
+-- Keep this dispatcher at chunk scope: CC:Tweaked counts enclosing closure locals against the 200-local limit.
+Autopilot.routeChat = function(dispatch, first, second, third)
+  local username, message = second, third
+  if type(first) == "string" and first:lower() == "pro_hacker_noob" then username, message = first, second end
+  if type(username) ~= "string" or username:lower() ~= "pro_hacker_noob" then return end
+  local command = type(message) == "string" and message:gsub("^%s*%$", ""):match("^%s*(.-)%s*$"):lower() or ""
+  command = command:gsub("^auto%s+pilot%s+", "autopilot ")
+  local request = {username=username, command=command}
+  if command:match("^burner%s+") then
+    request.value = tonumber(command:match("^burner%s+(.+)$"))
+    request.validBurner = request.value and request.value == math.floor(request.value) and request.value >= 0 and request.value <= 15
+  elseif command:match("^autopilot%s+") then
+    local values = {}
+    for token in command:match("^autopilot%s+(.+)$"):gmatch("%S+") do values[#values + 1] = tonumber(token) end
+    request.validCoordinates = #values == 2
+    for i = 1, #values do
+      if not values[i] or values[i] ~= values[i] or math.abs(values[i]) == math.huge then request.validCoordinates = false end
+    end
+    request.x, request.z = values[1], values[2]
+  end
+  dispatch(request)
+end
+
+Autopilot.sendHeightChat = function(points, reply)
+  if #points == 0 then
+    reply("No saved height calibration points.", false)
+  else
+    for first = 1, #points, 8 do
+      local entries = {}
+      for i = first, math.min(first + 7, #points) do entries[#entries + 1] = ("Y %.1f: burner %d"):format(points[i].height, points[i].level) end
+      reply(("Saved height calibration %d-%d/%d: %s"):format(first, math.min(first + 7, #points), #points, table.concat(entries, ", ")), true)
+    end
+  end
+end
 
 -- BEGIN GPS FIX CORE
 local FreshGPS=(function()
@@ -2821,90 +2856,64 @@ local ok, err = pcall(function()
       elseif key == keys.rightAlt then rightAltHeld = false end
     end
   end)
-  Autopilot.handleChatMessage = function(first, second, third)
-    -- Advanced Peripherals 0.8 sends (event, UUID, username, message, ...); older versions send (event, username, message, ...).
-    local username, message = second, third
-    if type(first) == "string" and first:lower() == "pro_hacker_noob" then username, message = first, second end
-    local command = type(message) == "string" and message:gsub("^%s*%$", ""):match("^%s*(.-)%s*$"):lower() or ""
-    if type(username) ~= "string" or username:lower() ~= "pro_hacker_noob" then return end
-    local function reply(text, ok)
-      chatNotice, chatNoticeUntil = (ok and "CHAT OK: " or "CHAT ERROR: ") .. text, os.clock() + 8
-      if chatBox and type(chatBox.sendMessageToPlayer) == "function" then
-        pcall(chatBox.sendMessageToPlayer, text, username, "AIRSHIP")
-        yieldComputer()
-      end
+  Autopilot.chatReply = function(username, text, ok)
+    chatNotice, chatNoticeUntil = (ok and "CHAT OK: " or "CHAT ERROR: ") .. text, os.clock() + 8
+    if chatBox and type(chatBox.sendMessageToPlayer) == "function" then
+      pcall(chatBox.sendMessageToPlayer, text, username, "AIRSHIP")
+      yieldComputer()
     end
-    command = command:gsub("^auto%s+pilot%s+", "autopilot ")
-    if command == "seat up" or command == "seat down" then
-      seatControl.runCommand(command, username)
-    elseif command == "heights" then
-      local points = savedHoverPoints()
-      if #points == 0 then
-        reply("No saved height calibration points.", false)
-      else
-        for first = 1, #points, 8 do
-          local entries = {}
-          for i = first, math.min(first + 7, #points) do entries[#entries + 1] = ("Y %.1f: burner %d"):format(points[i].height, points[i].level) end
-          reply(("Saved height calibration %d-%d/%d: %s"):format(first, math.min(first + 7, #points), #points, table.concat(entries, ", ")), true)
-        end
-      end
-    elseif command == "location" then
-      if position and lastGpsAt and os.clock() - lastGpsAt <= 2 then
-        reply(("Current location: X %.1f, Y %.1f, Z %.1f"):format(position.x, position.y, position.z), true)
-      else
-        reply("No fresh GPS location is available.", false)
-      end
-    elseif command:match("^burner%s+") then
-      local value = tonumber(command:match("^burner%s+(.+)$"))
-      if not value or value ~= math.floor(value) or value < 0 or value > 15 then
-        reply("Use `burner N` with a whole number from 0 to 15.", false)
-      elseif mode == "STOPPED" or calibrationRunning or fullCalibration or burnerSweep then
-        reply("Burner command unavailable while stopped, calibrating, or sweeping.", false)
-      else
-        local outputOk, outputError = pcall(redstone.setAnalogOutput, "front", value)
-        if outputOk then
-          manualBurner, burnerCommand, burner = value, value, value
-          reply(("Burner strength set to %d/15."):format(value), true)
+  end
+  Autopilot.chatDispatch = function(request)
+        if request.command == "seat up" or request.command == "seat down" then
+          seatControl.runCommand(request.command, request.username)
+        elseif request.command == "heights" then
+          Autopilot.sendHeightChat(savedHoverPoints(), function(text, ok) Autopilot.chatReply(request.username, text, ok) end)
+        elseif request.command == "location" then
+          if position and lastGpsAt and os.clock() - lastGpsAt <= 2 then
+            Autopilot.chatReply(request.username, ("Current location: X %.1f, Y %.1f, Z %.1f"):format(position.x, position.y, position.z), true)
+          else
+            Autopilot.chatReply(request.username, "No fresh GPS location is available.", false)
+          end
+        elseif request.command:match("^burner%s+") then
+          if not request.validBurner then
+            Autopilot.chatReply(request.username, "Use `burner N` with a whole number from 0 to 15.", false)
+          elseif mode == "STOPPED" or calibrationRunning or fullCalibration or burnerSweep then
+            Autopilot.chatReply(request.username, "Burner command unavailable while stopped, calibrating, or sweeping.", false)
+          else
+            if pcall(redstone.setAnalogOutput, "front", request.value) then
+              manualBurner, burnerCommand, burner = request.value, request.value, request.value
+              Autopilot.chatReply(request.username, ("Burner strength set to %d/15."):format(request.value), true)
+            else
+              Autopilot.chatReply(request.username, "Could not set burner output.", false)
+            end
+          end
+        elseif request.command:match("^autopilot%s+") then
+          if not request.validCoordinates then
+            Autopilot.chatReply(request.username, "Use `autopilot X Z`.", false)
+          elseif calibrationRunning then
+            Autopilot.chatReply(request.username, "Wait for calibration to finish before starting autopilot.", false)
+          elseif burnerSweep then
+            Autopilot.chatReply(request.username, "Finish or stop the burner sweep before starting autopilot.", false)
+          elseif not Autopilot.validSample(navigationSample()) then
+            Autopilot.chatReply(request.username, "Autopilot needs fresh GPS, heading, yaw rate, and air pressure.", false)
+          elseif not navController.profile then
+            Autopilot.chatReply(request.username, "Run FULL AUTO CAL before using autopilot.", false)
+          else
+            target = {x=request.x, z=request.z}
+            engageAutopilot()
+            if mode == "AUTOPILOT" then
+              Autopilot.chatReply(request.username, ("Autopilot engaged for X %.1f, Z %.1f at the current height target."):format(request.x, request.z), true)
+            else
+              Autopilot.chatReply(request.username, autopilotNotice or "Autopilot could not engage.", false)
+            end
+          end
         else
-          reply("Could not set burner output: " .. tostring(outputError), false)
+          Autopilot.chatReply(request.username, "Commands: autopilot X Z, location, heights, burner N, seat up, seat down.", false)
         end
-      end
-    elseif command:match("^autopilot%s+") then
-      local tokens, values = {}, {}
-      for token in command:match("^autopilot%s+(.+)$"):gmatch("%S+") do tokens[#tokens + 1] = token end
-      local valid = #tokens == 2
-      for i, token in ipairs(tokens) do
-        values[i] = tonumber(token)
-        if not values[i] or values[i] ~= values[i] or math.abs(values[i]) == math.huge then valid = false end
-      end
-      if not valid then
-        reply("Use `autopilot X Z`.", false)
-      elseif calibrationRunning then
-        reply("Wait for calibration to finish before starting autopilot.", false)
-      elseif burnerSweep then
-        reply("Finish or stop the burner sweep before starting autopilot.", false)
-      elseif not Autopilot.validSample(navigationSample()) then
-        reply("Autopilot needs fresh GPS, heading, yaw rate, and air pressure.", false)
-      elseif not navController.profile then
-        reply("Run FULL AUTO CAL before using autopilot.", false)
-      else
-        local x, z = values[1], values[2]
-        target = {x=x, z=z}
-        engageAutopilot()
-        if mode == "AUTOPILOT" then
-          reply(("Autopilot engaged for X %.1f, Z %.1f at the current height target."):format(x, z), true)
-        else
-          reply(autopilotNotice or "Autopilot could not engage.", false)
-        end
-      end
-    else
-      reply("Commands: autopilot X Z, location, heights, burner N, seat up, seat down.", false)
-    end
   end
   basalt.schedule(function()
     while running do
-      local _, first, second, third = os.pullEvent("chat")
-      Autopilot.handleChatMessage(first, second, third)
+      Autopilot.routeChat(Autopilot.chatDispatch, select(2, os.pullEvent("chat")))
     end
   end)
   print("Starting flight panel...")
