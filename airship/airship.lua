@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.46"
+local AIRSHIP_BUILD = "1.7.47"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1238,7 +1238,7 @@ seatControl.getGroundClearance = function()
   local nearest
   local activationError
   for _, entry in ipairs(seatControl.sensors) do
-    local ok, err = pcall(entry.device.setRange, seatControl.sensorRanges[entry.name] or 15)
+    local ok, err = pcall(entry.device.setRange, 280)
     yieldComputer()
     if not ok then activationError = tostring(err) end
   end
