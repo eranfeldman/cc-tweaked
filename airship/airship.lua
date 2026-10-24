@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.38"
+local AIRSHIP_BUILD = "1.7.39"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -689,6 +689,10 @@ Autopilot.routeChat = function(dispatch, first, second, third)
     end
     request.x, request.z = values[1], values[2]
   end
+  if command ~= "help" and command ~= "location" and command ~= "heights"
+      and command ~= "seat up" and command ~= "seat down"
+      and command ~= "burner" and not command:match("^burner%s+")
+      and command ~= "autopilot" and not command:match("^autopilot%s+") then return end
   dispatch(request)
 end
 
@@ -745,7 +749,7 @@ Autopilot.chatDispatch = function(context, request)
         context.reply(request.username, notice or "Autopilot could not engage.", false)
       end
     end
-  else
+  elseif request.command == "help" then
     context.reply(request.username, "Commands: autopilot X Z, location, heights, burner N, seat up, seat down.", false)
   end
 end
