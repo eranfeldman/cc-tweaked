@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.27"
+local AIRSHIP_BUILD = "1.7.29"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -2832,10 +2832,68 @@ local ok, err = pcall(function()
       end
       local command = type(message) == "string" and message:gsub("^%s*%$", ""):match("^%s*(.-)%s*$"):lower() or ""
       if type(username) == "string" and username:lower() == "pro_hacker_noob" then
+        local function reply(text, ok)
+          chatNotice, chatNoticeUntil = (ok and "CHAT OK: " or "CHAT ERROR: ") .. text, os.clock() + 8
+          if chatBox and type(chatBox.sendMessageToPlayer) == "function" then
+            pcall(chatBox.sendMessageToPlayer, text, username, "AIRSHIP")
+            yieldComputer()
+          end
+        end
+        command = command:gsub("^auto%s+pilot%s+", "autopilot ")
         if command == "seat up" or command == "seat down" then
           seatControl.runCommand(command, username)
+        elseif command == "location" then
+          if position and lastGpsAt and os.clock() - lastGpsAt <= 2 then
+            reply(("Current location: X %.1f, Y %.1f, Z %.1f"):format(position.x, position.y, position.z), true)
+          else
+            reply("No fresh GPS location is available.", false)
+          end
+        elseif command:match("^burner%s+") then
+          local value = tonumber(command:match("^burner%s+(.+)$"))
+          if not value or value ~= math.floor(value) or value < 0 or value > 15 then
+            reply("Use `burner N` with a whole number from 0 to 15.", false)
+          elseif mode == "STOPPED" or calibrationRunning or fullCalibration or burnerSweep then
+            reply("Burner command unavailable while stopped, calibrating, or sweeping.", false)
+          else
+            local outputOk, outputError = pcall(redstone.setAnalogOutput, "front", value)
+            if outputOk then
+              manualBurner, burnerCommand, burner = value, value, value
+              reply(("Burner strength set to %d/15."):format(value), true)
+            else
+              reply("Could not set burner output: " .. tostring(outputError), false)
+            end
+          end
+        elseif command:match("^autopilot%s+") then
+          local tokens, values = {}, {}
+          for token in command:match("^autopilot%s+(.+)$"):gmatch("%S+") do tokens[#tokens + 1] = token end
+          local valid = (#tokens == 2 or #tokens == 3)
+          for i, token in ipairs(tokens) do
+            values[i] = tonumber(token)
+            if not values[i] or values[i] ~= values[i] or math.abs(values[i]) == math.huge then valid = false end
+          end
+          if not valid then
+            reply("Use `autopilot X Z` or `autopilot X Y Z`.", false)
+          elseif calibrationRunning then
+            reply("Wait for calibration to finish before starting autopilot.", false)
+          elseif burnerSweep then
+            reply("Finish or stop the burner sweep before starting autopilot.", false)
+          elseif not Autopilot.validSample(navigationSample()) then
+            reply("Autopilot needs fresh GPS, heading, yaw rate, and air pressure.", false)
+          elseif not navController.profile then
+            reply("Run FULL AUTO CAL before using autopilot.", false)
+          else
+            local x, y, z = values[1], values[3] and values[2] or nil, values[3] or values[2]
+            target = {x=x, z=z}
+            if y then altitude = y end
+            engageAutopilot()
+            if mode == "AUTOPILOT" then
+              reply(y and ("Autopilot engaged for X %.1f, Y %.1f, Z %.1f."):format(x, y, z) or ("Autopilot engaged for X %.1f, Z %.1f at the current height target."):format(x, z), true)
+            else
+              reply(autopilotNotice or "Autopilot could not engage.", false)
+            end
+          end
         else
-          chatNotice, chatNoticeUntil = "CHAT RX: use `seat up` or `seat down`", os.clock() + 8
+          reply("Commands: autopilot X Z [or X Y Z], location, burner N, seat up, seat down.", false)
         end
       end
     end
