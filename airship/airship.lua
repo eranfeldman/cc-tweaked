@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.31"
+local AIRSHIP_BUILD = "1.7.32"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -2821,7 +2821,7 @@ local ok, err = pcall(function()
       elseif key == keys.rightAlt then rightAltHeld = false end
     end
   end)
-  local function handleChatMessage(first, second, third)
+  Autopilot.handleChatMessage = function(first, second, third)
     -- Advanced Peripherals 0.8 sends (event, UUID, username, message, ...); older versions send (event, username, message, ...).
     local username, message = second, third
     if type(first) == "string" and first:lower() == "pro_hacker_noob" then username, message = first, second end
@@ -2904,7 +2904,7 @@ local ok, err = pcall(function()
   basalt.schedule(function()
     while running do
       local _, first, second, third = os.pullEvent("chat")
-      handleChatMessage(first, second, third)
+      Autopilot.handleChatMessage(first, second, third)
     end
   end)
   print("Starting flight panel...")

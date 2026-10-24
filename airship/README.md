@@ -66,9 +66,9 @@ Sensors visible both in the computer's peripheral list and through a wired hub a
 
 The updater adds a unique UTC timestamp to GitHub's main-commit API request to avoid reusing a stale cached commit SHA. Raw files are then downloaded from that exact commit.
 
-### v1.7.31 Chat callback local-limit fix
+### v1.7.32 Chat handler local-limit fix
 
-Chat commands now run in a separate handler instead of the long-lived event callback. This keeps that callback below Lua's 200-local limit, which previously caused the updater's syntax check to reject the controller.
+The chat handler is stored on the existing `Autopilot` table instead of being declared as another local inside the controller's large startup function. Lua counts that declaration against the enclosing function's 200-local limit; the earlier v1.7.31 split still crossed the limit when compiled by CC:Tweaked.
 
 ### v1.7.30 Saved heights chat command
 
