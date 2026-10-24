@@ -66,9 +66,9 @@ Sensors visible both in the computer's peripheral list and through a wired hub a
 
 The updater adds a unique UTC timestamp to GitHub's main-commit API request to avoid reusing a stale cached commit SHA. Raw files are then downloaded from that exact commit.
 
-### v1.7.33 Chat handler local-limit fix
+### v1.7.36 CC:Tweaked compiler-limit fix
 
-CC:Tweaked counts active locals from enclosing functions while compiling nested closures. The chat parser and saved-height formatter now live at chunk scope, outside the controller's large startup closure; its in-controller dispatcher uses a single request parameter to stay under the limit.
+The chat parser and dispatcher live at chunk scope, with controller state passed through a context table. The controller setup no longer sits inside one huge `pcall` closure, which was exceeding Cobalt's 60-upvalue limit. The flight-control tick and Basalt event loop remain protected, and `stop()` still runs after the event loop exits.
 
 ### v1.7.30 Saved heights chat command
 

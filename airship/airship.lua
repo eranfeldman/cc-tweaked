@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.33"
+local AIRSHIP_BUILD = "1.7.36"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -701,6 +701,52 @@ Autopilot.sendHeightChat = function(points, reply)
       for i = first, math.min(first + 7, #points) do entries[#entries + 1] = ("Y %.1f: burner %d"):format(points[i].height, points[i].level) end
       reply(("Saved height calibration %d-%d/%d: %s"):format(first, math.min(first + 7, #points), #points, table.concat(entries, ", ")), true)
     end
+  end
+end
+
+Autopilot.chatDispatch = function(context, request)
+  if request.command == "seat up" or request.command == "seat down" then
+    context.seat(request.command, request.username)
+  elseif request.command == "heights" then
+    Autopilot.sendHeightChat(context.heights(), function(text, ok) context.reply(request.username, text, ok) end)
+  elseif request.command == "location" then
+    local position, lastGpsAt = context.location()
+    if position and lastGpsAt and os.clock() - lastGpsAt <= 2 then
+      context.reply(request.username, ("Current location: X %.1f, Y %.1f, Z %.1f"):format(position.x, position.y, position.z), true)
+    else
+      context.reply(request.username, "No fresh GPS location is available.", false)
+    end
+  elseif request.command:match("^burner%s+") then
+    if not request.validBurner then
+      context.reply(request.username, "Use `burner N` with a whole number from 0 to 15.", false)
+    elseif not context.burnerAvailable() then
+      context.reply(request.username, "Burner command unavailable while stopped, calibrating, or sweeping.", false)
+    elseif context.setBurner(request.value) then
+      context.reply(request.username, ("Burner strength set to %d/15."):format(request.value), true)
+    else
+      context.reply(request.username, "Could not set burner output.", false)
+    end
+  elseif request.command:match("^autopilot%s+") then
+    if not request.validCoordinates then
+      context.reply(request.username, "Use `autopilot X Z`.", false)
+    elseif context.calibrating() then
+      context.reply(request.username, "Wait for calibration to finish before starting autopilot.", false)
+    elseif context.sweeping() then
+      context.reply(request.username, "Finish or stop the burner sweep before starting autopilot.", false)
+    elseif not context.navigationReady() then
+      context.reply(request.username, "Autopilot needs fresh GPS, heading, yaw rate, and air pressure.", false)
+    elseif not context.hasProfile() then
+      context.reply(request.username, "Run FULL AUTO CAL before using autopilot.", false)
+    else
+      local mode, notice = context.engage(request.x, request.z)
+      if mode == "AUTOPILOT" then
+        context.reply(request.username, ("Autopilot engaged for X %.1f, Z %.1f at the current height target."):format(request.x, request.z), true)
+      else
+        context.reply(request.username, notice or "Autopilot could not engage.", false)
+      end
+    end
+  else
+    context.reply(request.username, "Commands: autopilot X Z, location, heights, burner N, seat up, seat down.", false)
   end
 end
 
@@ -2737,7 +2783,7 @@ local function pollGpuInput()
   end
 end
 
-local ok, err = pcall(function()
+local ok, err = true, nil
   local _, startY = gps.locate(.5, false)
   altitude = startY and math.floor(startY + .5) or nil
   if altitude then mode = "HOLDING ALTITUDE" else mode = "WAITING FOR GPS" end
@@ -2863,62 +2909,35 @@ local ok, err = pcall(function()
       yieldComputer()
     end
   end
-  Autopilot.chatDispatch = function(request)
-        if request.command == "seat up" or request.command == "seat down" then
-          seatControl.runCommand(request.command, request.username)
-        elseif request.command == "heights" then
-          Autopilot.sendHeightChat(savedHoverPoints(), function(text, ok) Autopilot.chatReply(request.username, text, ok) end)
-        elseif request.command == "location" then
-          if position and lastGpsAt and os.clock() - lastGpsAt <= 2 then
-            Autopilot.chatReply(request.username, ("Current location: X %.1f, Y %.1f, Z %.1f"):format(position.x, position.y, position.z), true)
-          else
-            Autopilot.chatReply(request.username, "No fresh GPS location is available.", false)
-          end
-        elseif request.command:match("^burner%s+") then
-          if not request.validBurner then
-            Autopilot.chatReply(request.username, "Use `burner N` with a whole number from 0 to 15.", false)
-          elseif mode == "STOPPED" or calibrationRunning or fullCalibration or burnerSweep then
-            Autopilot.chatReply(request.username, "Burner command unavailable while stopped, calibrating, or sweeping.", false)
-          else
-            if pcall(redstone.setAnalogOutput, "front", request.value) then
-              manualBurner, burnerCommand, burner = request.value, request.value, request.value
-              Autopilot.chatReply(request.username, ("Burner strength set to %d/15."):format(request.value), true)
-            else
-              Autopilot.chatReply(request.username, "Could not set burner output.", false)
-            end
-          end
-        elseif request.command:match("^autopilot%s+") then
-          if not request.validCoordinates then
-            Autopilot.chatReply(request.username, "Use `autopilot X Z`.", false)
-          elseif calibrationRunning then
-            Autopilot.chatReply(request.username, "Wait for calibration to finish before starting autopilot.", false)
-          elseif burnerSweep then
-            Autopilot.chatReply(request.username, "Finish or stop the burner sweep before starting autopilot.", false)
-          elseif not Autopilot.validSample(navigationSample()) then
-            Autopilot.chatReply(request.username, "Autopilot needs fresh GPS, heading, yaw rate, and air pressure.", false)
-          elseif not navController.profile then
-            Autopilot.chatReply(request.username, "Run FULL AUTO CAL before using autopilot.", false)
-          else
-            target = {x=request.x, z=request.z}
-            engageAutopilot()
-            if mode == "AUTOPILOT" then
-              Autopilot.chatReply(request.username, ("Autopilot engaged for X %.1f, Z %.1f at the current height target."):format(request.x, request.z), true)
-            else
-              Autopilot.chatReply(request.username, autopilotNotice or "Autopilot could not engage.", false)
-            end
-          end
-        else
-          Autopilot.chatReply(request.username, "Commands: autopilot X Z, location, heights, burner N, seat up, seat down.", false)
-        end
-  end
+  Autopilot.chatContext = {
+    reply=Autopilot.chatReply,
+    seat=function(command, username) seatControl.runCommand(command, username) end,
+    heights=savedHoverPoints,
+    location=function() return position, lastGpsAt end,
+    burnerAvailable=function() return mode ~= "STOPPED" and not calibrationRunning and not fullCalibration and not burnerSweep end,
+    setBurner=function(value)
+      if not pcall(redstone.setAnalogOutput, "front", value) then return false end
+      manualBurner, burnerCommand, burner = value, value, value
+      return true
+    end,
+    calibrating=function() return calibrationRunning end,
+    sweeping=function() return burnerSweep end,
+    navigationReady=function() return Autopilot.validSample(navigationSample()) end,
+    hasProfile=function() return navController.profile ~= nil end,
+    engage=function(x, z)
+      target = {x=x, z=z}
+      engageAutopilot()
+      return mode, autopilotNotice
+    end,
+  }
+  Autopilot.chatEventDispatch = function(request) Autopilot.chatDispatch(Autopilot.chatContext, request) end
   basalt.schedule(function()
     while running do
-      Autopilot.routeChat(Autopilot.chatDispatch, select(2, os.pullEvent("chat")))
+      Autopilot.routeChat(Autopilot.chatEventDispatch, select(2, os.pullEvent("chat")))
     end
   end)
   print("Starting flight panel...")
-  basalt.run()
-end)
+  ok, err = pcall(basalt.run)
 running = false
 stop()
 if updateRequested then
