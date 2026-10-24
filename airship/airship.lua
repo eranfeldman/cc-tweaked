@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.36"
+local AIRSHIP_BUILD = "1.7.37"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1188,6 +1188,21 @@ local compact = screenWidth < 49 or screenHeight < 19
 local position, target, altitude, mode = nil, nil, nil, "STARTING"
 local autopilotStartedAt, autopilotReachedAt
 local chatNotice, chatNoticeUntil, fullCalibration
+Autopilot.privateChatReply = function(username, message)
+  if not chatBox then return false, "chat box is unavailable" end
+  if type(username) ~= "string" or username == "" then return false, "chat sender is unknown" end
+  local ok, sent, err = pcall(function()
+    if type(chatBox.sendMessageToPlayer) == "function" then
+      return chatBox.sendMessageToPlayer(message, username, "AIRSHIP")
+    elseif type(chatBox.sendMessage) == "function" then
+      return chatBox.sendMessage(message, {player=username, prefix="AIRSHIP"})
+    end
+    return nil, "chat box has no supported private-message method"
+  end)
+  if not ok then return false, tostring(sent) end
+  if sent ~= true then return false, tostring(err or "chat box did not confirm delivery") end
+  return true
+end
 local function nearestCardinalHeading(heading)
   local quarterTurn = math.pi / 2
   return (math.floor(heading / quarterTurn + .5) % 4) * quarterTurn
@@ -1238,10 +1253,9 @@ seatControl.runCommand = function(command, username)
   local function reply(message, ok)
     chatNotice = (ok and "CHAT OK: " or "CHAT ERROR: ") .. message
     chatNoticeUntil = os.clock() + 8
-    if chatBox and type(chatBox.sendMessageToPlayer) == "function" then
-      pcall(chatBox.sendMessageToPlayer, message, username, "AIRSHIP")
-      yieldComputer()
-    end
+    local sent, failure = Autopilot.privateChatReply(username, message)
+    if not sent then chatNotice = "PRIVATE MESSAGE FAILED: " .. failure end
+    yieldComputer()
   end
   if seatControl.busy then reply("Seat pulley is already moving.", false); return end
   if not seatControl.gearshift then reply("Connect the Create Sequenced Gearshift to the peripheral hub.", false); return end
@@ -1268,7 +1282,7 @@ seatControl.runCommand = function(command, username)
   local moveOk, moveError = pcall(seatControl.gearshift.move, distance, modifier)
   yieldComputer()
   if not moveOk then seatControl.busy = false; reply("Gearshift move failed: " .. tostring(moveError), false); return end
-  if command == "seat down" then reply(("Seats will reach landing height in about %d seconds (estimated at 96 RPM)."):format(math.ceil(distance / 7.5)), true) end
+  if command == "seat down" then reply(("Seat lowering started: %.1f blocks clearance, moving %d blocks; ETA about %d seconds at 96 RPM."):format(clearance, distance, math.ceil(distance / 7.5)), true) end
   while running do
     local checkOk, stillMoving = pcall(seatControl.gearshift.isRunning)
     yieldComputer()
@@ -2904,10 +2918,9 @@ local ok, err = true, nil
   end)
   Autopilot.chatReply = function(username, text, ok)
     chatNotice, chatNoticeUntil = (ok and "CHAT OK: " or "CHAT ERROR: ") .. text, os.clock() + 8
-    if chatBox and type(chatBox.sendMessageToPlayer) == "function" then
-      pcall(chatBox.sendMessageToPlayer, text, username, "AIRSHIP")
-      yieldComputer()
-    end
+    local sent, failure = Autopilot.privateChatReply(username, text)
+    if not sent then chatNotice = "PRIVATE MESSAGE FAILED: " .. failure end
+    yieldComputer()
   end
   Autopilot.chatContext = {
     reply=Autopilot.chatReply,
