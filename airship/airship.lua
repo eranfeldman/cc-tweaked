@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.26"
+local AIRSHIP_BUILD = "1.7.27"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1187,6 +1187,7 @@ seatControl.runCommand = function(command, username)
   local moveOk, moveError = pcall(seatControl.gearshift.move, distance, modifier)
   yieldComputer()
   if not moveOk then seatControl.busy = false; reply("Gearshift move failed: " .. tostring(moveError), false); return end
+  if command == "seat down" then reply(("Seats will reach landing height in about %d seconds (estimated at 96 RPM)."):format(math.ceil(distance / 7.5)), true) end
   while running do
     local checkOk, stillMoving = pcall(seatControl.gearshift.isRunning)
     yieldComputer()
