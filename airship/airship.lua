@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.45"
+local AIRSHIP_BUILD = "1.7.46"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -690,6 +690,7 @@ Autopilot.routeChat = function(dispatch, first, second, third)
     request.x, request.z = values[1], values[2]
   end
   if command ~= "help" and command ~= "location" and command ~= "heights"
+      and command ~= "hold" and command ~= "stop" and command ~= "status"
       and command ~= "seat up" and command ~= "seat down"
       and command ~= "burner" and not command:match("^burner%s+")
       and command ~= "autopilot" and not command:match("^autopilot%s+") then return end
@@ -709,7 +710,13 @@ Autopilot.sendHeightChat = function(points, reply)
 end
 
 Autopilot.chatDispatch = function(context, request)
-  if request.command == "seat up" or request.command == "seat down" then
+  if request.command == "hold" then
+    context.hold(request.username)
+  elseif request.command == "stop" then
+    context.stop(request.username)
+  elseif request.command == "status" then
+    context.status(request.username)
+  elseif request.command == "seat up" or request.command == "seat down" then
     context.seat(request.command, request.username)
   elseif request.command == "heights" then
     Autopilot.sendHeightChat(context.heights(), function(text, ok) context.reply(request.username, text, ok) end)
@@ -750,7 +757,7 @@ Autopilot.chatDispatch = function(context, request)
       end
     end
   elseif request.command == "help" then
-    context.reply(request.username, "Commands: autopilot X Z, location, heights, burner N, seat up, seat down.", false)
+    context.reply(request.username, "Commands: autopilot X Z, hold, stop, status, location, heights, burner N, seat up, seat down.", true)
   end
 end
 
@@ -2334,7 +2341,9 @@ local function holdHere()
       autopilotNotice="Calibration canceled; burner held."
       autopilotNoticeColor=colors.orange; status.text=autopilotNotice; status.foreground=colors.orange
     end
+    return true
   end
+  return false
 end
 local function maxLift()
   if burnerSweep then
@@ -2997,6 +3006,25 @@ local ok, err = true, nil
     seat=function(command, username) seatControl.runCommand(command, username) end,
     heights=savedHoverPoints,
     location=function() return position, lastGpsAt end,
+    hold=function(username)
+      if holdHere() then
+        Autopilot.chatReply(username, position and "Holding current position and altitude." or "Control held; waiting for GPS to resume altitude hold.", true)
+      else
+        Autopilot.chatReply(username, "Cannot hold position without a GPS fix.", false)
+      end
+    end,
+    stop=function(username)
+      stop()
+      Autopilot.chatReply(username, "STOPPED: thrusters and burner outputs are off.", true)
+    end,
+    status=function(username)
+      local speed,distance,eta=navigationReadout()
+      local location=position and lastGpsAt and os.clock()-lastGpsAt<=2
+        and ("X %.0f Y %.0f Z %.0f"):format(position.x,position.y,position.z) or "GPS unavailable"
+      local destination=target and ("target %.0f,%.0f"):format(target.x,target.z) or "no destination"
+      local range=distance and (" %.0fb away"):format(distance) or ""
+      Autopilot.chatReply(username, ("%s | %s | %s%s | %.1fb/s ETA %s | burner %d/15"):format(mode,location,destination,range,speed,eta,burner), true)
+    end,
     burnerAvailable=function() return mode ~= "STOPPED" and not calibrationRunning and not fullCalibration and not burnerSweep end,
     setBurner=function(value)
       if not pcall(redstone.setAnalogOutput, "front", value) then return false end
