@@ -310,9 +310,9 @@ do
   assert(math.abs(correction-(controller.trace.targetAlong-14)/(1.3*.5))<1e-6,
     "Unsaturated high-speed braking must respond more strongly to the velocity error")
   controller:reset(0)
-  controller:navigate({t=0,x=0,z=0,vx=13,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=10000,z=0})
-  assert(controller.trace.targetAlong>13 and controller.trace.desired[1]>=profile.maxAccel,
-    "Long routes must still request full acceleration beyond the stored cruise estimate")
+  controller:navigate({t=0,x=0,z=0,vx=0,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=10000,z=0})
+  assert(controller.trace.targetAlong<=13 and controller.trace.targetAlong>12.9 and controller.trace.desired[1]>=profile.maxAccel,
+    "Long routes must accelerate fully up to the calibrated cruise limit")
   controller:reset(0)
   controller:navigate({t=0,x=0,z=0,vx=20,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=60,z=0})
   assert(controller.trace.desired[1]-profile.drag[1]*20<=-5.9,
@@ -324,12 +324,12 @@ do
     "A cautious profile six blocks out must retain useful approach speed instead of blending into weak position hold")
   controller:reset(0)
   controller:navigate({t=0,x=0,z=0,vx=13,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=10000,z=0})
-  assert(controller.trace.targetAlong>13,"Braking caution must not impose a fixed forward cruise cap")
+  assert(controller.trace.targetAlong<=13,"The calibrated cruise limit must apply to cautious modern profiles")
   profile.cruiseVersion=2
   controller=A.new(names,profile); controller:reset(0)
   controller:navigate({t=0,x=0,z=0,vx=13,vz=0,heading=0,yaw=0,pressure=profile.pressure},{x=60,z=0})
   assert(controller.trace.targetAlong<=13,"Working legacy profile must retain its speed and braking limits until new validation passes")
-  print("PASS: modestly earlier braking retains full long-route acceleration without a fixed cruise cap")
+  print("PASS: modestly earlier braking retains full acceleration up to the calibrated cruise limit")
 end
 
 do

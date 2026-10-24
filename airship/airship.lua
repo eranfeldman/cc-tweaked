@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.41"
+local AIRSHIP_BUILD = "1.7.42"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -141,11 +141,11 @@ local Autopilot = (function()
     for _,out in pairs(commands) do if out.power>1e-6 then out.x=out.x/out.power; out.y=out.y/out.power else out.x,out.y,out.power=0,0,0 end end
     return commands,residual
   end
-  function A:reverseCommands(s,dx,dz,p,fraction,lateral)
+  function A:reverseCommands(s,dx,dz,p,fraction,lateral,trim)
     local strength=p.maxAccel*2*(fraction or 1)
     local bx,bz=body(-dx*strength+(lateral and lateral.x or 0),-dz*strength+(lateral and lateral.z or 0),s.heading)
     local yaw=clamp(.12*wrap((self.headingTarget or s.heading)-s.heading)-2.8*s.yaw,-.12,.12)
-    local desired={bx,bz,yaw}
+    local desired={bx-(trim and trim[1] or 0),bz-(trim and trim[2] or 0),yaw-(trim and trim[3] or 0)}
     local commands,residual=self:allocate(p,desired)
     return commands,residual,desired
   end
@@ -223,7 +223,7 @@ local Autopilot = (function()
       local braking=math.sqrt((brakeAccel*delay)^2+2*brakeAccel*gap)-brakeAccel*delay
       return (error<0 and -1 or 1)*math.min(limit,braking,gap*.7/response)
     end
-    local cruiseLimit=modern and math.huge or p.maxSpeed
+    local cruiseLimit=p.maxSpeed
     local targetAlong=plannedSpeed(remaining,cruiseLimit,3+9*caution)
     local rx,rz=body(r.tx,r.tz,s.heading)
     local closing=s.vx*r.tx+s.vz*r.tz
@@ -245,7 +245,7 @@ local Autopilot = (function()
       remaining=(goal.x-s.x)*r.tx+(goal.z-s.z)*r.tz
       local stopLimit=A.stoppingSpeed(measured,math.max(0,math.abs(remaining)-.35))
       local linearLimit=math.abs(remaining)*.6
-      targetAlong=(remaining<0 and -1 or 1)*math.min(stopLimit,linearLimit)
+      targetAlong=(remaining<0 and -1 or 1)*math.min(stopLimit,linearLimit,p.maxSpeed)
       local error=(closing-targetAlong)*(closing<0 and -1 or 1)
       if math.abs(closing)>.1 and error>-.15 then
         local targetSpeed=math.abs(targetAlong)
@@ -253,7 +253,7 @@ local Autopilot = (function()
         local decel=math.abs(closing)*slope+error/math.max(.5,dt*2)
         local fraction=clamp((decel-measured.drag*math.abs(closing))/measured.fullForce,0,1)
         local direction=closing<0 and -1 or 1
-        local commands,residual,desired=self:reverseCommands(s,r.tx*direction,r.tz*direction,p,fraction,{x=-r.tz*az,z=r.tx*az})
+        local commands,residual,desired=self:reverseCommands(s,r.tx*direction,r.tz*direction,p,fraction,{x=-r.tz*az,z=r.tx*az},self.trim)
         self.applied={desired[1]-residual[1],desired[2]-residual[2],desired[3]-residual[3]/p.yawWeight}
         self.trace={cross=cross,remaining=remaining,targetAlong=targetAlong,targetCross=targetCross,desired=desired,stoppingDistance=stopping,braking="REVERSE"}
         self.previous=copy(s)
