@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.48"
+local AIRSHIP_BUILD = "1.7.49"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1419,34 +1419,78 @@ local function recordFlight(s,goal,profile,commands,stage)
   if not Autopilot.validSample(s) then return end
   local r=flightRecording or newFlightRecording(s)
   flightRecording=r
-  if r.failed or s.t-r.at<.5 then return end
+  if r.failed then status.text="Flight log failed: "..r.failed; status.foreground=colors.red; return end
+  if r.saved or s.t-r.at<.5 then return end
   if r.count>=maxFlightSamples then r.truncated=true; return end
   r.x,r.z,r.stage=r.x or s.x,r.z or s.z,r.stage or stage
+  local trace=navController.trace or {}
+  local validation=trace.validation or {}
+  local desired,applied=trace.desired or {},navController.applied or {}
+  local values={s.t-r.t,stage,s.x-r.x,s.z-r.z,goal.x-r.x,goal.z-r.z,s.vx,s.vz,s.heading,s.yaw,s.pressure,
+    trace.cross or 0,trace.remaining or 0,trace.targetAlong or 0,trace.targetCross or 0,
+    desired[1] or 0,desired[2] or 0,desired[3] or 0,applied[1] or 0,applied[2] or 0,applied[3] or 0,trace.stoppingDistance or 0,trace.braking or "FALLBACK",s.rawVx or s.vx,s.rawVz or s.vz,validation.remaining or 0,validation.cross or 0,validation.overshoot or 0}
+  for _,name in ipairs(navNames) do
+    local command=commands and commands[name] or {}
+    values[#values+1]=command.x or 0; values[#values+1]=command.y or 0; values[#values+1]=command.power or 0
+  end
+  for i,value in ipairs(values) do values[i]=type(value)=="number" and ("%.5g"):format(value) or tostring(value) end
+  local row=table.concat(values,",")
+  local payload
+  if r.count==0 then
+    local serializedOk,profileText=pcall(textutils.serialize,profile,{compact=true})
+    if not serializedOk then
+      r.failed="Could not serialize autopilot profile: "..tostring(profileText)
+      status.text="Flight log failed: "..r.failed; status.foreground=colors.red
+      return
+    end
+    local columns="time,stage,x,z,goal_x,goal_z,vx,vz,heading,yaw,pressure,cross,remaining,target_along,target_cross,requested_ax,requested_az,requested_yaw,allocated_ax,allocated_az,allocated_yaw,stop_distance,braking,raw_vx,raw_vz,test_remaining,test_cross,overshoot"
+    for _,name in ipairs(navNames) do columns=columns..","..name.."_x,"..name.."_y,"..name.."_power" end
+    payload=table.concat({"# Airship v"..AIRSHIP_BUILD.."; started "..os.date("%Y-%m-%d %H:%M:%S").."; relative X/Z only; max 1200 samples at no more than 2 Hz", "# profile "..profileText, columns, row},"\n").."\n"
+  else
+    payload=row.."\n"
+  end
+  local spaceOk,freeSpace=pcall(fs.getFreeSpace,r.path)
+  if spaceOk and type(freeSpace)=="number" and freeSpace<#payload+512 then
+    r.failed=("Low disk space: need %d bytes including log footer; only %d remain"):format(#payload+512,freeSpace)
+    status.text="Flight log stopped after "..r.count.." samples: "..r.failed; status.foreground=colors.red
+    return
+  end
   local file
   local ok,err=pcall(function()
     file=assert(fs.open(r.path,r.count==0 and "w" or "a"),"Cannot open flight report")
-    if r.count==0 then
-      file.writeLine("# Airship v"..AIRSHIP_BUILD.."; started "..os.date("%Y-%m-%d %H:%M:%S").."; relative X/Z only; max 1200 samples at no more than 2 Hz")
-      file.writeLine("# profile "..textutils.serialize(profile,{compact=true}))
-      local columns="time,stage,x,z,goal_x,goal_z,vx,vz,heading,yaw,pressure,cross,remaining,target_along,target_cross,requested_ax,requested_az,requested_yaw,allocated_ax,allocated_az,allocated_yaw,stop_distance,braking,raw_vx,raw_vz,test_remaining,test_cross,overshoot"
-      for _,name in ipairs(navNames) do columns=columns..","..name.."_x,"..name.."_y,"..name.."_power" end
-      file.writeLine(columns)
-    end
-    local trace=navController.trace or {}
-    local validation=trace.validation or {}
-    local desired,applied=trace.desired or {},navController.applied or {}
-    local values={s.t-r.t,stage,s.x-r.x,s.z-r.z,goal.x-r.x,goal.z-r.z,s.vx,s.vz,s.heading,s.yaw,s.pressure,
-      trace.cross or 0,trace.remaining or 0,trace.targetAlong or 0,trace.targetCross or 0,
-      desired[1] or 0,desired[2] or 0,desired[3] or 0,applied[1] or 0,applied[2] or 0,applied[3] or 0,trace.stoppingDistance or 0,trace.braking or "FALLBACK",s.rawVx or s.vx,s.rawVz or s.vz,validation.remaining or 0,validation.cross or 0,validation.overshoot or 0}
-    for _,name in ipairs(navNames) do
-      local command=commands and commands[name] or {}
-      values[#values+1]=command.x or 0; values[#values+1]=command.y or 0; values[#values+1]=command.power or 0
-    end
-    for i,value in ipairs(values) do values[i]=type(value)=="number" and ("%.5g"):format(value) or tostring(value) end
-    file.writeLine(table.concat(values,","))
+    file.write(payload)
   end)
-  if file then pcall(file.close) end
-  if not ok then r.failed=tostring(err) else r.at=s.t; r.count=r.count+1 end
+  local closeOk,closeErr=true,nil
+  if file then closeOk,closeErr=pcall(file.close) end
+  if not ok then r.failed=tostring(err)
+  elseif not closeOk then r.failed="Could not flush flight report: "..tostring(closeErr)
+  else r.at=s.t; r.count=r.count+1 end
+  if r.failed then status.text="Flight log stopped after "..r.count.." samples: "..r.failed; status.foreground=colors.red end
+end
+local function recordFlightEvent(message)
+  local r=flightRecording
+  if not r or not r.path or r.count==0 or r.saved or r.failed then return end
+  local now=os.clock()
+  if r.eventAt and now-r.eventAt<1 then return end
+  local line=("# EVENT %.2f %s"):format(math.max(0,now-r.t),tostring(message):gsub("[\r\n]"," "))
+  local spaceOk,freeSpace=pcall(fs.getFreeSpace,r.path)
+  if spaceOk and type(freeSpace)=="number" and freeSpace<#line+512 then
+    r.failed="Low disk space while recording a navigation event"
+    status.text="Flight log stopped after "..r.count.." samples: "..r.failed; status.foreground=colors.red
+    return
+  end
+  local file
+  local ok,err=pcall(function()
+    file=assert(fs.open(r.path,"a"),"Cannot append flight event")
+    file.writeLine(line)
+    file.close(); file=nil
+  end)
+  local closeOk,closeErr=true,nil
+  if file then closeOk,closeErr=pcall(file.close) end
+  if not ok then r.failed=tostring(err)
+  elseif not closeOk then r.failed="Could not flush flight event: "..tostring(closeErr)
+  else r.eventAt=now end
+  if r.failed then status.text="Flight log stopped after "..r.count.." samples: "..r.failed; status.foreground=colors.red end
 end
 local function saveAutopilotProfile(profile)
   assert(Autopilot.validProfile(profile,navNames),"Invalid autopilot calibration")
@@ -1769,24 +1813,33 @@ local function outputs(cooperative)
   -- These methods wait for server ticks; dispatch corners together instead of 48 serial waits.
   if #jobs>0 then parallel.waitForAll(table.unpack(jobs)) end
 end
-local function saveFlightReport()
-  if fullCalibration or mode=="AUTOPILOT" or mode=="FINAL TURN" then status.text="Press H to hold before saving the flight log."; return end
+local function saveFlightReport(force)
+  if not force and (fullCalibration or mode=="AUTOPILOT" or mode=="FINAL TURN") then status.text="Press H to hold before saving the flight log."; return false end
   local r=flightRecording
-  if not r or not r.path or r.count==0 then status.text="No flight log has been recorded yet."; return end
-  if r.failed then status.text="Flight log stopped after "..r.count.." samples: "..r.failed; return end
-  if r.saved then status.text=(r.truncated and "Log reached 1,200-sample limit: " or "Flight log saved: ")..r.path; return end
+  if not r then status.text="No flight log has been recorded yet."; return false end
+  if r.saved then status.text=(r.truncated and "Log reached 1,200-sample limit: " or "Flight log saved: ")..(r.path or ""); return true end
+  if not r.path then status.text="Flight log could not be created: "..tostring(r.failed or "no writable path"); return false end
+  if r.count==0 and not r.failed then status.text="No flight samples have been recorded yet."; return false end
   local file
   local ok,err=pcall(function()
-    file=assert(fs.open(r.path,"a"),"Cannot open flight log")
-    file.writeLine(("# F8 saved; samples=%d; duration=%.1fs; truncated=%s"):format(r.count,math.max(0,r.at-r.t),tostring(r.truncated==true)))
+    file=assert(fs.open(r.path,r.count==0 and "w" or "a"),"Cannot open flight log")
+    if r.failed then
+      if r.count==0 then file.writeLine("# AIRSHIP FLIGHT RECORDING FAILED BEFORE FIRST SAMPLE") end
+      file.writeLine("# RECORDING ERROR: "..tostring(r.failed):gsub("[\r\n]"," "))
+    end
+    file.writeLine(("# F8 saved; samples=%d; duration=%.1fs; truncated=%s; failed=%s"):format(r.count,math.max(0,(r.at or r.t)-r.t),tostring(r.truncated==true),tostring(r.failed~=nil)))
     file.close(); file=nil
   end)
-  if file then pcall(file.close) end
-  if not ok then status.text="Flight log is at "..r.path.." but could not be finalized: "..tostring(err); return end
+  local closeOk,closeErr=true,nil
+  if file then closeOk,closeErr=pcall(file.close) end
+  if not ok then status.text="Flight log is at "..r.path.." but could not be finalized: "..tostring(err); return false end
+  if not closeOk then status.text="Flight log is at "..r.path.." but flush failed: "..tostring(closeErr); return false end
   r.saved=true
-  status.text=(r.truncated and "Log reached 1,200-sample limit; saved " or "Flight log saved: ")..r.path
+  status.text=(r.failed and ("Flight log saved with an error after "..r.count.." samples: ") or (r.truncated and "Log reached 1,200-sample limit: saved " or "Flight log saved: "))..r.path
+  return true
 end
 local function stop()
+  if flightRecording and not flightRecording.saved then saveFlightReport(true) end
   calibrationRunning = false
   autopilotStartedAt,autopilotReachedAt=nil,nil
   autopilotNotice=nil
@@ -1826,7 +1879,9 @@ local function setFlightMode(nextMode)
 end
 local gpsReportAt
 local function locate()
-  local now = os.clock()
+  local fixX,fixY,fixZ=FreshGPS.locate(2)
+  local fixAt=os.clock()
+  local now=fixAt
   if altitudeSensor then
     local ok, height, verticalSpeed, pressure = pcall(function()
       local height = altitudeSensor.getHeight()
@@ -1858,13 +1913,17 @@ local function locate()
     if ok then headingRate=Autopilot.headingRate(rates,gravityOk and gravity or nil) end
     if headingRate then yawRate=headingRate; yawAt=os.clock() end
   end
-  local x, y, z = FreshGPS.locate(2)
+  local x,y,z=fixX,fixY,fixZ
   now=os.clock()
   if x then
-    if shipHeading then x,z=x+2*math.sin(shipHeading),z+2*math.cos(shipHeading) end
-    local profile=navController.job and navController.job.candidate or navController.profile
-    local accepted,reason=FreshGPS.accept(gpsFilter,{t=now,x=x,y=y,z=z},math.max(12,profile and profile.maxAccel*2 or 12))
-    if not accepted then x=nil; FreshGPS.error=reason end
+    if not headingAt or now-headingAt>2 then
+      x=nil; FreshGPS.error="Fresh heading required for GPS center correction"
+    else
+      x,z=x+2*math.sin(shipHeading),z+2*math.cos(shipHeading)
+      local profile=navController.job and navController.job.candidate or navController.profile
+      local accepted,reason=FreshGPS.accept(gpsFilter,{t=fixAt,x=x,y=y,z=z},math.max(12,profile and profile.maxAccel*2 or 12))
+      if not accepted then x=nil; FreshGPS.error=reason end
+    end
   end
   if not x and FreshGPS.error and (not gpsReportAt or now-gpsReportAt>=1) then
     gpsReportAt=now
@@ -2017,9 +2076,10 @@ local function updateFlight(gpsFresh)
   end
   if (mode == "AUTOPILOT" or mode == "FINAL TURN" or mode == "DESTINATION REACHED") and target then
     vectorX,vectorY,power=0,0,0
-    if not gpsFresh then autopilotCommands={}; return end
+    if not gpsFresh then recordFlightEvent("GPS polling failed: "..tostring(FreshGPS.error or "no new position")); autopilotCommands={}; return end
     local sample=navigationSample()
     if not Autopilot.validSample(sample) then
+      recordFlightEvent("navigation sample stale: GPS, heading, yaw rate, or air pressure")
       autopilotCommands={}; mode="NAV LOST - RE-ENGAGE"; autopilotNotice="Fresh heading, yaw rate and pressure required; re-engage AUTO."
       autopilotNoticeColor=colors.red
       return
@@ -2043,6 +2103,7 @@ local function updateFlight(gpsFresh)
       end
     elseif wasReached then mode="DESTINATION REACHED"
     else mode="AUTOPILOT" end
+    if mode=="DESTINATION REACHED" and flightRecording and not flightRecording.saved then saveFlightReport(true) end
   end
 end
 
@@ -2347,6 +2408,7 @@ end
 local function holdHere()
   local canceledCalibration=calibrationRunning
   if position or canceledCalibration or mode=="MAX LIFT" then
+    if flightRecording and not flightRecording.saved then saveFlightReport(true) end
     if position then altitude=math.floor(position.y+.5) end
     target=nil; setFlightMode(position and "HOLDING ALTITUDE" or "WAITING FOR GPS")
     if canceledCalibration then
@@ -2386,6 +2448,7 @@ local function engageAutopilot()
   if not navController.profile then refuse("Run FULL AUTO CAL in the calibration menu first.")
   elseif not position or not target then refuse("GPS fix and destination are required.")
   else
+    if flightRecording and not flightRecording.saved and not saveFlightReport(true) then refuse("Previous flight log could not be saved; free computer storage, press F8, then retry."); return end
     setFlightMode("AUTOPILOT"); navController:reset(sample.heading); autopilotNotice=nil; flightRecording=nil
     status.text = "Autopilot engaged; final heading is cardinal"; status.foreground = colors.lime
   end
@@ -2401,6 +2464,10 @@ local function startFullCalibration()
   if not position then
     autopilotNotice,autopilotNoticeColor="GPS: "..tostring(FreshGPS.error or "waiting for a fix").."; FULL AUTO CAL needs a valid fix.",colors.orange
     status.text,status.foreground=autopilotNotice,autopilotNoticeColor
+    return
+  end
+  if flightRecording and not flightRecording.saved and not saveFlightReport(true) then
+    status.text="Previous flight log could not be saved; free computer storage, press F8, then retry."; status.foreground=colors.red
     return
   end
   flightRecording=nil

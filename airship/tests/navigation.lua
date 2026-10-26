@@ -1062,10 +1062,11 @@ do
   local env=setmetatable({Autopilot=A,navNames=names,navController={trace={},applied={}},AIRSHIP_BUILD="test"},{__index=_G})
   env.textutils={serialize=function(profile) assert(profile==profiles[1]); return "fixture profile" end}
   env.os={date=function(format) assert(format=="%Y-%m-%d_%H-%M-%S" or format=="%Y-%m-%d %H:%M:%S"); return format:find("_") and "2026-10-23_12-34-56" or "2026-10-23 12:34:56" end}
-  env.fs={open=function(path,mode)
+  env.fs={getFreeSpace=function() return 10000000 end,open=function(path,mode)
     assert(path=="flight logs/flight-2026-10-23_12-34-56.csv")
     if mode=="w" then lines={} end
-    return {writeLine=function(line) lines[#lines+1]=line end,close=function() closed=closed+1 end}
+    return {write=function(payload) for line in payload:gmatch("([^\n]*)\n") do lines[#lines+1]=line end end,
+      writeLine=function(line) lines[#lines+1]=line end,close=function() closed=closed+1 end}
   end,makeDir=function(path) assert(path=="flight logs"); created=path end,exists=function() return false end}
   local recording=assert(source:match('(local flightRecording.-)\nlocal function saveAutopilotProfile'))
   local record,getRecording=assert(load(recording..'\nreturn recordFlight,function() return flightRecording end',"@flight-recorder","t",env))()
@@ -1080,4 +1081,51 @@ do
   record(s,goal,profiles[1],{},"AUTOPILOT")
   assert(closed==1200 and getRecording().truncated,"Longer flights must stop recording at the stated cap without growing disk forever")
   print("PASS: per-flight timestamped report retains ten minutes at 2 Hz without absolute GPS coordinates")
+end
+
+do
+  local opens=0
+  local env=setmetatable({Autopilot=A,navNames=names,navController={trace={},applied={}},AIRSHIP_BUILD="test",status={}}, {__index=_G})
+  env.textutils={serialize=function() error("profile serialization failed") end}
+  env.os={date=function() return "2026-10-23 12:34:56" end}
+  env.fs={makeDir=function() end,exists=function() return false end,getFreeSpace=function() return 1000000 end,
+    open=function() opens=opens+1; error("must serialize before opening the CSV") end}
+  local recording=assert(source:match('(local flightRecording.-)\nlocal function saveAutopilotProfile'))
+  local record,getRecording=assert(load(recording..'\nreturn recordFlight,function() return flightRecording end',"@flight-recorder-failure","t",env))()
+  local s={t=1,x=1,z=1,vx=0,vz=0,heading=0,yaw=0,pressure=.8}
+  record(s,{x=2,z=2},profiles[1],{},"AUTOPILOT")
+  assert(opens==0 and getRecording().count==0 and getRecording().failed:match("serialize") and env.status.text:match("Flight log failed"),
+    "Profile serialization errors must not leave a metadata-only CSV and must be reported")
+  print("PASS: failed first-sample setup does not create a misleading flight CSV")
+end
+
+do
+  local env=setmetatable({Autopilot=A,navNames=names,navController={trace={},applied={}},AIRSHIP_BUILD="test",status={}}, {__index=_G})
+  env.textutils={serialize=function() return "fixture profile" end}
+  env.os={date=function() return "2026-10-23 12:34:56" end}
+  env.fs={makeDir=function() end,exists=function() return false end,getFreeSpace=function() return 1000000 end,
+    open=function() return {write=function() end,close=function() error("flush failed") end} end}
+  local recording=assert(source:match('(local flightRecording.-)\nlocal function saveAutopilotProfile'))
+  local record,getRecording=assert(load(recording..'\nreturn recordFlight,function() return flightRecording end',"@flight-recorder-close-failure","t",env))()
+  local s={t=1,x=1,z=1,vx=0,vz=0,heading=0,yaw=0,pressure=.8}
+  record(s,{x=2,z=2},profiles[1],{},"AUTOPILOT")
+  assert(getRecording().count==0 and getRecording().failed:match("flush failed"),
+    "A close/flush error must never count a sample as saved")
+  print("PASS: failed flush does not inflate the saved flight sample count")
+end
+
+do
+  local opens=0
+  local env=setmetatable({Autopilot=A,navNames=names,navController={trace={},applied={}},AIRSHIP_BUILD="test",status={}}, {__index=_G})
+  env.textutils={serialize=function() return "fixture profile" end}
+  env.os={date=function() return "2026-10-23 12:34:56" end}
+  env.fs={makeDir=function() end,exists=function() return false end,getFreeSpace=function() return 1 end,
+    open=function() opens=opens+1; error("must check disk space before opening the CSV") end}
+  local recording=assert(source:match('(local flightRecording.-)\nlocal function saveAutopilotProfile'))
+  local record,getRecording=assert(load(recording..'\nreturn recordFlight,function() return flightRecording end',"@flight-recorder-low-space","t",env))()
+  local s={t=1,x=1,z=1,vx=0,vz=0,heading=0,yaw=0,pressure=.8}
+  record(s,{x=2,z=2},profiles[1],{},"AUTOPILOT")
+  assert(opens==0 and getRecording().count==0 and getRecording().failed:match("Low disk space"),
+    "Low storage must be reported before creating a partial CSV")
+  print("PASS: low disk space is detected before creating a partial flight CSV")
 end
