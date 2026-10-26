@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.49"
+local AIRSHIP_BUILD = "1.7.50"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1865,6 +1865,30 @@ local function requestProgramUpdate()
   stop()
   basalt.stop()
 end
+local function cleanupUnusedFiles()
+  local removed, failed = 0, 0
+  local ok, err = pcall(function()
+    local running = shell and shell.getRunningProgram and fs.getName(shell.getRunningProgram())
+    for _, name in ipairs(fs.list("/")) do
+      local obsolete = name == "airship-cleanup.lua" or name == "hub-diagnostic.lua"
+        or name == "airship.lua.update" or name == "airship.lua.cleaning" or name == "airship-updater.lua.cleaning"
+        or name == "airship-updater-new.lua" or name == "airship-new.lua" or name == "airship-next.lua"
+        or name:match("^airship%-v%d+%.%d+%.%d+%.lua$") ~= nil
+        or name:match("^airship%-hub%-diagnostic[%-%d]*%.txt$") ~= nil
+      for _, prefix in ipairs({"airship-before-", "airship-previous", "airship-old", "airship-failed"}) do
+        if name:sub(1, #prefix) == prefix and name:match("%.lua$") then obsolete = true end
+      end
+      local path = "/" .. name
+      if obsolete and name ~= running and not fs.isDir(path) then
+        local deleted = pcall(fs.delete, path)
+        if deleted and not fs.exists(path) then removed = removed + 1 else failed = failed + 1 end
+      end
+    end
+  end)
+  if not ok then status.text = "Cleanup failed: " .. tostring(err); status.foreground = colors.red
+  elseif failed > 0 then status.text = ("Cleanup removed %d file(s); %d could not be removed."):format(removed, failed); status.foreground = colors.orange
+  else status.text = ("Cleanup removed %d obsolete file(s); calibration, backups, and flight logs kept."):format(removed); status.foreground = colors.lime end
+end
 local function setFlightMode(nextMode)
   calibrationRunning = false
   brakeCalibrationActive = false
@@ -2611,6 +2635,7 @@ local function createGpuButtons()
       {"UPD",nil,{46,107,130},requestProgramUpdate},
       {"STOP",nil,{125,48,56},stop},
       {clearHoverConfirmAt and os.clock()-clearHoverConfirmAt<8 and "CLEAR?" or "CLEAR",nil,{125,48,56},clearHoverMap},
+      {"CLEAN",nil,{70,82,96},cleanupUnusedFiles},
     },l.buttonY)
   else
     local heights=savedHoverPoints()
@@ -2654,9 +2679,10 @@ local function createMonitorUi()
   monitorFrame:addButton({x=2, y=10, width=14, height=1, text="LOCK LEVEL", background=colors.orange}):onClick(lockHoverLevel)
   monitorFrame:addButton({x=18, y=10, width=12, height=1, text="SAVED ALT", background=colors.blue}):onClick(selectAltitudePreset)
   monitorFrame:addButton({x=32, y=10, width=12, height=1, text="MANUAL M", background=colors.orange}):onClick(toggleManualBurner)
-  monitorFrame:addButton({x=2, y=11, width=16, height=1, text="SWEEP 15-5", background=colors.orange}):onClick(startBurnerSweep)
-  monitorFrame:addButton({x=20, y=11, width=10, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
-  monitorFrame:addButton({x=32, y=11, width=12, height=1, text="CLEAR MAP", background=colors.red}):onClick(clearHoverMap)
+  monitorFrame:addButton({x=2, y=11, width=13, height=1, text="SWEEP 15-5", background=colors.orange}):onClick(startBurnerSweep)
+  monitorFrame:addButton({x=16, y=11, width=8, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
+  monitorFrame:addButton({x=25, y=11, width=11, height=1, text="CLEAR MAP", background=colors.red}):onClick(clearHoverMap)
+  monitorFrame:addButton({x=37, y=11, width=10, height=1, text="CLEAN", background=colors.gray}):onClick(cleanupUnusedFiles)
   monitorGpuNotice = monitorFrame:addLabel({x=2, y=12, width=width-2, height=1, text="GPU: " .. (directGpuError or "CC monitor fallback"), foreground=colors.orange})
 end
 if not directGpu then createMonitorUi() end
@@ -2826,6 +2852,7 @@ calibrationPage:addButton({x=2, y=10, width=20, height=1, text="BRAKE CAL  F6", 
 calibrationButton(2, 12, 16, "SWEEP 15-5", colors.orange, startBurnerSweep)
 calibrationPage:addLabel({x=20, y=12, width=13, height=1, text="Sweep saves stable heights", foreground=colors.lightGray})
 calibrationPage:addButton({x=35, y=12, width=14, height=1, text="CLEAR HEIGHTS", background=colors.red}):onClick(clearHoverMap)
+calibrationPage:addButton({x=35, y=13, width=14, height=1, text="CLEAN FILES", background=colors.gray}):onClick(cleanupUnusedFiles)
 calibrationPage:addButton({x=2, y=15, width=20, height=1, text="FULL AUTO CAL  R", background=colors.blue}):onClick(startFullCalibration)
 calibrationPage:addButton({x=24, y=15, width=20, height=1, text="CANCEL AUTO CAL  H", background=colors.gray}):onClick(holdHere)
 end
