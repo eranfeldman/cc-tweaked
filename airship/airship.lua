@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.50"
+local AIRSHIP_BUILD = "1.7.51"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -1866,28 +1866,60 @@ local function requestProgramUpdate()
   basalt.stop()
 end
 local function cleanupUnusedFiles()
-  local removed, failed = 0, 0
+  local removed, oldLogs, recentLogs, failed, logIssues = 0, 0, 0, 0, 0
   local ok, err = pcall(function()
+    local now = os.epoch("utc")
     local running = shell and shell.getRunningProgram and fs.getName(shell.getRunningProgram())
+    local keep = {
+      ["airship.lua"] = true, ["airship-updater.lua"] = true, ["basalt.lua"] = true,
+      ["diagnostic.lua"] = true,
+      ["hub-diagnostic.lua"] = true, ["pid-tuner.lua"] = true,
+      ["startup"] = true, ["startup.lua"] = true,
+      ["airship-autopilot.cfg"] = true, ["airship-autopilot.cfg.bak"] = true,
+      ["airship-autopilot-pending.cfg"] = true, ["airship-autopilot-pending.cfg.bak"] = true,
+      ["airship-brake-checkpoint.cfg"] = true, ["airship-brake-checkpoint.cfg.bak"] = true,
+      ["airship-seat-distance.cfg"] = true, ["airship-optical-sensor-ranges.cfg"] = true,
+      ["airship-pid.cfg"] = true, ["airship-pid.cfg.bak"] = true,
+      ["airship-hover.cfg"] = true, ["airship-hover.cfg.bak"] = true,
+      ["airship-calibrated"] = true,
+    }
     for _, name in ipairs(fs.list("/")) do
-      local obsolete = name == "airship-cleanup.lua" or name == "hub-diagnostic.lua"
-        or name == "airship.lua.update" or name == "airship.lua.cleaning" or name == "airship-updater.lua.cleaning"
-        or name == "airship-updater-new.lua" or name == "airship-new.lua" or name == "airship-next.lua"
-        or name:match("^airship%-v%d+%.%d+%.%d+%.lua$") ~= nil
-        or name:match("^airship%-hub%-diagnostic[%-%d]*%.txt$") ~= nil
-      for _, prefix in ipairs({"airship-before-", "airship-previous", "airship-old", "airship-failed"}) do
-        if name:sub(1, #prefix) == prefix and name:match("%.lua$") then obsolete = true end
-      end
       local path = "/" .. name
-      if obsolete and name ~= running and not fs.isDir(path) then
-        local deleted = pcall(fs.delete, path)
-        if deleted and not fs.exists(path) then removed = removed + 1 else failed = failed + 1 end
+      if name == "flight logs" and fs.isDir(path) then
+        for _, logName in ipairs(fs.list(path)) do
+          local logPath = path .. "/" .. logName
+          if not fs.isDir(logPath) then
+            local attrOk, attributes = pcall(fs.attributes, logPath)
+            if attrOk and type(attributes) == "table" and type(attributes.modified) == "number" then
+              if now - attributes.modified > 86400000 then
+                local deleted = pcall(fs.delete, logPath)
+                if deleted and not fs.exists(logPath) then oldLogs = oldLogs + 1 else failed = failed + 1 end
+              else recentLogs = recentLogs + 1 end
+            else logIssues = logIssues + 1 end
+          end
+        end
+      elseif not fs.isDir(path) and name ~= running then
+        local isLog = name:match("%.log$") or name:match("%.csv$") or name:match("^airship%-hub%-diagnostic.*%.txt$")
+        local keepLog = isLog ~= nil
+        if isLog then
+          local attrOk, attributes = pcall(fs.attributes, path)
+          if attrOk and type(attributes) == "table" and type(attributes.modified) == "number" then
+            if now - attributes.modified > 86400000 then
+              local deleted = pcall(fs.delete, path)
+              if deleted and not fs.exists(path) then oldLogs = oldLogs + 1 else failed = failed + 1 end
+            else recentLogs = recentLogs + 1 end
+          else logIssues = logIssues + 1 end
+        end
+        if not keep[name] and not keepLog and fs.exists(path) then
+          local deleted = pcall(fs.delete, path)
+          if deleted and not fs.exists(path) then removed = removed + 1 else failed = failed + 1 end
+        end
       end
     end
   end)
   if not ok then status.text = "Cleanup failed: " .. tostring(err); status.foreground = colors.red
-  elseif failed > 0 then status.text = ("Cleanup removed %d file(s); %d could not be removed."):format(removed, failed); status.foreground = colors.orange
-  else status.text = ("Cleanup removed %d obsolete file(s); calibration, backups, and flight logs kept."):format(removed); status.foreground = colors.lime end
+  elseif failed > 0 or logIssues > 0 then status.text = ("Removed %d unused, %d old logs; kept %d recent; %d failed/undated."):format(removed, oldLogs, recentLogs, failed + logIssues); status.foreground = colors.orange
+  else status.text = ("Removed %d unused, %d old logs; kept %d recent logs."):format(removed, oldLogs, recentLogs); status.foreground = colors.lime end
 end
 local function setFlightMode(nextMode)
   calibrationRunning = false
@@ -2745,9 +2777,11 @@ if compact then
   pidInput:onEnter(setGains)
   frame:addButton({x=screenWidth-10, y=12, width=8, height=1, text="SET PID", background=colors.blue}):onClick(setGains)
   if directGpuError then compactGpuNotice = frame:addLabel({x=2, y=13, width=screenWidth-3, height=2, text="DirectGPU: " .. directGpuError, foreground=colors.orange}) end
-  frame:addButton({x=screenWidth-12, y=15, width=10, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
-  frame:addButton({x=2, y=15, width=20, height=1, text="FULL AUTO CAL  R", background=colors.blue}):onClick(startFullCalibration)
-  frame:addButton({x=24, y=15, width=12, height=1, text="BRAKE CAL F6", background=colors.blue}):onClick(startBrakingCalibration)
+  local bottomButtonWidth = math.floor((screenWidth-5)/4)
+  frame:addButton({x=2, y=15, width=bottomButtonWidth, height=1, text="AUTO CAL", background=colors.blue}):onClick(startFullCalibration)
+  frame:addButton({x=3+bottomButtonWidth, y=15, width=bottomButtonWidth, height=1, text="BRAKE", background=colors.blue}):onClick(startBrakingCalibration)
+  frame:addButton({x=4+bottomButtonWidth*2, y=15, width=bottomButtonWidth, height=1, text="CLEAN", background=colors.gray}):onClick(cleanupUnusedFiles)
+  frame:addButton({x=5+bottomButtonWidth*3, y=15, width=bottomButtonWidth, height=1, text="UPDATE", background=colors.blue}):onClick(requestProgramUpdate)
 else
 frame:addLabel({x=2, y=1, width=30, height=1, text="AIRSHIP v" .. AIRSHIP_BUILD, foreground=colors.white, background=colors.blue})
 status = frame:addLabel({x=2, y=2, width=screenWidth-3, height=1, text="Starting controller...", foreground=colors.yellow})
