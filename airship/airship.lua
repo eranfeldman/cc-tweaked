@@ -1,5 +1,5 @@
 -- Basalt 2.5 flight panel for the east-facing 24-thruster ship.
-local AIRSHIP_BUILD = "1.7.51"
+local AIRSHIP_BUILD = "1.7.52"
 print("AIRSHIP v" .. AIRSHIP_BUILD .. ": loading UI")
 local basalt = require("basalt")
 
@@ -75,7 +75,7 @@ local Autopilot = (function()
     return (rates[1]*ux+rates[2]*uy)/(1-uz*uz)
   end
   function A.validProfile(p,names)
-    if type(p)~="table" or p.version~=2 or p.validated~=true or type(p.names)~="table" or #p.names~=#names or type(p.channels)~="table" or #p.channels~=#names*4 then return false end
+    if type(p)~="table" or p.version~=3 or p.validated~=true or type(p.names)~="table" or #p.names~=#names or type(p.channels)~="table" or #p.channels~=#names*4 then return false end
     for i,name in ipairs(names) do if p.names[i]~=name then return false end end
     for _,key in ipairs({"pressure","yawWeight","maxAccel","maxSpeed","delay"}) do if not finite(p[key]) or p[key]<=0 then return false end end
     if p.pressure>2 or p.yawWeight>30 or p.maxAccel>6 or p.maxSpeed>32 or p.delay>10 or type(p.drag)~="table" or type(p.gains)~="table" then return false end
@@ -475,7 +475,7 @@ local Autopilot = (function()
     return commands,("BRAKE CAL %d/8 full reverse | %.1f b/s | %.1f blocks"):format(j.index,along,r.distance)
   end
   function A:fit(job)
-    local p={version=2,gpsVersion=2,cruiseVersion=3,validationVersion=2,responseScale=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8,maxThrottle=throttleLimit}
+    local p={version=3,gpsVersion=2,cruiseVersion=3,validationVersion=2,responseScale=1,names=self.names,channels=job.channels,pressure=job.pressure/job.samples,drag=drag(job),delay=job.dt/job.samples+1.8,maxThrottle=throttleLimit}
     for index,m in ipairs(job.measurements) do
       local response={}
       for i=1,3 do
@@ -500,17 +500,34 @@ local Autopilot = (function()
     end
     if yaw<1e-7 or force<1e-5 then return nil,"No usable translation or yaw response; check fuel, nozzles and gimbal." end
     p.yawWeight=clamp(math.sqrt(force/yaw)*.7,1,30)
-    p.maxAccel=math.min(6,math.min(table.unpack(extent))*.55)
-    if p.maxAccel<.015 then return nil,"Insufficient measured thrust in all four directions." end
+    local upper=math.min(6,math.min(table.unpack(extent)))
+    local directions={{1,0},{-1,0},{0,1},{0,-1},{math.sqrt(.5),math.sqrt(.5)},{math.sqrt(.5),-math.sqrt(.5)},{-math.sqrt(.5),math.sqrt(.5)},{-math.sqrt(.5),-math.sqrt(.5)}}
+    local function fits(acceleration)
+      for _,direction in ipairs(directions) do
+        for _,yawCommand in ipairs({-.03,0,.03}) do
+          local goal={acceleration*direction[1],acceleration*direction[2],yawCommand}
+          local _,residual=self:allocate(p,goal)
+          local error=residual[1]^2+residual[2]^2+residual[3]^2
+          local magnitude=goal[1]^2+goal[2]^2+(goal[3]*p.yawWeight)^2
+          if error>magnitude*.05 then return false end
+        end
+      end
+      for _,yawCommand in ipairs({-.03,.03}) do
+        local _,residual=self:allocate(p,{0,0,yawCommand})
+        if residual[3]^2>(yawCommand*p.yawWeight)^2*.05 then return false end
+      end
+      return true
+    end
+    local low,high=0,upper
+    for _=1,12 do
+      local middle=(low+high)/2
+      if fits(middle) then low=middle else high=middle end
+    end
+    p.maxAccel=low
+    if p.maxAccel<.015 then return nil,"Thruster layout cannot provide balanced translation and yaw control." end
     p.maxSpeed=A.cruiseSpeed(p)
     local frequency=math.min(.18,1/(2*p.delay),math.sqrt(p.maxAccel/3))
     p.gains={frequency^2,frequency^2*.02,2.2*frequency}
-    for _,goal in ipairs({{p.maxAccel,0,0},{-p.maxAccel,0,0},{0,p.maxAccel,0},{0,-p.maxAccel,0},{0,0,.03},{0,0,-.03}}) do
-      local _,residual=self:allocate(p,goal)
-      local error=residual[1]^2+residual[2]^2+residual[3]^2
-      local magnitude=goal[1]^2+goal[2]^2+(goal[3]*p.yawWeight)^2
-      if error>magnitude*.2 then return nil,"Thruster layout cannot independently steer and counter yaw." end
-    end
     return p
   end
   local function travelGoals(job)
@@ -1609,7 +1626,7 @@ if fs.exists("airship-autopilot.cfg") then
       pendingAutopilot=textutils.unserialize(textutils.serialize(profile))
       pendingAutopilot.validated=nil
     end
-  else autopilotNotice="Saved autopilot needs a fresh GPS-checked survey; run FULL AUTO CAL." end
+  else autopilotNotice="Saved autopilot profile is obsolete for v1.7.52; run FULL AUTO CAL." end
 end
 local sweepConfirmAt
 local sweepSummary

@@ -121,6 +121,12 @@ for _,scenario in ipairs(scenarios) do
   assert(#completed.channels==#names*4,"Not all detected thrusters and four nozzle directions were surveyed")
   assert(completed.maxSpeed>.75,"Fast calibration retained the old crawl speed")
   assert(completed.maxThrottle and completed.maxThrottle<=1,"Calibrated power must stay normalized")
+  assert(completed.version==3,"Full-power calibration must use the new profile schema")
+  for _,goal in ipairs({{completed.maxAccel,0,0},{-completed.maxAccel,0,0},{0,completed.maxAccel,0},{0,-completed.maxAccel,0}}) do
+    local _,residual=controller:allocate(completed,goal)
+    assert(residual[1]^2+residual[2]^2+residual[3]^2<=(goal[1]^2+goal[2]^2)*.051+1e-8,
+      "Full-power calibration must use at least 95% of the requested acceleration in all four directions")
+  end
   if scenario[4] then
     assert(p.maxRock>.005,"Uneven plant must actually rock under thrust")
     assert(math.abs(completed.drag[1]-.18)<.08 and math.abs(completed.drag[2]-.18)<.08,"Steady imbalance must not be mistaken for drag")
@@ -913,11 +919,9 @@ do
   invalid.maxThrottle=2
   assert(not A.validProfile(invalid,names),"Out-of-range saved throttle must be rejected")
   local legacy={}; for key,value in pairs(profiles[1]) do legacy[key]=value end
-  legacy.maxThrottle,legacy.tiltReference=nil,nil
-  assert(A.validProfile(legacy,names),"Old saved calibrations must remain readable")
-  local oldCommands=controller:allocate(legacy,{10,10,.1})
-  for _,out in pairs(oldCommands) do assert(out.power<=.350001,"Old profiles must retain their original throttle limit") end
-  print("PASS: tilt does not limit flight thrust or require a reading; invalid power is rejected")
+  legacy.version=2
+  assert(not A.validProfile(legacy,names),"Old measured power ceilings must be recalibrated")
+  print("PASS: tilt does not limit flight thrust; invalid power is rejected and old ceilings require recalibration")
 end
 
 do
@@ -951,18 +955,15 @@ do
     if type(value)~="table" then return value end
     local result={}; for k,v in pairs(value) do result[k]=clone(v) end; return result
   end
-  local legacy=clone(profiles[1]); legacy.cruiseVersion=2; legacy.maxSpeed=13
+  local legacy=clone(profiles[1]); legacy.version=2; legacy.cruiseVersion=2; legacy.maxSpeed=13
   local env=setmetatable({Autopilot=A,navNames=names,navController=A.new(names)}, {__index=_G})
   env.fs={exists=function() return true end,open=function() return {readAll=function() return "saved" end,close=function() end} end}
   env.textutils={serialize=function() return "saved" end,unserialize=function() return clone(legacy) end}
   local loading=assert(source:match('(if fs.exists%("airship%-autopilot.cfg"%) then.-)\nlocal sweepConfirmAt'))
   assert(load(loading,"@legacy-profile-load","t",env))()
-  assert(env.navController.profile.validated and env.pendingAutopilot.validated==nil,"Migration must retain working profile while preparing auto tests")
-  assert(#env.pendingAutopilot.channels==#names*4 and env.pendingAutopilot~=env.navController.profile,"Migration must reuse the survey without modifying the working profile")
-  legacy.gpsVersion=nil; env.pendingAutopilot=nil; env.navController=A.new(names)
-  assert(load(loading,"@unsafe-gps-profile-load","t",env))()
-  assert(not env.navController.profile and not env.pendingAutopilot and env.autopilotNotice:match("GPS"),"Old unchecked-GPS model must require a fresh survey")
-  print("PASS: completed legacy profile reuses its full thruster survey for new cruise validation")
+  assert(not env.navController.profile and not env.pendingAutopilot and env.autopilotNotice:match("v1.7.52"),
+    "Old conservative power ceiling must be rejected and require a fresh full-power survey")
+  print("PASS: v2 thruster model is rejected so FULL AUTO CAL measures the full-power envelope")
 end
 
 do
